@@ -1,0 +1,18 @@
+# Environment
+.env
+
+# Data
+data/raw/
+data/arctic/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pkl
+.pytest_cache/
+
+# Build
+dist/
+*.egg-info/
+.venv/

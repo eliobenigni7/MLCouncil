@@ -1,0 +1,29 @@
+# Base model weights per market regime.
+# These are the starting point; adaptive weighting adjusts them based on
+# each model's rolling 60-day Sharpe (IC mean / IC std * sqrt(252)).
+
+regime_weights:
+  bull:
+    lgbm:      0.50
+    sentiment: 0.30
+    hmm:       0.20
+  bear:
+    lgbm:      0.40
+    sentiment: 0.20
+    hmm:       0.40
+  transition:
+    lgbm:      0.45
+    sentiment: 0.25
+    hmm:       0.30
+
+# Adaptive weight bounds applied after Sharpe-based adjustment.
+# No model falls below min or above max after renormalization.
+weight_clip:
+  min: 0.05   # floor: every active model keeps at least 5 %
+  max: 0.70   # ceiling: no model dominates more than 70 %
+
+# Performance history thresholds
+performance:
+  min_history_days:    30   # days of IC history needed before adaptive weights kick in
+  ic_rolling_window:   30   # days for IC rolling average (get_attribution)
+  sharpe_rolling_window: 60 # days for Sharpe calculation
