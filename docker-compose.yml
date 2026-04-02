@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Admin API
+  admin-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ARCTICDB_URI=lmdb://data/arctic/
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - DAGSTER_GRAPHQL_URL=http://dagster:3000/graphql
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    depends_on:
+      - mlflow
+
+  # Streamlit Dashboard
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    depends_on:
+      - admin-api
+
+  # Dagster Pipeline (optional)
+  dagster:
+    build: .
+    ports:
+      - "3000:3000"
+    command: dagster dev -f data/pipeline.py -h 0.0.0.0 -p 3000
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    environment:
+      - ARCTICDB_URI=lmdb://data/arctic/
+
+  # MLflow Tracking (optional)
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.10.0
+    ports:
+      - "5000:5000"
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns
+    volumes:
+      - ./mlruns:/app/mlruns
+      - ./mlflow.db:/app/mlflow.db
+
+volumes:
+  data:

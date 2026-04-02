@@ -298,18 +298,40 @@ MLCouncil/
 
 ### Docker (Recommended)
 
-```dockerfile
-# Dockerfile (to be created)
-FROM python:3.12-slim
+Build and run with Docker Compose:
 
-WORKDIR /app
-COPY requirements*.txt ./
-RUN pip install -r requirements.txt
+```bash
+# Build all services
+docker-compose build
 
-COPY . .
-EXPOSE 8000 8501
+# Run admin API only
+docker-compose up admin-api
 
-CMD ["python", "run_admin.py"]
+# Run all services (API, Dashboard, Dagster, MLflow)
+docker-compose up
+
+# Run in background
+docker-compose up -d
+```
+
+**Services:**
+| Service | Port | Description |
+|---------|------|-------------|
+| admin-api | 8000 | FastAPI Admin backend |
+| dashboard | 8501 | Streamlit public dashboard |
+| dagster | 3000 | Pipeline orchestration UI |
+| mlflow | 5000 | Experiment tracking |
+
+**Production deployment:**
+```bash
+# Build image
+docker build -t mlcouncil .
+
+# Run API
+docker run -p 8000:8000 -v ./data:/app/data mlcouncil
+
+# Run Dashboard
+docker run -p 8501:8501 mlcouncil streamlit run dashboard/app.py
 ```
 
 ### Streamlit Cloud (Dashboard Only)

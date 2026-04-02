@@ -1,0 +1,23 @@
+.git
+.gitignore
+README.md
+.env
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pkl
+.pytest_cache
+dist
+*.egg-info
+
+# Data directories (mounted as volumes)
+data/raw/
+data/arctic/
+data/orders/
+data/results/
+data/monitoring/
+data/alerts/
+data/cache/
+mlruns/
+mlflow.db
