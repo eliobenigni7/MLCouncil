@@ -25,6 +25,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import dashboard.charts as charts
+from council.alerts import load_current_alerts
 from dashboard.data_loader import (
     load_benchmark,
     load_daily_returns,
@@ -278,6 +279,45 @@ def render_regime_tab(mode: str, start_date: date, end_date: date) -> None:
 
 
 # ============================================================================
+# Sidebar: monitoring alerts
+# ============================================================================
+
+def _render_sidebar_alerts() -> None:
+    """Display active monitoring alerts in the sidebar.
+
+    Reads from data/monitoring/current_alerts.json (written by AlertDispatcher).
+    Shows nothing when there are no active alerts.
+    """
+    alerts = load_current_alerts()
+    active = [a for a in alerts if a.get("is_alert", False)]
+    if not active:
+        st.caption("No active alerts.")
+        return
+
+    st.subheader("Monitoring Alerts")
+    for alert in active:
+        severity = alert.get("severity", "info")
+        model = alert.get("model_name", "")
+        check = alert.get("check_type", "")
+        message = alert.get("message", "")
+        recommendation = alert.get("recommendation", "")
+
+        label = f"**[{check.upper()}]** {model}: {message}"
+        detail = f"Recommendation: {recommendation}" if recommendation else ""
+
+        if severity == "critical":
+            st.error(f"🚨 {label}")
+            if detail:
+                st.caption(detail)
+        elif severity == "warning":
+            st.warning(f"⚠️ {label}")
+            if detail:
+                st.caption(detail)
+        else:
+            st.info(f"ℹ️ {label}")
+
+
+# ============================================================================
 # Sidebar
 # ============================================================================
 
@@ -299,6 +339,9 @@ with st.sidebar:
 
     st.divider()
     render_live_metrics()
+
+    st.divider()
+    _render_sidebar_alerts()
 
     st.divider()
     st.caption("Equity/attribution: 1h cache · Regime: 5 min cache")
