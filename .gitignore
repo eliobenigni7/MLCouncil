@@ -5,6 +5,13 @@
 data/raw/
 data/arctic/
 
+# Generated data
+data/results/
+data/orders/
+data/cache/
+data/monitoring/
+data/alerts/
+
 # Python
 __pycache__/
 *.pyc
