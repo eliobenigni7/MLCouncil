@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 API_PREFIX = "/api"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -33,6 +36,14 @@ def create_app() -> FastAPI:
     app.include_router(portfolio.router, prefix=API_PREFIX)
     app.include_router(config.router, prefix=API_PREFIX)
     app.include_router(monitoring.router, prefix=API_PREFIX)
+
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+    @app.get("/", response_class=HTMLResponse)
+    async def admin_ui(request: Request):
+        return templates.TemplateResponse("admin.html", {"request": request})
 
     return app
 

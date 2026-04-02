@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLCouncil Admin</title>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <h1>MLCouncil Admin</h1>
+            <nav>
+                <a data-page="overview" class="active">System Overview</a>
+                <a data-page="pipeline">Pipeline Control</a>
+                <a data-page="portfolio">Portfolio</a>
+                <a data-page="config">Configuration</a>
+                <a data-page="monitoring">Monitoring</a>
+            </nav>
+        </aside>
+        <main class="main">
+            <div id="overview" class="page active">
+                <div class="card">
+                    <h2>System Status</h2>
+                    <div class="kpi-grid" id="status-kpis"></div>
+                </div>
+            </div>
+            
+            <div id="pipeline" class="page">
+                <div class="card">
+                    <h2>Pipeline Control</h2>
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Last Run ID</div>
+                            <div class="kpi-value neutral" id="last-run-id">--</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Status</div>
+                            <div class="kpi-value" id="pipeline-status">--</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Partition</div>
+                            <div class="kpi-value neutral" id="pipeline-partition">--</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 1.5rem; display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="date" id="run-partition">
+                        <button class="btn" id="trigger-btn">Run Pipeline</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="portfolio" class="page">
+                <div class="card">
+                    <h2>Current Weights</h2>
+                    <table id="weights-table">
+                        <thead><tr><th>Ticker</th><th>Weight</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="card">
+                    <h2>Order History</h2>
+                    <select id="order-date-select" style="margin-bottom: 1rem;"></select>
+                    <table id="orders-table">
+                        <thead><tr><th>Ticker</th><th>Direction</th><th>Quantity ($)</th><th>Target Weight</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div id="config" class="page">
+                <div class="card">
+                    <h2>Universe</h2>
+                    <div id="universe-list" style="color: var(--text-secondary);"></div>
+                </div>
+                <div class="card">
+                    <h2>Regime Weights</h2>
+                    <pre id="regime-weights-display"></pre>
+                </div>
+                <div class="card">
+                    <h2>Model Hyperparameters</h2>
+                    <pre id="models-config-display"></pre>
+                </div>
+            </div>
+            
+            <div id="monitoring" class="page">
+                <div class="card">
+                    <h2>Active Alerts</h2>
+                    <table id="alerts-table">
+                        <thead><tr><th>Severity</th><th>Model</th><th>Type</th><th>Message</th><th>Time</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="/static/js/admin.js"></script>
+</body>
+</html>
