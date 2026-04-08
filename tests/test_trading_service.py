@@ -1,159 +1,235 @@
 """Tests for trading service."""
 
-import pytest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
+from __future__ import annotations
+
+import json
 import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pandas as pd
+import pytest
+
+
+def _make_service(
+    *,
+    account: dict | None = None,
+    positions: pd.DataFrame | None = None,
+):
+    from api.services.trading_service import TradingService
+
+    svc = TradingService.__new__(TradingService)
+    svc._node = MagicMock()
+    svc._node.get_account_info.return_value = account or {
+        "portfolio_value": 100000.0,
+        "buying_power": 100000.0,
+    }
+    svc._node.get_all_positions.return_value = (
+        positions if positions is not None else pd.DataFrame()
+    )
+    svc._node.get_latest_price.return_value = 200.0
+    svc._node.submit_order.return_value = {"status": "accepted"}
+
+    svc._config = MagicMock()
+    svc._config.mode.value = "paper"
+    return svc
 
 
 class TestTradingService:
     def test_validate_order_valid(self):
-        from api.services.trading_service import TradingService
-        
-        svc = TradingService.__new__(TradingService)
-        svc._node = None
-        svc._config = None
-        
+        svc = _make_service()
+
         order = {"ticker": "AAPL", "direction": "buy", "quantity": 10, "price": 150.0}
         account = {"portfolio_value": 100000.0}
-        positions = MagicMock()
-        
-        valid, msg = svc._validate_order(order, account, positions)
+
+        valid, msg = svc._validate_order(order, account, pd.DataFrame())
         assert valid is True
+        assert msg == "OK"
 
     def test_validate_order_exceeds_position_limit(self):
-        from api.services.trading_service import TradingService
-        
-        svc = TradingService.__new__(TradingService)
-        svc._node = None
-        svc._config = None
-        
+        svc = _make_service()
+
         order = {"ticker": "AAPL", "direction": "buy", "quantity": 1000, "price": 150.0}
         account = {"portfolio_value": 100000.0}
-        positions = MagicMock()
-        
-        valid, msg = svc._validate_order(order, account, positions)
+
+        valid, msg = svc._validate_order(order, account, pd.DataFrame())
         assert valid is False
         assert "exceeds max position" in msg
 
     def test_validate_order_no_buying_power(self):
-        from api.services.trading_service import TradingService
-        
-        svc = TradingService.__new__(TradingService)
-        svc._node = None
-        svc._config = None
-        
+        svc = _make_service()
+
         order = {"ticker": "AAPL", "direction": "buy", "quantity": 10, "price": 150.0}
         account = {"portfolio_value": 0.0}
-        positions = MagicMock()
-        
-        valid, msg = svc._validate_order(order, account, positions)
+
+        valid, msg = svc._validate_order(order, account, pd.DataFrame())
         assert valid is False
         assert "No buying power" in msg
 
     def test_validate_order_invalid_quantity(self):
-        from api.services.trading_service import TradingService
-        
-        svc = TradingService.__new__(TradingService)
-        svc._node = None
-        svc._config = None
-        
+        svc = _make_service()
+
         order = {"ticker": "AAPL", "direction": "buy", "quantity": 0, "price": 150.0}
         account = {"portfolio_value": 100000.0}
-        positions = MagicMock()
-        
-        valid, msg = svc._validate_order(order, account, positions)
+
+        valid, msg = svc._validate_order(order, account, pd.DataFrame())
         assert valid is False
         assert "Invalid quantity" in msg
 
     def test_get_pending_orders_empty(self):
-        from api.services.trading_service import TradingService
-        
+        from api.services import trading_service as ts
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            svc = TradingService.__new__(TradingService)
-            svc._node = None
-            svc._config = None
-            
-            original_dir = Path("data/orders")
-            import api.services.trading_service as ts
+            svc = _make_service()
+            original_dir = ts.ORDERS_DIR
             ts.ORDERS_DIR = Path(tmpdir)
-            
-            result = svc.get_pending_orders("2024-01-01")
-            assert result == []
-            
-            ts.ORDERS_DIR = original_dir
+            try:
+                result = svc.get_pending_orders("2024-01-01")
+            finally:
+                ts.ORDERS_DIR = original_dir
+
+        assert result == []
 
     def test_get_latest_order_date_no_files(self):
-        from api.services.trading_service import TradingService
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            svc = TradingService.__new__(TradingService)
-            svc._node = None
-            svc._config = None
-            
-            import api.services.trading_service as ts
-            ts.ORDERS_DIR = Path(tmpdir)
-            
-            result = svc.get_latest_order_date()
-            assert result is None
-            
-            ts.ORDERS_DIR = Path("data/orders")
+        from api.services import trading_service as ts
 
-    def test_get_status_connected(self):
-        from api.services.trading_service import TradingService
-        
-        svc = TradingService.__new__(TradingService)
-        
-        mock_node = MagicMock()
-        mock_node.get_account_info.return_value = {"buying_power": 10000, "portfolio_value": 50000}
-        mock_node.get_all_positions.return_value = MagicMock(empty=True)
-        svc._node = mock_node
-        
-        mock_config = MagicMock()
-        mock_config.mode.value = "paper"
-        svc._config = mock_config
-        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svc = _make_service()
+            original_dir = ts.ORDERS_DIR
+            ts.ORDERS_DIR = Path(tmpdir)
+            try:
+                result = svc.get_latest_order_date()
+            finally:
+                ts.ORDERS_DIR = original_dir
+
+        assert result is None
+
+    def test_get_status_connected_includes_runtime_flags(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "paper")
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "true")
+
+        svc = _make_service()
+        svc._node.get_all_positions.return_value = pd.DataFrame()
+
         status = svc.get_status()
+
         assert status["connected"] is True
         assert status["paper"] is True
+        assert status["runtime_profile"] == "paper"
+        assert status["paused"] is True
         assert "account" in status
 
     def test_get_status_not_paper(self):
-        from api.services.trading_service import TradingService
-        
-        svc = TradingService.__new__(TradingService)
-        svc._node = None
-        
-        mock_config = MagicMock()
-        mock_config.mode.value = "live"
-        svc._config = mock_config
-        
+        svc = _make_service()
+        svc._config.mode.value = "live"
+
         status = svc.get_status()
         assert "error" in status
         assert "paper mode only" in status["error"]
 
-    def test_execute_orders_returns_lineage_from_order_file(self):
-        from api.services.trading_service import TradingService
+    def test_build_pretrade_snapshot_blocks_when_paused(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "true")
 
-        svc = TradingService.__new__(TradingService)
-
-        mock_node = MagicMock()
-        mock_node.get_account_info.return_value = {"portfolio_value": 100000.0}
-        mock_node.get_all_positions.return_value = MagicMock(empty=True)
-        mock_node.submit_order.return_value = {"status": "accepted"}
-        svc._node = mock_node
-
-        mock_config = MagicMock()
-        mock_config.mode.value = "paper"
-        svc._config = mock_config
-
+        svc = _make_service()
         svc.get_pending_orders = MagicMock(
             return_value=[
                 {
                     "ticker": "AAPL",
                     "direction": "buy",
-                    "quantity": 10,
-                    "target_weight": 0.10,
+                    "quantity": 5000.0,
+                    "target_weight": 0.05,
+                    "pipeline_run_id": "run-001",
+                    "data_version": "data-v1",
+                    "feature_version": "feat-v1",
+                    "model_version": "model-v1",
+                }
+            ]
+        )
+
+        snapshot = svc.build_pretrade_snapshot("2024-01-15")
+
+        assert snapshot["paused"] is True
+        assert snapshot["pretrade"]["blocked"] is True
+        assert "paused" in snapshot["pretrade"]["reason"].lower()
+
+    def test_build_pretrade_snapshot_blocks_on_high_risk_breach(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        svc = _make_service()
+        svc.get_pending_orders = MagicMock(
+            return_value=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 90000.0,
+                    "target_weight": 0.90,
+                    "pipeline_run_id": "run-002",
+                    "data_version": "data-v2",
+                    "feature_version": "feat-v2",
+                    "model_version": "model-v2",
+                }
+            ]
+        )
+
+        snapshot = svc.build_pretrade_snapshot("2024-01-15")
+
+        assert snapshot["pretrade"]["blocked"] is True
+        assert any(
+            breach["limit_name"] == "Position Limit"
+            for breach in snapshot["pretrade"]["breaches"]
+        )
+
+    def test_execute_orders_converts_notional_to_share_quantity(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        svc = _make_service()
+        svc.get_pending_orders = MagicMock(
+            return_value=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 1000.0,
+                    "target_weight": 0.01,
+                    "pipeline_run_id": "run-003",
+                    "data_version": "data-v3",
+                    "feature_version": "feat-v3",
+                    "model_version": "model-v3",
+                }
+            ]
+        )
+
+        result = svc.execute_orders("2024-01-15")
+
+        svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
+        assert result["orders_submitted"] == 1
+        assert result["pretrade"]["blocked"] is False
+        assert result["lineage"]["pipeline_run_id"] == "run-003"
+
+    def test_execute_orders_returns_lineage_reconciliation_and_operations_log(self, monkeypatch):
+        from api.services import trading_service as ts
+        from council import risk_engine as risk_mod
+
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        positions = pd.DataFrame(
+            [
+                {
+                    "symbol": "MSFT",
+                    "qty": 4,
+                    "avg_price": 250.0,
+                    "current_price": 250.0,
+                    "current_value": 1000.0,
+                }
+            ]
+        )
+        svc = _make_service(positions=positions)
+        svc.get_pending_orders = MagicMock(
+            return_value=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 1000.0,
+                    "target_weight": 0.01,
                     "pipeline_run_id": "run-004",
                     "data_version": "data-v4",
                     "feature_version": "feat-v4",
@@ -162,7 +238,24 @@ class TestTradingService:
             ]
         )
 
-        result = svc.execute_orders("2024-01-15")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_trade_dir = ts.TRADE_LOG_DIR
+            original_ops_dir = ts.OPERATIONS_DIR
+            original_risk_dir = risk_mod.RISK_DIR
+            ts.TRADE_LOG_DIR = tmp_path / "paper_trades"
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            risk_mod.RISK_DIR = tmp_path / "risk"
+            try:
+                result = svc.execute_orders("2024-01-15")
+            finally:
+                ts.TRADE_LOG_DIR = original_trade_dir
+                ts.OPERATIONS_DIR = original_ops_dir
+                risk_mod.RISK_DIR = original_risk_dir
+
+            operations_path = Path(result["operations_path"])
+            assert operations_path.exists()
+            payload = json.loads(operations_path.read_text())
 
         assert result["lineage"] == {
             "pipeline_run_id": "run-004",
@@ -170,3 +263,7 @@ class TestTradingService:
             "feature_version": "feat-v4",
             "model_version": "model-v4",
         }
+        assert result["reconciliation"]["symbols_to_close"] == ["MSFT"]
+        assert result["reconciliation"]["symbols_to_open"] == ["AAPL"]
+        assert payload["trade_status"] == "success"
+        assert payload["orders_submitted"] == 2

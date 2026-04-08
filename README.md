@@ -132,6 +132,16 @@ DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
 - Il promotion gate blocca candidati senza diagnostica walk-forward sufficiente, con `oos_sharpe <= 0` o con `pbo > 0.50`.
 - Le convenzioni operative di Fase 2 sono riepilogate in [`docs/fase2-realism.md`](./docs/fase2-realism.md).
 
+## Fase 3 Operational Controls
+
+- `api/services/trading_service.py` ora esegue un preflight unico con paper-mode enforcement, kill switch operativo, pre-trade risk e reconciliation.
+- Gli ordini generati dalla pipeline vengono normalizzati da notional USD a share quantity usando i prezzi correnti prima dell'invio ad Alpaca.
+- `POST /api/trading/execute` blocca l'esecuzione con HTTP `409` quando il preflight rileva un hard stop.
+- Nuovi endpoint: `GET /api/trading/preflight/{date}` e `GET /api/trading/reconcile/{date}`.
+- I run di paper trading persistono artifact operativi in `data/operations/{date}.json` e report di rischio in `data/risk/risk_report_{date}.json`.
+- Il monitoring settings service espone anche `MLCOUNCIL_AUTOMATION_PAUSED`, `MLCOUNCIL_MAX_DAILY_ORDERS`, `MLCOUNCIL_MAX_TURNOVER` e `MLCOUNCIL_MAX_POSITION_SIZE`.
+- Le convenzioni operative di Fase 3 sono riepilogate in [`docs/fase3-operational-controls.md`](./docs/fase3-operational-controls.md).
+
 ### Run the Pipeline (Demo)
 
 ```bash
@@ -209,6 +219,18 @@ Access at: http://localhost:8000
 |--------|----------|-------------|
 | GET | `/api/monitoring/alerts` | Current active alerts |
 | GET | `/api/monitoring/alerts/history` | Alert history |
+
+### Trading
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/trading/status` | Alpaca paper status + runtime flags |
+| GET | `/api/trading/orders/latest` | Latest order date |
+| GET | `/api/trading/orders/pending/{date}` | Pending orders for date |
+| GET | `/api/trading/preflight/{date}` | Pre-trade risk and reconciliation snapshot |
+| GET | `/api/trading/reconcile/{date}` | Target vs current positions summary |
+| POST | `/api/trading/execute` | Execute paper orders, blocked with `409` on hard stops |
+| POST | `/api/trading/liquidate` | Liquidate all current paper positions |
+| GET | `/api/trading/history` | Local trade log history |
 
 ## Configuration
 

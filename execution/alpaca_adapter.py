@@ -131,6 +131,13 @@ class AlpacaLiveNode:
         except Exception:
             return None
 
+    def get_latest_price(self, symbol: str) -> Optional[float]:
+        try:
+            latest = self._api.get_latest_trade(symbol)
+            return float(latest.price)
+        except Exception:
+            return None
+
     def get_all_positions(self) -> pd.DataFrame:
         try:
             positions = self._api.list_positions()

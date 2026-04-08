@@ -1,34 +1,40 @@
-"""Trading service — executes orders to Alpaca Paper with safety guards."""
+"""Trading service - executes orders to Alpaca Paper with safety guards."""
 
 from __future__ import annotations
 
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
 
+from runtime_env import get_runtime_profile, load_runtime_env
+
 if TYPE_CHECKING:
-    from execution.alpaca_adapter import AlpacaLiveNode, AlpacaConfig, TradingMode
+    from execution.alpaca_adapter import AlpacaConfig, AlpacaLiveNode
 
 _ROOT = Path(__file__).parents[2]
 TRADE_LOG_DIR = _ROOT / "data" / "paper_trades"
+OPERATIONS_DIR = _ROOT / "data" / "operations"
 ORDERS_DIR = _ROOT / "data" / "orders"
 _TRADE_LOG_LOCK = threading.Lock()
 
 
 class TradingService:
     def __init__(self):
-        from runtime_env import load_runtime_env
         load_runtime_env()
         self._node: Optional["AlpacaLiveNode"] = None
         self._config: Optional["AlpacaConfig"] = None
+        self._risk_engine = None
+        self._alert_dispatcher = None
 
     def _get_config(self) -> "AlpacaConfig":
         if self._config is None:
             from execution.alpaca_adapter import AlpacaConfig
+
             self._config = AlpacaConfig.from_env()
         return self._config
 
@@ -36,9 +42,25 @@ class TradingService:
     def node(self) -> "AlpacaLiveNode":
         if self._node is None:
             from execution.alpaca_adapter import AlpacaLiveNode
-            config = self._get_config()
-            self._node = AlpacaLiveNode(config)
+
+            self._node = AlpacaLiveNode(self._get_config())
         return self._node
+
+    @property
+    def risk_engine(self):
+        if getattr(self, "_risk_engine", None) is None:
+            from council.risk_engine import RiskEngine
+
+            self._risk_engine = RiskEngine()
+        return self._risk_engine
+
+    @property
+    def alert_dispatcher(self):
+        if getattr(self, "_alert_dispatcher", None) is None:
+            from council.alerts import AlertDispatcher
+
+            self._alert_dispatcher = AlertDispatcher()
+        return self._alert_dispatcher
 
     @property
     def is_paper(self) -> bool:
@@ -46,20 +68,38 @@ class TradingService:
         return config.mode.value == "paper"
 
     def get_status(self) -> dict:
-        """Return Alpaca connection status and account info."""
-        if not self.is_paper:
-            return {"error": "Live trading blocked — paper mode only"}
+        """Return Alpaca connection status, runtime state, and account info."""
+        guard_error = self._paper_guard_error()
+        base = {
+            "connected": False,
+            "paper": self.is_paper,
+            "runtime_profile": get_runtime_profile(),
+            "paused": self._is_automation_paused(),
+            "kill_switch_active": self._is_automation_paused(),
+            "paper_guard_ok": guard_error is None,
+            "account": {},
+            "positions": [],
+        }
+        if guard_error:
+            base["error"] = guard_error
+            return base
+
         try:
             account = self.node.get_account_info()
             positions = self.node.get_all_positions()
-            return {
-                "connected": True,
-                "paper": self.is_paper,
-                "account": account,
-                "positions": positions.to_dict(orient="records") if not positions.empty else [],
-            }
-        except Exception as e:
-            return {"connected": False, "error": str(e)}
+            base.update(
+                {
+                    "connected": True,
+                    "account": account,
+                    "positions": (
+                        positions.to_dict(orient="records") if not positions.empty else []
+                    ),
+                }
+            )
+            return base
+        except Exception as exc:  # noqa: BLE001
+            base["error"] = str(exc)
+            return base
 
     def get_pending_orders(self, date: str) -> list[dict]:
         """Load orders from parquet for given date."""
@@ -78,29 +118,46 @@ class TradingService:
             return None
         return files[-1].stem
 
-    def _validate_order(self, order: dict, account: dict, positions: pd.DataFrame) -> tuple[bool, str]:
+    def get_reconciliation(self, date: str) -> dict[str, Any]:
+        """Return current-vs-target reconciliation for a trade date."""
+        return self.build_pretrade_snapshot(date)["reconciliation"]
+
+    def build_pretrade_snapshot(self, date: str) -> dict[str, Any]:
+        """Build the pre-trade operational snapshot for a trade date."""
+        context = self._prepare_execution_context(date)
+        return self._public_context(context)
+
+    def _validate_order(
+        self,
+        order: dict,
+        account: dict,
+        positions: pd.DataFrame,
+    ) -> tuple[bool, str]:
         """Validate single order against safety limits."""
+        del positions  # reserved for richer checks
+
         max_position = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.10"))
         portfolio_value = float(account.get("portfolio_value", 0))
         if portfolio_value <= 0:
             return False, "No buying power"
 
         symbol = order.get("ticker")
-        direction = order.get("direction", "buy").lower()
-        quantity = order.get("quantity", 0)
-
+        direction = str(order.get("direction", "buy")).lower()
+        quantity = int(order.get("share_quantity") or order.get("quantity") or 0)
         if quantity <= 0:
             return False, f"Invalid quantity for {symbol}"
 
         if direction == "buy":
-            # Use target_weight from the optimizer output; fall back to
-            # quantity/portfolio_value for legacy order formats that include price.
             target_weight = order.get("target_weight")
             if target_weight is not None:
                 weight = float(target_weight)
             else:
-                price = order.get("price", 0)
-                weight = (quantity * price) / portfolio_value if price > 0 else 0.0
+                price = float(order.get("estimated_price") or order.get("price") or 0.0)
+                requested_notional = float(
+                    order.get("requested_notional") or quantity * max(price, 0.0)
+                )
+                weight = requested_notional / portfolio_value if requested_notional > 0 else 0.0
+
             if weight > max_position:
                 return False, f"{symbol} exceeds max position {max_position:.0%}"
 
@@ -108,84 +165,524 @@ class TradingService:
 
     def execute_orders(self, date: str) -> dict:
         """Execute pending orders for date to Alpaca Paper."""
-        if not self.is_paper:
-            return {"error": "Live trading blocked — paper mode only"}
+        context = self._prepare_execution_context(date)
+        snapshot = self._public_context(context)
 
-        try:
-            account = self.node.get_account_info()
-            positions_df = self.node.get_all_positions()
-            orders = self.get_pending_orders(date)
-            lineage = self._extract_lineage(orders)
+        if snapshot["pretrade"]["blocked"]:
+            operations_path = self._write_operations(
+                date,
+                self._operation_payload(
+                    snapshot=snapshot,
+                    trade_status="blocked",
+                    orders_submitted=0,
+                    orders_rejected=0,
+                    liquidations=0,
+                    warnings=snapshot["pretrade"].get("warnings", []),
+                    errors=[snapshot["pretrade"]["reason"]],
+                ),
+            )
+            return {
+                "error": snapshot["pretrade"]["reason"],
+                "lineage": snapshot["lineage"],
+                "pretrade": snapshot["pretrade"],
+                "reconciliation": snapshot["reconciliation"],
+                "operations_path": str(operations_path),
+            }
 
-            if not orders:
-                return {"error": f"No orders found for {date}"}
+        account = context["account"]
+        positions_df = context["positions_df"]
+        orders = context["orders"]
+        normalized_orders = context["normalized_orders"]
 
-            max_daily = int(os.getenv("MLCOUNCIL_MAX_DAILY_ORDERS", "20"))
-            if len(orders) > max_daily:
-                return {"error": f"Order count {len(orders)} exceeds max {max_daily}"}
+        target_tickers = {order["ticker"] for order in orders}
+        liquidate_results = []
+        if not positions_df.empty and "symbol" in positions_df.columns:
+            for _, pos in positions_df.iterrows():
+                if pos["symbol"] not in target_tickers:
+                    result = self.node.submit_order(pos["symbol"], int(pos["qty"]), "sell")
+                    liquidate_results.append(result)
 
-            target_tickers = {o["ticker"] for o in orders}
+        order_results = []
+        for order in normalized_orders:
+            symbol = order["ticker"]
+            direction = order["direction"]
+            quantity = int(order["share_quantity"])
 
-            liquidate_results = []
-            if not positions_df.empty:
-                for _, pos in positions_df.iterrows():
-                    if pos["symbol"] not in target_tickers:
-                        result = self.node.submit_order(pos["symbol"], int(pos["qty"]), "sell")
-                        liquidate_results.append(result)
+            valid, msg = self._validate_order(order, account, positions_df)
+            if not valid:
+                order_results.append(
+                    {"symbol": symbol, "status": "rejected", "reason": msg}
+                )
+                continue
 
-            order_results = []
-            for order in orders:
-                symbol = order["ticker"]
-                direction = order["direction"]
-                quantity = int(order["quantity"])
+            result = self.node.submit_order(symbol, quantity, direction)
+            order_results.append(
+                {
+                    **result,
+                    "symbol": symbol,
+                    "requested_notional": float(order["requested_notional"]),
+                    "share_quantity": quantity,
+                    "estimated_price": float(order["estimated_price"]),
+                }
+            )
 
-                valid, msg = self._validate_order(order, account, positions_df)
-                if not valid:
-                    order_results.append({"symbol": symbol, "status": "rejected", "reason": msg})
-                    continue
+        reconciliation = self._build_reconciliation(
+            date=date,
+            orders=orders,
+            normalized_orders=normalized_orders,
+            positions_df=positions_df,
+            account=account,
+            order_results=order_results,
+        )
+        snapshot["reconciliation"] = reconciliation
 
-                result = self.node.submit_order(symbol, quantity, direction)
-                order_results.append(result)
+        rejected = [result for result in order_results if result.get("status") == "rejected"]
+        if rejected:
+            self._dispatch_alert(
+                severity="warning",
+                check_type="paper_execution_degraded",
+                message=f"{len(rejected)} orders rejected during execution for {date}",
+                recommendation="Review the rejected symbols before rerunning execute.",
+                metric_value=float(len(rejected)),
+                threshold=0.0,
+            )
 
-            self._log_trade(date, {
+        self._log_trade(
+            date,
+            {
                 "orders": order_results,
                 "liquidations": liquidate_results,
                 "account": account,
-            })
+                "lineage": snapshot["lineage"],
+                "pretrade": snapshot["pretrade"],
+                "reconciliation": reconciliation,
+            },
+        )
 
-            return {
-                "date": date,
-                "orders_submitted": len([r for r in order_results if r.get("status") != "rejected"]),
-                "orders_rejected": len([r for r in order_results if r.get("status") == "rejected"]),
-                "liquidations": len(liquidate_results),
-                "lineage": lineage,
-                "results": order_results,
-            }
+        operations_path = self._write_operations(
+            date,
+            self._operation_payload(
+                snapshot=snapshot,
+                trade_status="degraded" if rejected else "success",
+                orders_submitted=len([r for r in order_results if r.get("status") != "rejected"])
+                + len(liquidate_results),
+                orders_rejected=len(rejected),
+                liquidations=len(liquidate_results),
+                warnings=snapshot["pretrade"].get("warnings", []),
+                errors=[],
+            ),
+        )
 
-        except Exception as e:
-            return {"error": str(e)}
+        return {
+            "date": date,
+            "orders_submitted": len(
+                [result for result in order_results if result.get("status") != "rejected"]
+            ),
+            "orders_rejected": len(rejected),
+            "liquidations": len(liquidate_results),
+            "lineage": snapshot["lineage"],
+            "pretrade": snapshot["pretrade"],
+            "reconciliation": reconciliation,
+            "operations_path": str(operations_path),
+            "results": order_results,
+        }
 
     def liquidate_all(self) -> dict:
         """Liquidate all current positions."""
-        if not self.is_paper:
-            return {"error": "Live trading blocked"}
+        guard_error = self._paper_guard_error()
+        if guard_error:
+            return {"error": guard_error}
         try:
             results = self.node.liquidate_all()
             return {"liquidated": len(results), "results": results}
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
 
     def get_trade_history(self, days: int = 7) -> list[dict]:
         """Load trade history from log files."""
         if not TRADE_LOG_DIR.exists():
             return []
         logs = []
-        for pq in sorted(TRADE_LOG_DIR.glob("*.json"))[-days:]:
+        for payload in sorted(TRADE_LOG_DIR.glob("*.json"))[-days:]:
             try:
-                logs.extend(json.loads(pq.read_text()))
-            except Exception:
+                logs.extend(json.loads(payload.read_text()))
+            except Exception:  # noqa: BLE001
                 pass
         return logs
+
+    def _prepare_execution_context(self, date: str) -> dict[str, Any]:
+        runtime_profile = get_runtime_profile()
+        paused = self._is_automation_paused()
+        guard_error = self._paper_guard_error()
+
+        account: dict[str, Any] = {}
+        positions_df = pd.DataFrame()
+        connection_error: str | None = None
+        if guard_error is None:
+            try:
+                account = self.node.get_account_info()
+                positions_df = self.node.get_all_positions()
+            except Exception as exc:  # noqa: BLE001
+                connection_error = str(exc)
+                guard_error = connection_error
+
+        orders = self.get_pending_orders(date)
+        lineage = self._extract_lineage(orders)
+        normalized_orders = [
+            self._normalize_order(order, positions_df)
+            for order in orders
+        ]
+
+        reconciliation = self._build_reconciliation(
+            date=date,
+            orders=orders,
+            normalized_orders=normalized_orders,
+            positions_df=positions_df,
+            account=account,
+        )
+
+        pretrade = {
+            "blocked": False,
+            "reason": None,
+            "breaches": [],
+            "warnings": [],
+            "risk_report_path": None,
+            "order_count": len(orders),
+            "projected_turnover": reconciliation["projected_turnover"],
+            "invalid_orders": [],
+        }
+
+        if guard_error:
+            pretrade["blocked"] = True
+            pretrade["reason"] = guard_error
+        elif not orders:
+            pretrade["blocked"] = True
+            pretrade["reason"] = f"No orders found for {date}"
+        elif paused:
+            pretrade["blocked"] = True
+            pretrade["reason"] = "Trading paused by kill switch"
+        else:
+            max_daily = int(os.getenv("MLCOUNCIL_MAX_DAILY_ORDERS", "20"))
+            max_turnover = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.30"))
+
+            if len(orders) > max_daily:
+                pretrade["blocked"] = True
+                pretrade["reason"] = f"Order count {len(orders)} exceeds max {max_daily}"
+            else:
+                invalid_orders = []
+                for order in normalized_orders:
+                    valid, msg = self._validate_order(order, account, positions_df)
+                    if not valid:
+                        invalid_orders.append({"symbol": order["ticker"], "reason": msg})
+
+                pretrade["invalid_orders"] = invalid_orders
+                if invalid_orders:
+                    pretrade["warnings"].append(
+                        f"{len(invalid_orders)} orders will be rejected by per-order limits"
+                    )
+
+                risk_report = self._compute_projected_risk(
+                    date=date,
+                    normalized_orders=normalized_orders,
+                    positions_df=positions_df,
+                    account=account,
+                )
+                pretrade["risk_report_path"] = risk_report["path"]
+                pretrade["breaches"] = risk_report["breaches"]
+                pretrade["warnings"].extend(risk_report["warnings"])
+                if risk_report["blocked"]:
+                    pretrade["blocked"] = True
+                    pretrade["reason"] = risk_report["reason"]
+                elif reconciliation["projected_turnover"] > max_turnover:
+                    pretrade["blocked"] = True
+                    pretrade["reason"] = (
+                        f"Projected turnover {reconciliation['projected_turnover']:.2%} "
+                        f"exceeds limit {max_turnover:.2%}"
+                    )
+
+        snapshot = {
+            "date": date,
+            "paper": self.is_paper,
+            "paused": paused,
+            "runtime_profile": runtime_profile,
+            "lineage": lineage,
+            "pretrade": pretrade,
+            "reconciliation": reconciliation,
+            "paper_guard_ok": guard_error is None,
+            "connection_error": connection_error,
+            "account": account,
+            "positions": positions_df.to_dict(orient="records") if not positions_df.empty else [],
+        }
+
+        if pretrade["blocked"] and pretrade["reason"]:
+            severity = "critical" if pretrade["breaches"] else "warning"
+            self._dispatch_alert(
+                severity=severity,
+                check_type="pretrade_risk",
+                message=pretrade["reason"],
+                recommendation="Resolve the hard stop before executing paper orders.",
+                metric_value=float(len(pretrade["breaches"])),
+                threshold=0.0,
+            )
+
+        snapshot["orders"] = orders
+        snapshot["normalized_orders"] = normalized_orders
+        snapshot["positions_df"] = positions_df
+        snapshot["account"] = account
+        return snapshot
+
+    def _paper_guard_error(self) -> str | None:
+        if not self.is_paper:
+            return "Live trading blocked - paper mode only"
+
+        base_url = os.getenv("ALPACA_BASE_URL", "").strip()
+        if base_url and "paper-api.alpaca.markets" not in base_url:
+            return "Trading blocked - ALPACA_BASE_URL must point to Alpaca paper"
+
+        return None
+
+    def _is_automation_paused(self) -> bool:
+        flag = os.getenv("MLCOUNCIL_AUTOMATION_PAUSED", "").strip().lower()
+        return flag in {"1", "true", "yes", "on"}
+
+    def _normalize_order(self, order: dict, positions_df: pd.DataFrame) -> dict[str, Any]:
+        symbol = str(order.get("ticker"))
+        raw_quantity = float(order.get("quantity", 0) or 0)
+        target_weight = order.get("target_weight")
+
+        current_position_qty = 0
+        current_price = 0.0
+        if not positions_df.empty and "symbol" in positions_df.columns:
+            matches = positions_df.loc[positions_df["symbol"] == symbol]
+            if not matches.empty:
+                row = matches.iloc[0]
+                current_position_qty = int(float(row.get("qty", 0) or 0))
+                current_price = float(
+                    row.get("current_price", row.get("avg_price", 0.0)) or 0.0
+                )
+
+        estimated_price = float(order.get("price") or 0.0)
+        if estimated_price <= 0:
+            estimated_price = current_price
+        if estimated_price <= 0:
+            try:
+                estimated_price = float(self.node.get_latest_price(symbol))
+            except Exception:  # noqa: BLE001
+                estimated_price = 0.0
+
+        if target_weight is not None:
+            requested_notional = abs(raw_quantity)
+            share_quantity = int(requested_notional / estimated_price) if estimated_price > 0 else 0
+        else:
+            share_quantity = int(raw_quantity)
+            requested_notional = (
+                abs(share_quantity * estimated_price) if estimated_price > 0 else 0.0
+            )
+
+        return {
+            **order,
+            "direction": str(order.get("direction", "buy")).lower(),
+            "estimated_price": estimated_price,
+            "requested_notional": requested_notional,
+            "share_quantity": share_quantity,
+            "current_position_qty": current_position_qty,
+        }
+
+    def _build_reconciliation(
+        self,
+        *,
+        date: str,
+        orders: list[dict],
+        normalized_orders: list[dict],
+        positions_df: pd.DataFrame,
+        account: dict,
+        order_results: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        target_symbols = sorted({order["ticker"] for order in orders})
+        current_symbols = []
+        if not positions_df.empty and "symbol" in positions_df.columns:
+            current_symbols = sorted(positions_df["symbol"].astype(str).tolist())
+
+        target_set = set(target_symbols)
+        current_set = set(current_symbols)
+        portfolio_value = float(account.get("portfolio_value", 0) or 0)
+        projected_turnover = 0.0
+        if portfolio_value > 0:
+            projected_turnover = sum(
+                float(order.get("requested_notional", 0.0)) for order in normalized_orders
+            ) / portfolio_value
+
+        reconciliation = {
+            "date": date,
+            "target_symbols": target_symbols,
+            "current_symbols": current_symbols,
+            "symbols_to_open": sorted(target_set - current_set),
+            "symbols_to_close": sorted(current_set - target_set),
+            "symbols_to_resize": sorted(target_set & current_set),
+            "projected_turnover": projected_turnover,
+        }
+
+        if order_results is not None:
+            reconciliation["accepted_symbols"] = sorted(
+                result["symbol"]
+                for result in order_results
+                if result.get("status") != "rejected" and result.get("symbol")
+            )
+            reconciliation["rejected_symbols"] = sorted(
+                result["symbol"]
+                for result in order_results
+                if result.get("status") == "rejected" and result.get("symbol")
+            )
+
+        return reconciliation
+
+    def _compute_projected_risk(
+        self,
+        *,
+        date: str,
+        normalized_orders: list[dict],
+        positions_df: pd.DataFrame,
+        account: dict,
+    ) -> dict[str, Any]:
+        from council import risk_engine as risk_mod
+        from council.risk_engine import Position
+
+        portfolio_value = float(account.get("portfolio_value", 0) or 0)
+        target_symbols = sorted({order["ticker"] for order in normalized_orders})
+
+        projected_positions: list[Position] = []
+        for order in normalized_orders:
+            target_weight = order.get("target_weight")
+            if target_weight is None:
+                delta_qty = order["share_quantity"]
+                if order["direction"] == "sell":
+                    delta_qty *= -1
+                projected_qty = max(order["current_position_qty"] + delta_qty, 0)
+                if projected_qty <= 0:
+                    continue
+                price = float(order["estimated_price"] or 0.0) or 1.0
+                current_value = projected_qty * price
+            else:
+                target_weight = float(target_weight)
+                if target_weight <= 0:
+                    continue
+                current_value = portfolio_value * target_weight
+                price = float(order["estimated_price"] or 0.0) or 1.0
+                projected_qty = max(int(current_value / price), 1)
+
+            projected_positions.append(
+                Position(
+                    symbol=order["ticker"],
+                    quantity=projected_qty,
+                    avg_price=price,
+                    current_price=price,
+                )
+            )
+
+        returns = self._load_historical_returns(target_symbols)
+        report = self.risk_engine.compute_full_risk(
+            positions=projected_positions,
+            returns=returns,
+            portfolio_value=portfolio_value,
+        )
+        risk_mod.RISK_DIR.mkdir(parents=True, exist_ok=True)
+        path = self.risk_engine.save_report(report, date=date)
+        breaches = [
+            {
+                "limit_name": breach.limit_name,
+                "current_value": breach.current_value,
+                "limit_value": breach.limit_value,
+                "severity": breach.severity,
+                "message": breach.message,
+            }
+            for breach in report.breaches
+        ]
+        high_breaches = [
+            breach
+            for breach in breaches
+            if str(breach["severity"]).upper() == "HIGH"
+        ]
+        warnings = [
+            breach["message"]
+            for breach in breaches
+            if str(breach["severity"]).upper() != "HIGH"
+        ]
+
+        return {
+            "path": str(path),
+            "breaches": breaches,
+            "warnings": warnings,
+            "blocked": bool(high_breaches),
+            "reason": high_breaches[0]["message"] if high_breaches else None,
+        }
+
+    def _load_historical_returns(
+        self,
+        symbols: list[str],
+        lookback_days: int = 90,
+    ) -> pd.DataFrame:
+        ohlcv_dir = _ROOT / "data" / "ohlcv"
+        frames = []
+        for symbol in symbols:
+            ticker_dir = ohlcv_dir / symbol
+            if not ticker_dir.exists():
+                continue
+            for payload in sorted(ticker_dir.glob("*.parquet")):
+                try:
+                    frame = pd.read_parquet(payload, columns=["valid_time", "adj_close"])
+                except Exception:  # noqa: BLE001
+                    continue
+                if frame.empty:
+                    continue
+                frame = frame.copy()
+                frame["ticker"] = symbol
+                frames.append(frame)
+
+        if not frames:
+            return pd.DataFrame(columns=symbols)
+
+        history = pd.concat(frames, ignore_index=True)
+        history = history.sort_values(["ticker", "valid_time"])
+        history["ret_1d"] = history.groupby("ticker")["adj_close"].pct_change()
+        wide = history.pivot(index="valid_time", columns="ticker", values="ret_1d")
+        return wide.dropna(how="all").tail(lookback_days)
+
+    def _operation_payload(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        trade_status: str,
+        orders_submitted: int,
+        orders_rejected: int,
+        liquidations: int,
+        warnings: list[str],
+        errors: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "date": snapshot["date"],
+            "trade_status": trade_status,
+            "runtime_profile": snapshot["runtime_profile"],
+            "paused": snapshot["paused"],
+            "paper": snapshot["paper"],
+            "paper_guard_ok": snapshot["paper_guard_ok"],
+            "orders_generated": snapshot["pretrade"]["order_count"],
+            "orders_submitted": orders_submitted,
+            "orders_rejected": orders_rejected,
+            "liquidations": liquidations,
+            "lineage": snapshot["lineage"],
+            "pretrade": snapshot["pretrade"],
+            "reconciliation": snapshot["reconciliation"],
+            "warnings": warnings,
+            "errors": errors,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _write_operations(self, date: str, data: dict[str, Any]) -> Path:
+        OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        path = OPERATIONS_DIR / f"{date}.json"
+        path.write_text(json.dumps(data, indent=2, default=str))
+        return path
 
     def _log_trade(self, date: str, data: dict) -> None:
         TRADE_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -195,10 +692,41 @@ class TradingService:
             if path.exists():
                 try:
                     existing = json.loads(path.read_text())
-                except Exception:
+                except Exception:  # noqa: BLE001
                     existing = []
             existing.append(data)
-            path.write_text(json.dumps(existing, indent=2))
+            path.write_text(json.dumps(existing, indent=2, default=str))
+
+    def _dispatch_alert(
+        self,
+        *,
+        severity: str,
+        check_type: str,
+        message: str,
+        recommendation: str,
+        metric_value: float,
+        threshold: float,
+    ) -> None:
+        try:
+            from council.alerts import AlertResult, Severity
+
+            level = Severity.CRITICAL if severity == "critical" else Severity.WARNING
+            self.alert_dispatcher.dispatch(
+                [
+                    AlertResult(
+                        is_alert=True,
+                        severity=level,
+                        model_name="trading",
+                        check_type=check_type,
+                        message=message,
+                        recommendation=recommendation,
+                        metric_value=metric_value,
+                        threshold=threshold,
+                    )
+                ]
+            )
+        except Exception:  # noqa: BLE001
+            return
 
     def _extract_lineage(self, orders: list[dict]) -> dict[str, str]:
         if not orders:
@@ -215,6 +743,21 @@ class TradingService:
             key: str(first[key])
             for key in keys
             if key in first and first[key] is not None
+        }
+
+    def _public_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "date": context["date"],
+            "paper": context["paper"],
+            "paused": context["paused"],
+            "runtime_profile": context["runtime_profile"],
+            "lineage": context["lineage"],
+            "pretrade": context["pretrade"],
+            "reconciliation": context["reconciliation"],
+            "paper_guard_ok": context["paper_guard_ok"],
+            "connection_error": context["connection_error"],
+            "account": context["account"],
+            "positions": context["positions"],
         }
 
 
