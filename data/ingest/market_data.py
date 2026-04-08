@@ -33,12 +33,30 @@ def _load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _config_settings(cfg: dict) -> dict:
+    return cfg.get("settings") or cfg.get("universe", {}).get("settings", {})
+
+
+def _config_tickers(cfg: dict) -> list[str]:
+    universe_cfg = cfg.get("universe", {})
+    if isinstance(universe_cfg.get("tickers"), list):
+        return universe_cfg["tickers"]
+
+    tickers: list[str] = []
+    for bucket_name, bucket_values in universe_cfg.items():
+        if bucket_name == "settings" or not isinstance(bucket_values, list):
+            continue
+        tickers.extend(bucket_values)
+    return tickers
+
+
 def _transaction_time(cfg: dict) -> datetime:
     """Return today at the configured post-market time in UTC."""
-    tz = ZoneInfo(cfg["settings"]["transaction_timezone"])
+    settings = _config_settings(cfg)
+    tz = ZoneInfo(settings["transaction_timezone"])
     local_dt = datetime.now(tz).replace(
-        hour=cfg["settings"]["transaction_time_hour"],
-        minute=cfg["settings"]["transaction_time_minute"],
+        hour=settings["transaction_time_hour"],
+        minute=settings["transaction_time_minute"],
         second=0,
         microsecond=0,
     )
@@ -132,7 +150,7 @@ def _download_ticker(
 
 
 def _save_by_year(df: pl.DataFrame, data_dir: Path) -> None:
-    """Partition by ticker + year and write Parquet files."""
+    """Override writer to preserve prior yearly history across daily ingests."""
     ticker = df["ticker"][0]
     df = df.with_columns(pl.col("valid_time").dt.year().alias("_year"))
     for year, group in df.group_by("_year"):
@@ -140,8 +158,16 @@ def _save_by_year(df: pl.DataFrame, data_dir: Path) -> None:
         out_dir = data_dir / "ohlcv" / ticker
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{year_val}.parquet"
-        group.drop("_year").write_parquet(out_path)
-        logger.info(f"[{ticker}] saved {len(group)} rows → {out_path}")
+        to_store = group.drop("_year")
+        if out_path.exists():
+            existing = pl.read_parquet(out_path)
+            to_store = (
+                pl.concat([existing, to_store], how="vertical_relaxed")
+                .sort(["ticker", "valid_time", "transaction_time"])
+                .unique(["ticker", "valid_time"], keep="last")
+            )
+        to_store.write_parquet(out_path)
+        logger.info(f"[{ticker}] saved {len(to_store)} rows -> {out_path}")
 
 
 def download_universe(
@@ -159,11 +185,12 @@ def download_universe(
         data_dir: Override output root; defaults to config data_dir.
     """
     cfg = _load_config()
-    tickers = tickers or cfg["universe"]["tickers"]
+    settings = _config_settings(cfg)
+    tickers = tickers or _config_tickers(cfg)
     end = end or datetime.today().strftime("%Y-%m-%d")
-    data_dir = data_dir or (_ROOT / cfg["settings"]["data_dir"])
+    data_dir = data_dir or (_ROOT / settings["data_dir"])
     tx_time = _transaction_time(cfg)
-    ff_limit = cfg["settings"]["forward_fill_max_days"]
+    ff_limit = settings["forward_fill_max_days"]
 
     logger.info(f"Downloading universe: {len(tickers)} tickers {start}..{end}")
     for ticker in tickers:
@@ -190,11 +217,12 @@ def download_daily(
     import pandas as pd
 
     cfg = _load_config()
-    tickers = tickers or cfg["universe"]["tickers"]
+    settings = _config_settings(cfg)
+    tickers = tickers or _config_tickers(cfg)
     date = date or datetime.today().strftime("%Y-%m-%d")
-    data_dir = data_dir or (_ROOT / cfg["settings"]["data_dir"])
+    data_dir = data_dir or (_ROOT / settings["data_dir"])
     tx_time = _transaction_time(cfg)
-    ff_limit = cfg["settings"]["forward_fill_max_days"]
+    ff_limit = settings["forward_fill_max_days"]
 
     # yfinance end is exclusive — add one calendar day
     end = (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")

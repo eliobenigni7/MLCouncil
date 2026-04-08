@@ -2,18 +2,23 @@
 
 Optimisation problem (cvxpy)
 ----------------------------
-    maximize   (alpha ⊙ multipliers)' w
+    maximize   (alpha ⊙ multipliers)' w - tc_penalty * turnover
     subject to
         sum(w)           == 1            budget constraint
         w                >= 0            long-only (PoC)
         w                <= max_position concentration limit
         |w - w_curr|_1   <= max_turnover one-way turnover cap
         w' Σ w           <= σ_daily²    portfolio vol cap
+        sector[w]        <= sector_cap   sector exposure cap
 
 Post-processing
 ---------------
 After solving, weights below ``min_position`` are zeroed and the remainder
 is renormalized so the budget constraint is still satisfied exactly.
+
+Transaction Cost Model
+----------------------
+TC = sum(|dw_i|) * (commission_bps + slippage_bps) / 10000 * portfolio_value
 """
 
 from __future__ import annotations
@@ -21,6 +26,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from loguru import logger
+
+from data.features.sector_exposure import (
+    SECTOR_MAP,
+    UNIQUE_SECTORS,
+    compute_sector_exposures,
+    compute_beta_vector,
+)
 
 
 class PortfolioConstructor:
@@ -38,6 +50,18 @@ class PortfolioConstructor:
         Enforce non-negative weights (PoC: True).
     max_vol_ann : float
         Annualised portfolio volatility cap (default 20 %).
+    sector_cap : float
+        Maximum weight per sector (default 25 %).
+    beta_neutral : bool
+        If True, enforce beta neutrality (default False).
+    max_beta_exposure : float
+        Maximum absolute portfolio beta if beta_neutral (default 0.3).
+    commission_bps : float
+        Commission in basis points (default 1.0 bps).
+    slippage_bps : float
+        Slippage in basis points (default 3.0 bps).
+    tc_lambda : float
+        Transaction cost penalty weight (default 1.0).
     """
 
     def __init__(self) -> None:
@@ -46,10 +70,23 @@ class PortfolioConstructor:
         self.max_turnover: float = 0.30
         self.long_only: bool = True
         self.max_vol_ann: float = 0.20
+        self.sector_cap: float = 0.25
+        self.beta_neutral: bool = False
+        self.max_beta_exposure: float = 0.30
+        self.commission_bps: float = 1.0
+        self.slippage_bps: float = 3.0
+        self.tc_lambda: float = 1.0
 
-    # ------------------------------------------------------------------
-    # optimize
-    # ------------------------------------------------------------------
+    def compute_transaction_cost(
+        self,
+        w_old: np.ndarray,
+        w_new: np.ndarray,
+        portfolio_value: float = 1.0,
+    ) -> float:
+        turnover = np.abs(w_new - w_old).sum() / 2
+        cost_bps = self.commission_bps + self.slippage_bps
+        tc_cost = turnover * cost_bps / 10000 * portfolio_value
+        return tc_cost
 
     def optimize(
         self,
@@ -57,6 +94,8 @@ class PortfolioConstructor:
         position_multipliers: pd.Series,
         current_weights: pd.Series,
         returns_covariance: pd.DataFrame,
+        market_returns: pd.Series = None,
+        prices: pd.Series = None,
     ) -> pd.Series:
         """Solve the constrained mean-variance optimisation.
 
@@ -70,24 +109,31 @@ class PortfolioConstructor:
             Current portfolio weights (sum to 1, may be empty for day 1).
         returns_covariance:
             Daily returns covariance matrix (ticker × ticker).
+        market_returns:
+            Series of market returns for beta calculation (optional).
+        prices:
+            Current prices for TC estimation (optional).
 
         Returns
         -------
         pd.Series(index=ticker, values=target_weight) summing to 1.0.
         """
-        import cvxpy as cp
-
         tickers = alpha_signals.index.tolist()
         n = len(tickers)
 
-        # Scale alpha by conformal position multipliers
+        try:
+            import cvxpy as cp
+        except ModuleNotFoundError:
+            logger.warning(
+                "cvxpy not installed. Returning equal-weight fallback."
+            )
+            return pd.Series(np.ones(n) / n, index=tickers, name="target_weight")
+
         mults = position_multipliers.reindex(alpha_signals.index).fillna(1.0)
         effective_alpha = (alpha_signals * mults).reindex(tickers).fillna(0.0).values
 
-        # Align current weights (zero for tickers not yet held)
         w_curr = current_weights.reindex(tickers).fillna(0.0).values
 
-        # Covariance — symmetrize and add small diagonal for numerical stability
         cov_raw = (
             returns_covariance
             .reindex(index=tickers, columns=tickers)
@@ -96,12 +142,15 @@ class PortfolioConstructor:
         )
         cov = (cov_raw + cov_raw.T) / 2 + np.eye(n) * 1e-6
 
-        # Daily volatility cap
         max_vol_daily = self.max_vol_ann / np.sqrt(252)
 
         w = cp.Variable(n, name="weights")
 
-        objective = cp.Maximize(effective_alpha @ w)
+        alpha_objective = effective_alpha @ w
+
+        turnover = cp.norm1(w - w_curr) / 2
+        tc_cost = turnover * (self.commission_bps + self.slippage_bps) / 10000
+        objective = cp.Maximize(alpha_objective - self.tc_lambda * tc_cost)
 
         constraints: list = [
             cp.sum(w) == 1.0,
@@ -112,11 +161,26 @@ class PortfolioConstructor:
         if self.long_only:
             constraints.append(w >= 0.0)
 
+        if self.sector_cap < 1.0:
+            for sector in UNIQUE_SECTORS:
+                sector_tickers = [t for t in tickers if SECTOR_MAP.get(t) == sector]
+                if sector_tickers:
+                    sector_indices = [tickers.index(t) for t in sector_tickers]
+                    sector_exposure = cp.sum(w[sector_indices])
+                    constraints.append(sector_exposure <= self.sector_cap)
+
+        if self.beta_neutral and market_returns is not None:
+            beta_vec = compute_beta_vector(
+                returns_covariance[[t for t in tickers if t in returns_covariance.columns]],
+                market_returns,
+            ).reindex(tickers).fillna(1.0).values
+            portfolio_beta = w @ beta_vec
+            constraints.append(cp.abs(portfolio_beta) <= self.max_beta_exposure)
+
         prob = cp.Problem(objective, constraints)
 
-        # Try solvers in order of preference
         solved = False
-        for solver in (None, cp.SCS):          # None → cvxpy auto-selects
+        for solver in (None, cp.SCS):
             try:
                 if solver is None:
                     prob.solve(verbose=False)
@@ -137,7 +201,6 @@ class PortfolioConstructor:
 
         weights = np.clip(w.value, 0.0, None)
 
-        # Post-process: drop micro-positions below min_position
         weights[weights < self.min_position] = 0.0
         total = weights.sum()
         if total < 1e-9:
@@ -146,10 +209,6 @@ class PortfolioConstructor:
             weights /= total
 
         return pd.Series(weights, index=tickers, name="target_weight")
-
-    # ------------------------------------------------------------------
-    # compute_orders
-    # ------------------------------------------------------------------
 
     def compute_orders(
         self,

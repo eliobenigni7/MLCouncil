@@ -10,16 +10,19 @@ The predict() contract:
 
 from __future__ import annotations
 
-import pickle
+import hashlib
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 
+import joblib
 import pandas as pd
 import polars as pl
 
 
 class BaseModel(ABC):
-    name: str  # unique model identifier used in MLflow and logs
+    name: str
 
     @abstractmethod
     def fit(self, features: pl.DataFrame, targets: pd.Series) -> None:
@@ -55,16 +58,65 @@ class BaseModel(ABC):
             z-scored cross-sectionally within each date then concatenated.
         """
 
-    def save(self, path: str) -> None:
-        """Serialize the model to disk using pickle."""
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+    def save(self, path: str | Path, compute_hash: bool = True) -> str:
+        """Serialize the model to disk using joblib.
 
-    def load(self, path: str) -> None:
-        """Load model state from a pickle file into this instance."""
-        with open(path, "rb") as f:
-            saved = pickle.load(f)
-        self.__dict__.update(saved.__dict__)
+        Parameters
+        ----------
+        path: str or Path
+            Destination file path.
+        compute_hash: bool
+            If True, computes SHA256 hash and saves to .hash file.
+
+        Returns
+        -------
+        str
+            The hash of the saved model file.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(self, path)
+        if compute_hash:
+            file_hash = self._compute_file_hash(path)
+            hash_path = path.with_suffix(path.suffix + ".hash")
+            hash_path.write_text(file_hash)
+            return file_hash
+        return ""
+
+    def load(self, path: str | Path) -> None:
+        """Load model state from a joblib file into this instance.
+
+        Parameters
+        ----------
+        path: str or Path
+            Source file path.
+
+        Raises
+        ------
+        ValueError
+            If model hash does not match expected hash (if .hash file exists).
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Model file not found: {path}")
+
+        hash_path = path.with_suffix(path.suffix + ".hash")
+        if hash_path.exists():
+            expected_hash = hash_path.read_text().strip()
+            actual_hash = self._compute_file_hash(path)
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"Model hash mismatch for {path}. "
+                    f"Expected {expected_hash}, got {actual_hash}. "
+                    "Model may be corrupted."
+                )
+
+        loaded = joblib.load(path)
+        self.__dict__.update(loaded.__dict__)
+
+    @staticmethod
+    def _compute_file_hash(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def get_metadata(self) -> dict:
         """Return a metadata dictionary for logging and provenance tracking.

@@ -32,11 +32,29 @@ def _load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _config_settings(cfg: dict) -> dict:
+    return cfg.get("settings") or cfg.get("universe", {}).get("settings", {})
+
+
+def _config_tickers(cfg: dict) -> list[str]:
+    universe_cfg = cfg.get("universe", {})
+    if isinstance(universe_cfg.get("tickers"), list):
+        return universe_cfg["tickers"]
+
+    tickers: list[str] = []
+    for bucket_name, bucket_values in universe_cfg.items():
+        if bucket_name == "settings" or not isinstance(bucket_values, list):
+            continue
+        tickers.extend(bucket_values)
+    return tickers
+
+
 def _transaction_time(cfg: dict) -> datetime:
-    tz = ZoneInfo(cfg["settings"]["transaction_timezone"])
+    settings = _config_settings(cfg)
+    tz = ZoneInfo(settings["transaction_timezone"])
     local_dt = datetime.now(tz).replace(
-        hour=cfg["settings"]["transaction_time_hour"],
-        minute=cfg["settings"]["transaction_time_minute"],
+        hour=settings["transaction_time_hour"],
+        minute=settings["transaction_time_minute"],
         second=0,
         microsecond=0,
     )
@@ -101,9 +119,10 @@ def download_news(
         Polars DataFrame with deduplicated news records.
     """
     cfg = _load_config()
-    tickers = tickers or cfg["universe"]["tickers"]
+    settings = _config_settings(cfg)
+    tickers = tickers or _config_tickers(cfg)
     date = date or datetime.today().strftime("%Y-%m-%d")
-    data_dir = data_dir or (_ROOT / cfg["settings"]["data_dir"])
+    data_dir = data_dir or (_ROOT / settings["data_dir"])
     tx_time = _transaction_time(cfg)
 
     logger.info(f"Downloading news for {date}: {len(tickers)} tickers")

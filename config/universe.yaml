@@ -1,27 +1,37 @@
 universe:
-  tickers:
+  large_cap:
     - AAPL
     - MSFT
     - GOOGL
     - AMZN
     - META
     - NVDA
-    - TSLA
-    - JPM
-    - JNJ
-    - V
-    - UNH
-    - XOM
-    - WMT
-    - PG
-    - MA
 
-settings:
-  data_dir: data/raw
-  transaction_timezone: America/New_York
-  transaction_time_hour: 20
-  transaction_time_minute: 30
-  forward_fill_max_days: 2
+  mid_cap:
+    - ETSY
+    - DOCU
+    - UBER
+    - ABNB
+    - PLTR
+    - SNOW
+    - CRWD
+    - NET
+    - SQ
+    - SHOP
+    - FVRR
+    - ROKU
+    - DDOG
+
+  settings:
+    max_large_cap_weight: 0.08
+    max_mid_cap_weight: 0.05
+    min_liquidity: 1000000
+    rebalance_threshold: 0.02
+    data_dir: data/raw
+    transaction_timezone: America/New_York
+    transaction_time_hour: 20
+    transaction_time_minute: 30
+    forward_fill_max_days: 2
 
 macro:
   fred_series:

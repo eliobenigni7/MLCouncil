@@ -40,6 +40,18 @@ _REGIME_COLORS = {
 }
 
 
+def _color_with_alpha(color: str, alpha: float = 0.25) -> str:
+    """Convert a hex color to rgba while preserving existing rgb/rgba colors."""
+    if color.startswith("rgba(") or color.startswith("rgb("):
+        return color
+    if color.startswith("#") and len(color) == 7:
+        red = int(color[1:3], 16)
+        green = int(color[3:5], 16)
+        blue = int(color[5:7], 16)
+        return f"rgba({red}, {green}, {blue}, {alpha})"
+    return color
+
+
 # ============================================================================
 # Performance Tab
 # ============================================================================
@@ -424,7 +436,7 @@ def weight_evolution_chart(weights_history: pd.DataFrame) -> go.Figure:
             name=model.upper(),
             stackgroup="one",
             line=dict(width=0.5, color=color),
-            fillcolor=color.replace("#", "rgba(") if color.startswith("#") else color,
+            fillcolor=_color_with_alpha(color),
         ))
 
     fig.update_layout(

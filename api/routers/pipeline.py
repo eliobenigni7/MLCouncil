@@ -25,6 +25,10 @@ class PipelineStatusResponse(BaseModel):
     partition: str | None = None
 
 
+class LatestPartitionResponse(BaseModel):
+    partition: str | None = None
+
+
 @router.post("/run", response_model=TriggerRunResponse)
 async def trigger_run(req: TriggerRunRequest | None = None):
     partition = req.partition if req else None
@@ -45,3 +49,12 @@ async def pipeline_status():
         end_time=ps.end_time,
         partition=ps.partition,
     )
+
+
+@router.get("/latest-partition", response_model=LatestPartitionResponse)
+async def latest_partition():
+    try:
+        partition = await dagster_client.get_latest_partition_key()
+        return LatestPartitionResponse(partition=partition)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Dagster error: {e}")

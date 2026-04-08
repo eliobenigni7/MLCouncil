@@ -142,6 +142,23 @@ class TestCouncilAggregator:
         assert set(result.index) == set(tickers)
         assert result.index.name == "ticker"
 
+    def test_aggregate_handles_first_signal_history_row_with_misaligned_tickers(self):
+        """First aggregate call should initialize history frames without crashing."""
+        from council.aggregator import CouncilAggregator
+
+        agg = CouncilAggregator()
+        signals = {
+            "lgbm": pd.Series([1.0, -0.2], index=["AAPL", "MSFT"]),
+            "sentiment": pd.Series([0.5, 0.8], index=["MSFT", "GOOGL"]),
+        }
+
+        result = agg.aggregate(signals, "bull", date=date(2024, 3, 3))
+
+        assert not result.empty
+        assert set(result.index) == {"AAPL", "MSFT", "GOOGL"}
+        assert set(agg._ortho_monitor._signal_history["lgbm"].columns) == {"AAPL", "MSFT"}
+        assert set(agg._ortho_monitor._signal_history["sentiment"].columns) == {"MSFT", "GOOGL"}
+
     def test_update_performance_populates_ic_history(self):
         """update_performance should fill _ic_by_date with 30+ entries."""
         from council.aggregator import CouncilAggregator

@@ -10,6 +10,16 @@ services:
       - ARCTICDB_URI=lmdb://data/arctic/
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - DAGSTER_GRAPHQL_URL=http://dagster:3000/graphql
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+      - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      - MLCOUNCIL_AUTO_EXECUTE=${MLCOUNCIL_AUTO_EXECUTE:-false}
+      - MLCOUNCIL_MAX_DAILY_ORDERS=${MLCOUNCIL_MAX_DAILY_ORDERS:-20}
+      - MLCOUNCIL_MAX_TURNOVER=${MLCOUNCIL_MAX_TURNOVER:-0.30}
+      - MLCOUNCIL_MAX_POSITION_SIZE=${MLCOUNCIL_MAX_POSITION_SIZE:-0.10}
+    env_file:
+      - path: .env
+        required: true
     volumes:
       - ./data:/app/data
       - ./config:/app/config
@@ -42,16 +52,18 @@ services:
       - ./config:/app/config
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
+    restart: unless-stopped
 
   # MLflow Tracking (optional)
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.10.0
+    build: .
     ports:
       - "5000:5000"
-    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns
+    command: python -m mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns
     volumes:
       - ./mlruns:/app/mlruns
       - ./mlflow.db:/app/mlflow.db
+    restart: unless-stopped
 
 volumes:
   data:

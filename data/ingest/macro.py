@@ -31,11 +31,16 @@ def _load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _config_settings(cfg: dict) -> dict:
+    return cfg.get("settings") or cfg.get("universe", {}).get("settings", {})
+
+
 def _transaction_time(cfg: dict) -> datetime:
-    tz = ZoneInfo(cfg["settings"]["transaction_timezone"])
+    settings = _config_settings(cfg)
+    tz = ZoneInfo(settings["transaction_timezone"])
     local_dt = datetime.now(tz).replace(
-        hour=cfg["settings"]["transaction_time_hour"],
-        minute=cfg["settings"]["transaction_time_minute"],
+        hour=settings["transaction_time_hour"],
+        minute=settings["transaction_time_minute"],
         second=0,
         microsecond=0,
     )
@@ -99,7 +104,8 @@ def download_macro(
         data_dir: Override output root; defaults to config data_dir.
     """
     cfg = _load_config()
-    data_dir = data_dir or (_ROOT / cfg["settings"]["data_dir"])
+    settings = _config_settings(cfg)
+    data_dir = data_dir or (_ROOT / settings["data_dir"])
     tx_time = _transaction_time(cfg)
     series_map: dict[str, str] = cfg["macro"]["fred_series"]
     rolling_windows: list[int] = cfg["macro"]["sp500_rolling_windows"]

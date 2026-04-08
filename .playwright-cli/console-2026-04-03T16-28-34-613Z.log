@@ -1,0 +1,39 @@
+[     389ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[   60311ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  120420ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  180366ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  240331ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  300319ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  360686ms] [ERROR] Failed to load resource: net::ERR_EMPTY_RESPONSE @ http://127.0.0.1:8000/api/pipeline/status:0
+[  360687ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:101:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:287:9) @ http://127.0.0.1:8000/static/js/admin.js:105
+[  360698ms] [ERROR] Failed to load resource: net::ERR_EMPTY_RESPONSE @ http://127.0.0.1:8000/api/monitoring/settings:0
+[  360698ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:190:13)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:289:9) @ http://127.0.0.1:8000/static/js/admin.js:228
+[  360699ms] [ERROR] Failed to load resource: net::ERR_EMPTY_RESPONSE @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[  360699ms] [ERROR] Failed to load resource: net::ERR_EMPTY_RESPONSE @ http://127.0.0.1:8000/api/health:0
+[  360699ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:67:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:286:9) @ http://127.0.0.1:8000/static/js/admin.js:93
+[  360704ms] [ERROR] Failed to load resource: net::ERR_EMPTY_RESPONSE @ http://127.0.0.1:8000/api/config/universe:0
+[  360705ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:271:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:290:9) @ http://127.0.0.1:8000/static/js/admin.js:279
+[  360705ms] [ERROR] Failed to load resource: net::ERR_EMPTY_RESPONSE @ http://127.0.0.1:8000/api/portfolio/weights:0
+[  360705ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:130:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:288:9) @ http://127.0.0.1:8000/static/js/admin.js:153
+[  420354ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  480353ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  540305ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  600493ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  660586ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  720773ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0
+[  780450ms] [VERBOSE] [DOM] Multiple forms should be contained in their own form elements; break up complex forms into ones that represent a single action: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:8000/:0

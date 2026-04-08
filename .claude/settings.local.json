@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell.exe:*)",
+      "Bash(where claude:*)",
+      "Bash(docker run:*)",
+      "WebFetch(domain:docs.ollama.com)",
+      "Bash(where ollama:*)",
+      "Bash(grep -E \"\\(^[^/]*\\\\.py$|/[^/]*\\\\.py$\\)\")",
+      "Bash(head -40 /e/GitHub/MLCouncil/backtest/*.py)",
+      "Bash(npx mcp-ollama:*)",
+      "Bash(ollama list:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "ollama"
+  ]
+}

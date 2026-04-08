@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p data/raw data/arctic data/orders data/results data/monitoring data/alerts data/cache
+RUN mkdir -p data/raw data/arctic data/orders data/results data/monitoring data/alerts data/cache data/paper_trades
 
 # Expose ports
 # 8000 - Admin API

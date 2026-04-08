@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MLCouncil Admin</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/static/css/admin.css">
 </head>
 <body>
@@ -16,6 +17,7 @@
                 <a data-page="portfolio">Portfolio</a>
                 <a data-page="config">Configuration</a>
                 <a data-page="monitoring">Monitoring</a>
+                <a data-page="trading">Trading</a>
             </nav>
         </aside>
         <main class="main">
@@ -85,11 +87,63 @@
             
             <div id="monitoring" class="page">
                 <div class="card">
+                    <h2>API Settings</h2>
+                    <p class="section-copy">
+                        Shared credentials and endpoints saved in <code>config/runtime.env</code> for the local system.
+                    </p>
+                    <form id="settings-form-shell">
+                        <div id="settings-form" class="settings-grid"></div>
+                        <div class="settings-actions">
+                            <button class="btn" id="save-settings-btn" type="submit">Save Settings</button>
+                            <span id="settings-status" class="settings-status"></span>
+                        </div>
+                    </form>
+                </div>
+                <div class="card">
                     <h2>Active Alerts</h2>
                     <table id="alerts-table">
                         <thead><tr><th>Severity</th><th>Model</th><th>Type</th><th>Message</th><th>Time</th></tr></thead>
                         <tbody></tbody>
                     </table>
+                </div>
+            </div>
+            
+            <div id="trading" class="page">
+                <div class="card">
+                    <h2>Account Status</h2>
+                    <div class="kpi-grid" id="trading-status-kpis"></div>
+                </div>
+                <div class="card">
+                    <h2>Current Positions</h2>
+                    <table id="positions-table">
+                        <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Current</th><th>P&L</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="card">
+                    <h2>Pending Orders</h2>
+                    <div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                        <select id="trading-order-date" style="margin-bottom: 0;"></select>
+                        <button class="btn" id="execute-btn">Execute Orders</button>
+                    </div>
+                    <table id="pending-orders-table">
+                        <thead><tr><th>Symbol</th><th>Direction</th><th>Target Weight</th><th>Est. Value</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                    <div id="execution-result" style="margin-top: 1rem;"></div>
+                </div>
+                <div class="card">
+                    <h2>Trade History</h2>
+                    <table id="trade-history-table">
+                        <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th><th>Time</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="card">
+                    <h2>Settings</h2>
+                    <div class="settings-grid">
+                        <label><input type="checkbox" id="auto-execute"> Auto-execute on pipeline completion</label>
+                    </div>
                 </div>
             </div>
         </main>

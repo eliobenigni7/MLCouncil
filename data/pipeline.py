@@ -15,6 +15,7 @@ Per avviare il server:
     dagster dev -f data/pipeline.py
 """
 
+import hashlib
 import pickle
 import sys
 from datetime import date as date_type
@@ -40,6 +41,7 @@ _DATA_DIR       = _ROOT / "data" / "raw"
 _ORDERS_DIR     = _ROOT / "data" / "orders"
 _CHECKPOINTS    = _ROOT / "models" / "checkpoints"
 _EXCLUDE_COLS   = {"ticker", "valid_time", "transaction_time"}
+_MIN_ALPHA_FEATURES = 50
 
 # ---------------------------------------------------------------------------
 # Shared config
@@ -49,11 +51,53 @@ _DAILY_PARTITIONS = dg.DailyPartitionsDefinition(start_date="2018-01-01")
 _RETRY            = dg.RetryPolicy(max_retries=2, delay=30)
 
 
+def _safe_pickle_load(path: Path):
+    """Load a pickle checkpoint only after verifying its SHA256 hash sidecar.
+
+    Raises ValueError if a .hash sidecar exists and the digest does not match,
+    preventing execution of tampered checkpoint files.
+    """
+    hash_path = path.with_suffix(path.suffix + ".hash")
+    if hash_path.exists():
+        expected = hash_path.read_text().strip()
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise ValueError(
+                f"Checkpoint hash mismatch for {path}: "
+                f"expected {expected}, got {actual}. "
+                "File may be corrupted or tampered with."
+            )
+    with open(path, "rb") as fh:
+        return pickle.load(fh)
+
+
 def _load_universe() -> list[str]:
-    """Carica la lista dei ticker da config/universe.yaml."""
+    """Carica la lista dei ticker da config/universe.yaml.
+
+    Supporta sia il formato legacy con `universe.tickers` sia il formato
+    bucketed corrente (`large_cap`, `mid_cap`, ...), ignorando la sezione
+    `settings`.
+    """
     with open(_ROOT / "config" / "universe.yaml") as f:
         cfg = yaml.safe_load(f)
-    return cfg["universe"]["tickers"]
+    universe_cfg = cfg.get("universe", {})
+
+    if isinstance(universe_cfg.get("tickers"), list):
+        tickers = universe_cfg["tickers"]
+    else:
+        tickers = []
+        for bucket_name, bucket_values in universe_cfg.items():
+            if bucket_name == "settings" or not isinstance(bucket_values, list):
+                continue
+            tickers.extend(bucket_values)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for ticker in tickers:
+        if ticker not in seen:
+            seen.add(ticker)
+            deduped.append(ticker)
+    return deduped
 
 
 def _load_all_ohlcv(extra: pl.DataFrame | None = None) -> pl.DataFrame:
@@ -170,7 +214,7 @@ def raw_macro(context: AssetExecutionContext) -> pl.DataFrame:
 @dg.asset(
     partitions_def=_DAILY_PARTITIONS,
     retry_policy=_RETRY,
-    description="Alpha158: 158+ feature tecniche + macro (no look-ahead bias).",
+    description="Feature tecniche + macro look-ahead safe per il modello tecnico.",
 )
 def alpha158_features(
     context: AssetExecutionContext,
@@ -202,8 +246,8 @@ def alpha158_features(
 
     # Quality checks
     non_meta_cols = [c for c in day_feat.columns if c not in _EXCLUDE_COLS]
-    assert len(non_meta_cols) >= 158, (
-        f"Solo {len(non_meta_cols)} feature, attese 158+"
+    assert len(non_meta_cols) >= _MIN_ALPHA_FEATURES, (
+        f"Solo {len(non_meta_cols)} feature, attese almeno {_MIN_ALPHA_FEATURES}"
     )
     float_cols = [
         c for c in non_meta_cols
@@ -271,19 +315,27 @@ def sentiment_features(
     news_pd["clean_title"] = news_pd["title"].apply(clean_headline)
     model = SentimentModel()
 
+    # Batch all headlines across tickers into a single forward pass so that
+    # the transformer's cache and GPU batching are used efficiently.
+    all_headlines: list[str] = news_pd["clean_title"].tolist()
+    all_tickers:   list[str] = news_pd["ticker"].tolist()
+    try:
+        all_scores = model.score_headlines(all_headlines)
+    except Exception:
+        all_scores = [0.0] * len(all_headlines)
+
+    # Aggregate per-ticker: simple mean of headline scores.
+    from collections import defaultdict
+    ticker_scores: dict[str, list[float]] = defaultdict(list)
+    for ticker, score in zip(all_tickers, all_scores):
+        ticker_scores[ticker].append(score)
+
     records: list[dict] = []
-    for ticker in news_pd["ticker"].unique():
-        headlines = news_pd.loc[news_pd["ticker"] == ticker, "clean_title"].tolist()
-        if not headlines:
-            continue
-        try:
-            score = model.predict_sentiment_score(headlines)
-        except Exception:
-            score = 0.0
+    for ticker, scores in ticker_scores.items():
         records.append({
             "ticker":          ticker,
             "valid_time":      today,
-            "sentiment_score": float(score),
+            "sentiment_score": float(sum(scores) / len(scores)) if scores else 0.0,
         })
 
     if not records:
@@ -311,10 +363,18 @@ def lgbm_signals(
     alpha158_features: pl.DataFrame,
 ) -> pd.Series:
     """Carica il checkpoint LightGBM e genera segnali cross-sezionali."""
-    from models.technical import TechnicalModel
-
     partition_date = context.partition_key
     checkpoint = _CHECKPOINTS / "lgbm_latest.pkl"
+    tickers = alpha158_features["ticker"].unique().to_list()
+
+    try:
+        from models.technical import TechnicalModel
+    except ModuleNotFoundError as exc:
+        context.log.warning(
+            f"lgbm_signals [{partition_date}]: dipendenza modello mancante "
+            f"({exc}) - fallback a 0.0"
+        )
+        return pd.Series(0.0, index=tickers, name="lgbm_signal")
 
     model = TechnicalModel()
     if checkpoint.exists():
@@ -327,7 +387,6 @@ def lgbm_signals(
             f"lgbm_signals [{partition_date}]: checkpoint non trovato, "
             "segnali impostati a 0.0"
         )
-        tickers = alpha158_features["ticker"].unique().to_list()
         return pd.Series(0.0, index=tickers, name="lgbm_signal")
 
     signals = model.predict(alpha158_features)
@@ -382,14 +441,20 @@ def current_regime(
     raw_macro: pl.DataFrame,
 ) -> str:
     """Rileva il regime di mercato con il modello HMM."""
-    from models.regime import RegimeModel
-
     partition_date = context.partition_key
     checkpoint = _CHECKPOINTS / "hmm_latest.pkl"
 
+    try:
+        from models.regime import RegimeModel
+    except ModuleNotFoundError as exc:
+        context.log.warning(
+            f"current_regime [{partition_date}]: dipendenza HMM mancante "
+            f"({exc}) - fallback a 'transition'"
+        )
+        return "transition"
+
     if checkpoint.exists():
-        with open(checkpoint, "rb") as fh:
-            regime_model = pickle.load(fh)
+        regime_model = _safe_pickle_load(checkpoint)
         context.log.info(
             f"current_regime [{partition_date}]: HMM caricato da {checkpoint}"
         )
@@ -509,8 +574,7 @@ def portfolio_weights(
     # Conformal position sizing
     sizer_checkpoint = _CHECKPOINTS / "conformal_sizer.pkl"
     if sizer_checkpoint.exists():
-        with open(sizer_checkpoint, "rb") as fh:
-            sizer = pickle.load(fh)
+        sizer = _safe_pickle_load(sizer_checkpoint)
         context.log.info(
             f"portfolio_weights [{partition_date}]: "
             f"conformal sizer caricato da {sizer_checkpoint}"
@@ -564,9 +628,11 @@ def daily_orders(
         context.log.warning(
             f"daily_orders [{partition_date}]: nessun peso → nessun ordine"
         )
-        return pd.DataFrame(
+        empty_orders = pd.DataFrame(
             columns=["ticker", "direction", "quantity", "target_weight"]
         )
+        empty_orders.to_parquet(_ORDERS_DIR / f"{partition_date}.parquet", index=False)
+        return empty_orders
 
     PORTFOLIO_VALUE = 1_000_000.0
     n = len(portfolio_weights)
@@ -582,8 +648,8 @@ def daily_orders(
     )
 
     out_path = _ORDERS_DIR / f"{partition_date}.parquet"
+    orders.to_parquet(out_path, index=False)
     if not orders.empty:
-        orders.to_parquet(out_path, index=False)
         context.log.info(
             f"daily_orders [{partition_date}]: "
             f"{len(orders)} ordini → {out_path}"
@@ -619,6 +685,10 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
         return pd.DataFrame(np.eye(n) * 0.0001, index=tickers, columns=tickers)
 
     ohlcv = pl.concat(frames).sort(["ticker", "valid_time"])
+    # drop_nulls before pivot would discard every row where *any* ticker has a
+    # missing return (e.g. halts, sparse mid-caps).  Instead, compute returns
+    # per ticker (nulls only at each ticker's first row) then pivot and use
+    # pairwise covariance so tickers with partial overlap still contribute.
     returns_wide = (
         ohlcv
         .select(["ticker", "valid_time", "adj_close"])
@@ -627,13 +697,13 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
             .over("ticker")
             .alias("ret_1d")
         )
-        .drop_nulls()
+        .filter(pl.col("ret_1d").is_not_null())
         .pivot(values="ret_1d", index="valid_time", on="ticker")
         .to_pandas()
         .set_index("valid_time")
         .tail(90)
     )
-    return returns_wide
+    return returns_wide.cov(min_periods=30)
 
 
 # ===========================================================================

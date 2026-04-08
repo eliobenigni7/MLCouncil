@@ -13,7 +13,10 @@ async function postAPI(endpoint, data) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
     });
-    if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+    if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.detail || `API error: ${resp.status}`);
+    }
     return resp.json();
 }
 
@@ -41,6 +44,15 @@ function showToast(message, type = 'success') {
     toast.textContent = message;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
 }
 
 document.querySelectorAll('.sidebar nav a').forEach(link => {
@@ -95,6 +107,17 @@ async function refreshPipelineStatus() {
         document.getElementById('pipeline-partition').textContent = status.partition || '--';
     } catch (e) {
         console.error('Failed to refresh pipeline:', e);
+    }
+}
+
+async function refreshPipelinePartitionDefault() {
+    try {
+        const payload = await fetchAPI('/pipeline/latest-partition');
+        if (payload.partition) {
+            document.getElementById('run-partition').value = payload.partition;
+        }
+    } catch (e) {
+        console.error('Failed to load latest partition:', e);
     }
 }
 
@@ -176,8 +199,12 @@ document.getElementById('order-date-select').addEventListener('change', (e) => {
 
 async function refreshMonitoring() {
     try {
-        const alerts = await fetchAPI('/monitoring/alerts');
+        const [alerts, settingsPayload] = await Promise.all([
+            fetchAPI('/monitoring/alerts'),
+            fetchAPI('/monitoring/settings')
+        ]);
         const tbody = document.querySelector('#alerts-table tbody');
+        const settingsForm = document.getElementById('settings-form');
         
         if (alerts.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" style="color: var(--text-secondary);">No active alerts</td></tr>';
@@ -192,8 +219,64 @@ async function refreshMonitoring() {
                 </tr>
             `).join('');
         }
+
+        settingsForm.innerHTML = settingsPayload.settings.map(setting => `
+            <div class="settings-field">
+                <label for="setting-${escapeHtml(setting.key)}">${escapeHtml(setting.label)}</label>
+                <input
+                    id="setting-${escapeHtml(setting.key)}"
+                    class="api-setting-input"
+                    data-key="${escapeHtml(setting.key)}"
+                    type="${setting.secret ? 'password' : 'text'}"
+                    value="${escapeHtml(setting.value || '')}"
+                    placeholder="${escapeHtml(setting.placeholder || '')}"
+                    autocomplete="off"
+                >
+                <div class="settings-help">${escapeHtml(setting.description || '')}</div>
+            </div>
+        `).join('');
+
+        document.getElementById('settings-status').textContent = settingsPayload.path
+            ? `Shared file: ${settingsPayload.path}`
+            : '';
     } catch (e) {
         console.error('Failed to refresh monitoring:', e);
+    }
+}
+
+async function saveMonitoringSettings(event) {
+    if (event) {
+        event.preventDefault();
+    }
+    const inputs = document.querySelectorAll('.api-setting-input');
+    const btn = document.getElementById('save-settings-btn');
+    const statusEl = document.getElementById('settings-status');
+    const values = {};
+
+    inputs.forEach(input => {
+        values[input.dataset.key] = input.value;
+    });
+
+    btn.disabled = true;
+    statusEl.textContent = 'Saving...';
+
+    try {
+        const response = await fetch(`${API_BASE}/monitoring/settings`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({values})
+        });
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+        }
+        showToast('API settings saved');
+        await refreshMonitoring();
+    } catch (e) {
+        console.error('Failed to save monitoring settings:', e);
+        statusEl.textContent = 'Failed to save settings';
+        showToast('Failed to save settings: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
     }
 }
 
@@ -212,20 +295,146 @@ async function refreshConfig() {
     }
 }
 
+async function refreshTrading() {
+    try {
+        const status = await fetchAPI('/trading/status');
+        const statusKpis = document.getElementById('trading-status-kpis');
+        
+        if (!status.connected) {
+            statusKpis.innerHTML = `<div class="kpi-card"><div class="kpi-value error">Disconnected</div><div class="kpi-label">${status.error || 'Check Alpaca config'}</div></div>`;
+        } else {
+            statusKpis.innerHTML = `
+                <div class="kpi-card">
+                    <div class="kpi-label">Status</div>
+                    <div class="kpi-value ok">${status.paper ? 'Paper Trading' : 'Live'}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Buying Power</div>
+                    <div class="kpi-value">$${parseFloat(status.account?.buying_power || 0).toLocaleString()}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Portfolio Value</div>
+                    <div class="kpi-value">$${parseFloat(status.account?.portfolio_value || 0).toLocaleString()}</div>
+                </div>
+            `;
+        }
+        
+        const posBody = document.querySelector('#positions-table tbody');
+        if (status.positions && status.positions.length > 0) {
+            posBody.innerHTML = status.positions.map(p => `
+                <tr>
+                    <td>${p.symbol}</td>
+                    <td>${p.qty}</td>
+                    <td>$${parseFloat(p.avg_price || 0).toFixed(2)}</td>
+                    <td>$${parseFloat(p.current_price || 0).toFixed(2)}</td>
+                    <td style="color: ${parseFloat(p.unrealized_pl || 0) >= 0 ? 'var(--ok)' : 'var(--error)'}">$${parseFloat(p.unrealized_pl || 0).toFixed(2)} (${parseFloat(p.unrealized_pl_pc || 0).toFixed(1)}%)</td>
+                </tr>
+            `).join('');
+        } else {
+            posBody.innerHTML = '<tr><td colspan="5" style="color: var(--text-secondary);">No open positions</td></tr>';
+        }
+        
+        try {
+            const latest = await fetchAPI('/trading/orders/latest');
+            const select = document.getElementById('trading-order-date');
+            select.innerHTML = `<option value="${latest.date}">${latest.date}</option>`;
+            await loadPendingOrders(latest.date);
+        } catch (e) {
+            document.querySelector('#pending-orders-table tbody').innerHTML = '<tr><td colspan="4" style="color: var(--text-secondary);">No orders found</td></tr>';
+        }
+        
+        const history = await fetchAPI('/trading/history?days=7');
+        const histBody = document.querySelector('#trade-history-table tbody');
+        if (history.trades && history.trades.length > 0) {
+            histBody.innerHTML = history.trades.map(t => `
+                <tr>
+                    <td>${t.symbol || '--'}</td>
+                    <td>${t.side || '--'}</td>
+                    <td>${t.qty || '--'}</td>
+                    <td>${t.status || '--'}</td>
+                    <td>${t.submitted_at || '--'}</td>
+                </tr>
+            `).join('');
+        } else {
+            histBody.innerHTML = '<tr><td colspan="5" style="color: var(--text-secondary);">No trade history</td></tr>';
+        }
+    } catch (e) {
+        console.error('Failed to refresh trading:', e);
+    }
+}
+
+async function loadPendingOrders(date) {
+    try {
+        const resp = await fetchAPI(`/trading/orders/pending/${date}`);
+        const tbody = document.querySelector('#pending-orders-table tbody');
+        
+        if (resp.orders && resp.orders.length > 0) {
+            tbody.innerHTML = resp.orders.map(o => `
+                <tr>
+                    <td>${o.ticker}</td>
+                    <td>${(o.direction || 'buy').toUpperCase()}</td>
+                    <td>${((o.target_weight || 0) * 100).toFixed(1)}%</td>
+                    <td>$${((o.quantity || 0) * (o.price || 0)).toFixed(0)}</td>
+                </tr>
+            `).join('');
+        } else {
+            tbody.innerHTML = '<tr><td colspan="4" style="color: var(--text-secondary);">No pending orders</td></tr>';
+        }
+    } catch (e) {
+        console.error('Failed to load pending orders:', e);
+    }
+}
+
+document.getElementById('execute-btn').addEventListener('click', async () => {
+    const date = document.getElementById('trading-order-date').value;
+    if (!date) return;
+    
+    const btn = document.getElementById('execute-btn');
+    btn.disabled = true;
+    btn.textContent = 'Executing...';
+    
+    try {
+        const result = await postAPI('/trading/execute', {date});
+        const div = document.getElementById('execution-result');
+        div.innerHTML = `
+            <div style="padding: 1rem; background: var(--bg-secondary); border-radius: 4px;">
+                <strong>Execution complete:</strong><br>
+                Orders submitted: ${result.orders_submitted}<br>
+                Orders rejected: ${result.orders_rejected}<br>
+                Liquidations: ${result.liquidations}
+            </div>
+        `;
+        showToast('Orders executed successfully');
+        await refreshTrading();
+    } catch (e) {
+        showToast('Execution failed: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Execute Orders';
+    }
+});
+
+document.getElementById('trading-order-date').addEventListener('change', async (e) => {
+    if (e.target.value) {
+        await loadPendingOrders(e.target.value);
+    }
+});
+
 async function refreshAll() {
     await Promise.all([
         refreshOverview(),
         refreshPipelineStatus(),
         refreshPortfolio(),
         refreshMonitoring(),
-        refreshConfig()
+        refreshConfig(),
+        refreshTrading()
     ]);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    const today = new Date().toISOString().split('T')[0];
-    document.getElementById('run-partition').value = today;
+    document.getElementById('settings-form-shell').addEventListener('submit', saveMonitoringSettings);
     
     refreshAll();
+    refreshPipelinePartitionDefault();
     refreshInterval = setInterval(refreshAll, 60000);
 });

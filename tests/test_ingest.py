@@ -180,6 +180,39 @@ class TestMarketData:
         assert len(result) == 2
         assert set(result["ticker"].to_list()) == {"AAPL", "MSFT"}
 
+    def test_download_daily_supports_bucketed_universe_config(self, cfg, monkeypatch):
+        import data.ingest.market_data as md
+
+        monkeypatch.setattr(md, "_ROOT", cfg)
+        bucketed = {
+            "universe": {
+                "large_cap": ["AAPL"],
+                "mid_cap": ["MSFT"],
+                "settings": {
+                    "data_dir": str(cfg / "data" / "raw"),
+                    "transaction_timezone": "America/New_York",
+                    "transaction_time_hour": 20,
+                    "transaction_time_minute": 30,
+                    "forward_fill_max_days": 2,
+                },
+            },
+            "macro": {
+                "fred_series": {
+                    "vix": "VIXCLS",
+                    "treasury_10y": "DGS10",
+                    "treasury_2y": "DGS2",
+                    "sp500": "SP500",
+                },
+                "sp500_rolling_windows": [5, 10],
+            },
+        }
+        (cfg / "config" / "universe.yaml").write_text(yaml.dump(bucketed))
+
+        with patch("yfinance.download", return_value=_make_ohlcv_pandas(n=1)):
+            result = md.download_daily(date="2024-01-02")
+
+        assert set(result["ticker"].to_list()) == {"AAPL", "MSFT"}
+
 
 # ---------------------------------------------------------------------------
 # fundamentals tests
@@ -371,6 +404,43 @@ class TestNews:
         assert result["transaction_time"].dtype == pl.Datetime
         assert result["title"].dtype == pl.Utf8
         assert result["url"].dtype == pl.Utf8
+
+    def test_news_supports_bucketed_universe_config(self, cfg, monkeypatch):
+        import data.ingest.news as nw
+
+        monkeypatch.setattr(nw, "_ROOT", cfg)
+        bucketed = {
+            "universe": {
+                "large_cap": ["AAPL"],
+                "mid_cap": ["MSFT"],
+                "settings": {
+                    "data_dir": str(cfg / "data" / "raw"),
+                    "transaction_timezone": "America/New_York",
+                    "transaction_time_hour": 20,
+                    "transaction_time_minute": 30,
+                    "forward_fill_max_days": 2,
+                },
+            },
+            "macro": {
+                "fred_series": {
+                    "vix": "VIXCLS",
+                    "treasury_10y": "DGS10",
+                    "treasury_2y": "DGS2",
+                    "sp500": "SP500",
+                },
+                "sp500_rolling_windows": [5, 10],
+            },
+        }
+        (cfg / "config" / "universe.yaml").write_text(yaml.dump(bucketed))
+
+        def _feed_for_url(url):
+            ticker = "AAPL" if "AAPL" in url else "MSFT"
+            return self._make_feed([ticker])
+
+        with patch("feedparser.parse", side_effect=_feed_for_url):
+            result = nw.download_news(date="2024-01-15")
+
+        assert set(result["ticker"].to_list()) == {"AAPL", "MSFT"}
 
 
 # ---------------------------------------------------------------------------

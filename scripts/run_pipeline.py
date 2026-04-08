@@ -54,6 +54,7 @@ TICKERS = [
 ]
 START = "2021-01-01"
 DATA_DIR = ROOT / "data" / "raw"
+ORDERS_DIR = ROOT / "data" / "orders"
 _EXCLUDE_COLS = {"ticker", "valid_time", "transaction_time"}
 
 
@@ -64,7 +65,7 @@ _EXCLUDE_COLS = {"ticker", "valid_time", "transaction_time"}
 def step_download(force: bool = False) -> None:
     """Scarica OHLCV + macro se non già presenti."""
     already_done = all(
-        (DATA_DIR / t).exists() and list((DATA_DIR / t).glob("*.parquet"))
+        (DATA_DIR / "ohlcv" / t).exists() and list((DATA_DIR / "ohlcv" / t).glob("*.parquet"))
         for t in TICKERS
     )
     if already_done and not force:
@@ -89,7 +90,7 @@ def step_download(force: bool = False) -> None:
 def step_load_ohlcv() -> pl.DataFrame:
     frames = []
     for ticker in TICKERS:
-        ticker_dir = DATA_DIR / ticker
+        ticker_dir = DATA_DIR / "ohlcv" / ticker
         if not ticker_dir.exists():
             continue
         for p in sorted(ticker_dir.glob("*.parquet")):
@@ -150,7 +151,7 @@ def step_split(
     feat_train = features.filter(pl.col("valid_time") < cutoff)
     feat_test  = features.filter(pl.col("valid_time") >= cutoff)
 
-    targets_df = compute_targets(ohlcv, horizons=[1])
+    targets_df = compute_targets(ohlcv, horizons=[1], risk_adjusted=False)
     tgt_pd = (
         targets_df
         .filter(pl.col("valid_time") < cutoff)
@@ -248,9 +249,12 @@ def step_signals(
     if with_sentiment:
         try:
             from models.sentiment import SentimentModel
-            from data.ingest.news import download_news_today
-            # TODO: collegare feed news reale
-            print("[6] Sentiment: skip (nessun feed news live in questo demo)")
+            from data.ingest.news import download_news
+            news_df = download_news(tickers=tickers, date=last_date.isoformat())
+            if news_df.is_empty():
+                print(f"[6] Sentiment: no news data for {last_date}")
+            else:
+                print(f"[6] Sentiment: {len(news_df)} headlines collected")
         except ImportError:
             print("[6] Sentiment: modulo non disponibile")
     else:
@@ -377,6 +381,20 @@ def step_portfolio(
     )
 
     orders = constructor.compute_orders(target_w, current_w, portfolio_value)
+
+    # ── Save orders to parquet ───────────────────────────────────────────────
+    if not orders.empty:
+        import pandas as pd
+        orders_df = pd.DataFrame({
+            "ticker": orders.index,
+            "direction": orders["direction"],
+            "quantity": orders["quantity"],
+            "target_weight": orders["target_weight"],
+        })
+        ORDERS_DIR.mkdir(parents=True, exist_ok=True)
+        orders_path = ORDERS_DIR / f"{last_date}.parquet"
+        orders_df.to_parquet(orders_path, index=False)
+        print(f"    [9] Ordini salvati in {orders_path}")
 
     # ── Output ────────────────────────────────────────────────────────────────
     print(f"[9] Target weights al {last_date} (portafoglio da ${portfolio_value:,.0f}):")

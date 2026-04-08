@@ -294,10 +294,8 @@ def run_backtest(
     # Carica universo
     if universe is None:
         try:
-            import yaml
-            with open(_ROOT / "config" / "universe.yaml") as f:
-                cfg = yaml.safe_load(f)
-            universe = cfg["universe"]["tickers"]
+            from data.pipeline import _load_universe
+            universe = _load_universe()
         except Exception:
             universe = ["AAPL", "MSFT", "GOOGL"]
 
@@ -421,65 +419,199 @@ def run_backtest(
 def run_paper_trading(
     universe: Optional[list[str]] = None,
     initial_capital: float = 100_000.0,
+    trading_mode: str = "paper",
 ) -> None:
-    """Avvia il paper trading live tramite Alpaca sandbox.
+    """Launch live/paper trading via Alpaca.
 
-    Prerequisiti
+    Prerequisites
     ------------
-    1. Variabili d'ambiente: ALPACA_API_KEY, ALPACA_SECRET_KEY
-    2. Pacchetto: nautilus_trader_adapters_alpaca (oppure adattatore custom)
-    3. La pipeline Dagster deve girare in parallelo producendo
-       ``data/orders/{today}.parquet`` ogni sera alle 21:30 ET.
+    1. Environment variables:
+       - ALPACA_PAPER_KEY, ALPACA_PAPER_SECRET (for paper trading)
+       - ALPACA_LIVE_KEY, ALPACA_LIVE_SECRET (for live trading)
+       - TRADING_MODE=paper or TRADING_MODE=live
+    2. Package: alpaca-trade-api
+    3. Dagster pipeline running in parallel producing ``data/orders/{today}.parquet``
 
-    Note
-    ----
-    Il paper trading usa lo stesso codice del backtest (CouncilStrategy).
-    L'unica differenza è il venue adapter.  In questa PoC implementiamo
-    lo stub — in produzione connettere un LiveNode NautilusTrader.
+    Parameters
+    ----------
+    universe : list[str], optional
+        Override ticker list. Defaults to config/universe.yaml.
+    initial_capital : float
+        Starting capital (informational only for paper trading).
+    trading_mode : str
+        "paper" (default) or "live". Can also set TRADING_MODE env var.
     """
-    if not _NT_AVAILABLE:
-        raise ImportError("NautilusTrader non installato.")
-
-    api_key = os.getenv("ALPACA_API_KEY", "")
-    secret_key = os.getenv("ALPACA_SECRET_KEY", "")
-    base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-
-    if not api_key or not secret_key:
-        raise EnvironmentError(
-            "Variabili ALPACA_API_KEY e ALPACA_SECRET_KEY non impostate.\n"
-            "Configura il file .env con le credenziali Alpaca sandbox."
+    try:
+        from execution.alpaca_adapter import AlpacaLiveNode, AlpacaConfig, TradingMode
+    except ImportError:
+        raise ImportError(
+            "execution.alpaca_adapter not found or alpaca-trade-api not installed.\n"
+            "Install with: pip install alpaca-trade-api"
         )
+
+    mode = TradingMode(trading_mode) if trading_mode else TradingMode(os.getenv("TRADING_MODE", "paper"))
 
     if universe is None:
         try:
             import yaml
             with open(_ROOT / "config" / "universe.yaml") as f:
                 cfg = yaml.safe_load(f)
-            universe = cfg["universe"]["tickers"]
+            all_tickers = cfg["universe"].get("large_cap", []) + cfg["universe"].get("mid_cap", [])
+            universe = all_tickers if all_tickers else ["AAPL", "MSFT", "GOOGL"]
         except Exception:
             universe = ["AAPL", "MSFT", "GOOGL"]
 
-    # ─── Stub: in produzione usare TradingNode + AlpacaAdapterConfig ───────
-    # from nautilus_trader.live.node import TradingNode, TradingNodeConfig
-    # from nautilus_trader_adapters_alpaca import AlpacaDataClientConfig, AlpacaExecClientConfig
-    #
-    # config = TradingNodeConfig(
-    #     trader_id="COUNCIL-PAPER-001",
-    #     data_clients={"ALPACA": AlpacaDataClientConfig(api_key=api_key, api_secret=secret_key, base_url=base_url)},
-    #     exec_clients={"ALPACA": AlpacaExecClientConfig(api_key=api_key, api_secret=secret_key, base_url=base_url, account_type="paper")},
-    # )
-    # node = TradingNode(config=config)
-    # strategy = CouncilStrategy(CouncilStrategyConfig(universe=universe, venue_name="ALPACA", ...))
-    # node.trader.add_strategy(strategy)
-    # node.run()
+    config = AlpacaConfig.from_env()
+    config.mode = mode
+
+    try:
+        node = AlpacaLiveNode(config)
+    except EnvironmentError as e:
+        raise EnvironmentError(
+            f"Alpaca configuration error: {e}\n"
+            "Set ALPACA_PAPER_KEY and ALPACA_PAPER_SECRET (or ALPACA_LIVE_KEY/LIVE_SECRET) "
+            "in your environment or .env file."
+        )
+
+    account_info = node.get_account_info()
+    print(
+        f"[paper-trading] Alpaca node initialized.\n"
+        f"  Mode         : {mode.value}\n"
+        f"  Account      : ${account_info['portfolio_value']:,.2f}\n"
+        f"  Buying Power : ${account_info['buying_power']:,.2f}\n"
+        f"  Status       : {account_info['status']}\n"
+        f"  Universe     : {len(universe)} tickers"
+    )
+
+    positions = node.get_all_positions()
+    if not positions.empty:
+        print(f"\n  Current positions:")
+        for _, pos in positions.iterrows():
+            print(f"    {pos['symbol']}: {pos['qty']} shares @ ${pos['avg_price']:.2f}")
+    else:
+        print("\n  No open positions.")
 
     print(
-        f"[paper-trading] Stub attivo.\n"
-        f"  API Key: {api_key[:4]}***\n"
-        f"  Venue  : {base_url}\n"
-        f"  Universe: {universe}\n"
-        f"\nPer la produzione: connettere TradingNode + AlpacaAdapter."
+        f"\n  Orders will be read from: data/orders/{{date}}.parquet\n"
+        f"  Trade logs will be saved to: data/paper_trades/{{date}}.json\n"
+        f"\n  To submit today's orders, call:\n"
+        f"    from backtest.runner import submit_daily_orders\n"
+        f"    submit_daily_orders(node)"
     )
+
+
+def submit_daily_orders(
+    node: "AlpacaLiveNode",
+    date: Optional[str] = None,
+    max_position_size: Optional[float] = None,
+) -> list[dict]:
+    """Submit today's orders from parquet to Alpaca.
+
+    Parameters
+    ----------
+    node : AlpacaLiveNode
+        Configured Alpaca trading node.
+    date : str, optional
+        Date string YYYY-MM-DD. Defaults to today.
+    max_position_size : float, optional
+        Maximum position size in USD. Defaults to MAX_POSITION_SIZE env var.
+
+    Returns
+    -------
+    list[dict]
+        List of submitted order records.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    orders_file = _ROOT / "data" / "orders" / f"{date}.parquet"
+    if not orders_file.exists():
+        print(f"No orders found for {date} at {orders_file}")
+        return []
+
+    try:
+        orders_df = pd.read_parquet(orders_file)
+    except Exception as e:
+        print(f"Error reading orders file: {e}")
+        return []
+
+    if orders_df.empty:
+        print(f"No orders generated for {date}")
+        return []
+
+    print(f"Found {len(orders_df)} orders for {date}")
+
+    if "direction" not in orders_df.columns or "ticker" not in orders_df.columns:
+        print("Orders file missing required columns: direction, ticker")
+        return []
+
+    submitted = []
+    for _, order in orders_df.iterrows():
+        symbol = order["ticker"]
+        side = order["direction"].lower()
+        qty = int(order.get("quantity", order.get("qty", 0)))
+
+        if qty <= 0:
+            continue
+
+        max_pos = max_position_size or float(os.getenv("MAX_POSITION_SIZE", "50000"))
+        limit_ok, limit_msg = node.check_position_limits(symbol, qty, max_pos)
+        if not limit_ok:
+            print(f"Skipping {symbol} {side} {qty}: {limit_msg}")
+            continue
+
+        try:
+            result = node.submit_order(symbol, qty, side)
+            print(f"Submitted: {symbol} {side} {qty} -> order_id={result.get('order_id', '?')}")
+            submitted.append(result)
+        except Exception as e:
+            print(f"Error submitting {symbol} {side} {qty}: {e}")
+
+    print(f"\nSubmitted {len(submitted)} orders")
+    return submitted
+
+
+def get_paper_trade_status(date: Optional[str] = None) -> dict:
+    """Get status of paper trades for a given date.
+
+    Parameters
+    ----------
+    date : str, optional
+        Date string YYYY-MM-DD. Defaults to today.
+
+    Returns
+    -------
+    dict
+        Summary of orders and their fill status.
+    """
+    try:
+        from execution.alpaca_adapter import AlpacaLiveNode, AlpacaConfig
+    except ImportError:
+        return {"error": "Alpaca adapter not available"}
+
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    config = AlpacaConfig.from_env()
+    try:
+        node = AlpacaLiveNode(config)
+    except Exception as e:
+        return {"error": str(e)}
+
+    trades = node.get_trade_log(date)
+    positions = node.get_all_positions()
+    account = node.get_account_info()
+
+    return {
+        "date": date,
+        "mode": config.mode.value,
+        "submitted_orders": len(trades),
+        "open_positions": len(positions),
+        "account_value": account["portfolio_value"],
+        "buying_power": account["buying_power"],
+        "trades": trades,
+        "positions": positions.to_dict(orient="records") if not positions.empty else [],
+    }
 
 
 # ===========================================================================

@@ -1,0 +1,226 @@
+[    6511ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:8000/favicon.ico:0
+[ 1022272ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1022272ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1022272ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1022272ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1022275ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1022275ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1022275ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1022275ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1022275ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1022275ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1082263ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1082263ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1082263ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1082263ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1082263ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1082263ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1082278ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1082278ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1082278ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1082278ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1142284ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1142284ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1142285ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1142285ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1142285ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1142285ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1142285ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1142285ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1142285ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1142285ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1202270ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1202270ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1202270ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1202270ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1202270ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1202270ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1202271ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1202271ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1202271ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1202271ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1262278ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1262278ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1262278ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1262278ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1262279ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1262279ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1262279ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1262279ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1262279ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1262279ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1322288ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1322288ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1322288ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1322288ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1322289ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1322289ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1322289ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1322289ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1322289ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1322289ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1382278ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1382278ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1382278ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1382278ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1382279ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1382279ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1382279ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1382279ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1382279ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1382279ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1442281ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1442281ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1442281ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1442281ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1442282ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1442282ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1442296ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1442296ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1442297ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1442297ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210
+[ 1502276ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/health:0
+[ 1502276ms] [ERROR] Failed to refresh overview: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshOverview (http://127.0.0.1:8000/static/js/admin.js:58:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:217:9) @ http://127.0.0.1:8000/static/js/admin.js:84
+[ 1502276ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/pipeline/status:0
+[ 1502276ms] [ERROR] Failed to refresh pipeline: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPipelineStatus (http://127.0.0.1:8000/static/js/admin.js:92:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:218:9) @ http://127.0.0.1:8000/static/js/admin.js:96
+[ 1502277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/portfolio/weights:0
+[ 1502277ms] [ERROR] Failed to refresh portfolio: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshPortfolio (http://127.0.0.1:8000/static/js/admin.js:121:31)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:219:9) @ http://127.0.0.1:8000/static/js/admin.js:144
+[ 1502277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/monitoring/alerts:0
+[ 1502277ms] [ERROR] Failed to refresh monitoring: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshMonitoring (http://127.0.0.1:8000/static/js/admin.js:179:30)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:220:9) @ http://127.0.0.1:8000/static/js/admin.js:195
+[ 1502277ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8000/api/config/universe:0
+[ 1502277ms] [ERROR] Failed to refresh config: TypeError: Failed to fetch
+    at fetchAPI (http://127.0.0.1:8000/static/js/admin.js:5:24)
+    at refreshConfig (http://127.0.0.1:8000/static/js/admin.js:202:32)
+    at refreshAll (http://127.0.0.1:8000/static/js/admin.js:221:9) @ http://127.0.0.1:8000/static/js/admin.js:210

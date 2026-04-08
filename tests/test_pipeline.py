@@ -52,6 +52,74 @@ def _load_pipeline():
 _pipeline = _load_pipeline()
 
 
+def test_requirements_include_polars_for_dagster_imports():
+    """L'immagine Docker deve installare polars, richiesto da data/pipeline.py."""
+    requirements = (_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "polars" in requirements, (
+        "requirements.txt deve includere polars per permettere a Dagster "
+        "di importare data/pipeline.py nel container"
+    )
+
+
+def test_requirements_include_lightgbm_for_model_inference():
+    """Il runtime Dagster deve poter caricare il modello tecnico LightGBM."""
+    requirements = (_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "lightgbm" in requirements, (
+        "requirements.txt deve includere lightgbm per l'inferenza del "
+        "modello tecnico nella pipeline Dagster"
+    )
+
+
+def test_requirements_include_hmmlearn_for_regime_detection():
+    """Il runtime Dagster deve poter caricare il modello HMM di regime."""
+    requirements = (_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "hmmlearn" in requirements, (
+        "requirements.txt deve includere hmmlearn per il modello di regime "
+        "eseguito nella pipeline Dagster"
+    )
+
+
+def test_requirements_include_cvxpy_for_portfolio_optimization():
+    """Il runtime Dagster deve poter eseguire l'ottimizzatore di portafoglio."""
+    requirements = (_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "cvxpy" in requirements, (
+        "requirements.txt deve includere cvxpy per l'ottimizzazione del "
+        "portafoglio nella pipeline Dagster"
+    )
+
+
+def test_load_universe_flattens_bucketed_config():
+    """_load_universe deve accettare la struttura bucketed del file YAML attuale."""
+    tickers = _pipeline._load_universe()
+
+    assert "AAPL" in tickers
+    assert "SNOW" in tickers
+    assert len(tickers) == len(set(tickers))
+
+
+def test_models_regime_import_does_not_require_lightgbm(monkeypatch):
+    """Importare models.regime non deve fallire se lightgbm non è installato."""
+    import importlib
+
+    monkeypatch.delitem(sys.modules, "models", raising=False)
+    monkeypatch.delitem(sys.modules, "models.regime", raising=False)
+    monkeypatch.delitem(sys.modules, "models.technical", raising=False)
+    monkeypatch.delitem(sys.modules, "lightgbm", raising=False)
+
+    real_import = __import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "lightgbm":
+            raise ModuleNotFoundError("No module named 'lightgbm'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", guarded_import)
+
+    regime = importlib.import_module("models.regime")
+
+    assert hasattr(regime, "RegimeModel")
+
+
 def _make_context(partition_date: str = "2024-01-15") -> MagicMock:
     """Context mock generico per test di asset."""
     ctx = MagicMock(spec=dg.AssetExecutionContext)
@@ -196,7 +264,7 @@ class TestQualityChecks:
             assert nan_count == 0, f"NaN nei prezzi di chiusura: {nan_count}"
 
     def test_insufficient_features_fails(self):
-        """AssertionError se alpha158 produce meno di 158 feature."""
+        """AssertionError se il builder produce meno delle feature minime richieste."""
         exclude = {"ticker", "valid_time", "transaction_time"}
         df_few = pl.DataFrame({
             "ticker": ["AAPL"],
@@ -205,8 +273,8 @@ class TestQualityChecks:
         })
         non_meta = [c for c in df_few.columns if c not in exclude]
         with pytest.raises(AssertionError, match="feature"):
-            assert len(non_meta) >= 158, (
-                f"Solo {len(non_meta)} feature, attese 158+"
+            assert len(non_meta) >= _pipeline._MIN_ALPHA_FEATURES, (
+                f"Solo {len(non_meta)} feature, attese almeno {_pipeline._MIN_ALPHA_FEATURES}"
             )
 
     def test_nan_features_fails(self):
@@ -275,6 +343,27 @@ class TestQualityChecks:
                 _call_asset(
                     _pipeline.alpha158_features, ctx, empty_ohlcv, empty_macro
                 )
+
+    def test_alpha158_asset_accepts_current_feature_contract(self):
+        """L'asset non deve fallire se il builder corrente produce il set feature atteso."""
+        ctx = _make_context("2024-01-15")
+        today = date.fromisoformat("2024-01-15")
+        feature_payload = {
+            "ticker": ["AAPL"],
+            "valid_time": [today],
+        }
+        for i in range(53):
+            feature_payload[f"feat_{i}"] = [float(i)]
+
+        feature_df = pl.DataFrame(feature_payload)
+
+        with patch.object(_pipeline, "_load_all_ohlcv", return_value=pl.DataFrame({"ticker": ["AAPL"]})):
+            with patch("data.features.alpha158.compute_alpha158", return_value=feature_df):
+                result = _call_asset(
+                    _pipeline.alpha158_features, ctx, pl.DataFrame(), pl.DataFrame()
+                )
+
+        assert result.height == 1
 
 
 # ===========================================================================
@@ -350,6 +439,31 @@ class TestFullPipelineSynthetic:
             result = _call_asset(_pipeline.current_regime, ctx, pl.DataFrame())
         assert result == "transition"
 
+    def test_current_regime_fallback_when_hmm_dependency_missing(self):
+        """current_regime non deve fallire se il runtime HMM non è disponibile."""
+        import builtins
+
+        ctx = _make_context(self.PARTITION)
+        macro = pl.DataFrame({
+            "valid_time": [date.fromisoformat(self.PARTITION)],
+            "sp500_ret_5d": [0.01],
+            "vix": [20.0],
+            "yield_spread": [1.5],
+        })
+
+        real_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hmmlearn":
+                raise ModuleNotFoundError("No module named 'hmmlearn'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch.object(Path, "exists", return_value=False):
+            with patch("builtins.__import__", side_effect=guarded_import):
+                result = _call_asset(_pipeline.current_regime, ctx, macro)
+
+        assert result == "transition"
+
     def test_lgbm_signals_fallback_when_no_checkpoint(self):
         """lgbm_signals restituisce segnali 0.0 se il checkpoint non esiste."""
         ctx = _make_context(self.PARTITION)
@@ -412,6 +526,26 @@ class TestFullPipelineSynthetic:
         )
         assert (result >= 0).all(), "Tutti i pesi devono essere ≥ 0 (long-only)"
 
+    def test_portfolio_weights_fallback_when_optimizer_dependency_missing(self):
+        """Senza cvxpy il portfolio step deve fare fallback equal-weight."""
+        import builtins
+
+        ctx = _make_context(self.PARTITION)
+        council = pd.Series([1.2, -0.4, 0.8], index=self.TICKERS)
+        real_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "cvxpy":
+                raise ModuleNotFoundError("No module named 'cvxpy'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=guarded_import):
+            result = _call_asset(_pipeline.portfolio_weights, ctx, council)
+
+        assert isinstance(result, pd.Series)
+        assert len(result) == len(self.TICKERS)
+        assert abs(result.sum() - 1.0) < 1e-6
+
     def test_daily_orders_valid_schema(self):
         """daily_orders produce un DataFrame con schema corretto."""
         ctx = _make_context(self.PARTITION)
@@ -432,11 +566,13 @@ class TestFullPipelineSynthetic:
     def test_daily_orders_empty_on_empty_weights(self):
         """daily_orders restituisce DataFrame vuoto se i pesi sono vuoti."""
         ctx = _make_context(self.PARTITION)
-        result = _call_asset(
-            _pipeline.daily_orders, ctx, pd.Series(dtype=float)
-        )
+        with patch("pandas.DataFrame.to_parquet", return_value=None) as mocked_save:
+            result = _call_asset(
+                _pipeline.daily_orders, ctx, pd.Series(dtype=float)
+            )
         assert isinstance(result, pd.DataFrame)
         assert result.empty
+        mocked_save.assert_called_once()
 
 
 # ===========================================================================

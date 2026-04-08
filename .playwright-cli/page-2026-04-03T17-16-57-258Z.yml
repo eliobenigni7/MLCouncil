@@ -1,0 +1,104 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "MLCouncil Admin" [level=1] [ref=e4]
+    - navigation [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]: System Overview
+      - generic [ref=e7] [cursor=pointer]: Pipeline Control
+      - generic [ref=e8] [cursor=pointer]: Portfolio
+      - generic [ref=e9] [cursor=pointer]: Configuration
+      - generic [ref=e10] [cursor=pointer]: Monitoring
+  - main [ref=e11]:
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - heading "API Settings" [level=2] [ref=e17]
+        - paragraph [ref=e18]:
+          - text: Shared credentials and endpoints saved in
+          - code [ref=e19]: config/runtime.env
+          - text: for the local system.
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - generic [ref=e22]:
+              - generic [ref=e23]: OpenAI API Key
+              - textbox "OpenAI API Key" [ref=e24]:
+                - /placeholder: sk-...
+                - text: sk-...
+              - generic [ref=e25]: Needed for LLM-backed components and research flows.
+            - generic [ref=e26]:
+              - generic [ref=e27]: Polygon API Key
+              - textbox "Polygon API Key" [ref=e28]:
+                - /placeholder: polygon-api-key
+                - text: ...
+              - generic [ref=e29]: Market data provider for live and historical integrations.
+            - generic [ref=e30]:
+              - generic [ref=e31]: Alpaca Paper Key
+              - textbox "Alpaca Paper Key" [ref=e32]:
+                - /placeholder: alpaca-paper-key
+                - text: ...
+              - generic [ref=e33]: Paper trading API key used by execution services.
+            - generic [ref=e34]:
+              - generic [ref=e35]: Alpaca Paper Secret
+              - textbox "Alpaca Paper Secret" [ref=e36]:
+                - /placeholder: alpaca-paper-secret
+                - text: ...
+              - generic [ref=e37]: Paper trading secret used by execution services.
+            - generic [ref=e38]:
+              - generic [ref=e39]: Alpaca Live Key
+              - textbox "Alpaca Live Key" [ref=e40]:
+                - /placeholder: alpaca-live-key
+              - generic [ref=e41]: Optional live trading API key.
+            - generic [ref=e42]:
+              - generic [ref=e43]: Alpaca Live Secret
+              - textbox "Alpaca Live Secret" [ref=e44]:
+                - /placeholder: alpaca-live-secret
+              - generic [ref=e45]: Optional live trading secret.
+            - generic [ref=e46]:
+              - generic [ref=e47]: Alpaca Base URL
+              - textbox "Alpaca Base URL" [ref=e48]:
+                - /placeholder: https://paper-api.alpaca.markets
+                - text: https://paper-api.alpaca.markets
+              - generic [ref=e49]: Paper or live endpoint base URL.
+            - generic [ref=e50]:
+              - generic [ref=e51]: Alert Email
+              - textbox "Alert Email" [ref=e52]:
+                - /placeholder: alerts@example.com
+                - text: ...
+              - generic [ref=e53]: Sender email used for monitoring notifications.
+            - generic [ref=e54]:
+              - generic [ref=e55]: SMTP Password
+              - textbox "SMTP Password" [ref=e56]:
+                - /placeholder: smtp-password
+                - text: ...
+              - generic [ref=e57]: SMTP or app password for alert emails.
+            - generic [ref=e58]:
+              - generic [ref=e59]: ArcticDB URI
+              - textbox "ArcticDB URI" [ref=e60]:
+                - /placeholder: lmdb://data/arctic/
+                - text: lmdb://data/arctic/
+              - generic [ref=e61]: Shared feature store location.
+            - generic [ref=e62]:
+              - generic [ref=e63]: MLflow Tracking URI
+              - textbox "MLflow Tracking URI" [ref=e64]:
+                - /placeholder: http://localhost:5000
+                - text: http://localhost:5000
+              - generic [ref=e65]: MLflow endpoint for experiment tracking.
+            - generic [ref=e66]:
+              - generic [ref=e67]: Admin API Key
+              - textbox "Admin API Key" [ref=e68]:
+                - /placeholder: admin-api-key
+              - generic [ref=e69]: Optional key required by private admin endpoints.
+          - generic [ref=e70]:
+            - button "Save Settings" [ref=e71] [cursor=pointer]
+            - generic [ref=e72]: "Shared file: /app/config/runtime.env"
+      - generic [ref=e73]:
+        - heading "Active Alerts" [level=2] [ref=e74]
+        - table [ref=e75]:
+          - rowgroup [ref=e76]:
+            - row "Severity Model Type Message Time" [ref=e77]:
+              - columnheader "Severity" [ref=e78]
+              - columnheader "Model" [ref=e79]
+              - columnheader "Type" [ref=e80]
+              - columnheader "Message" [ref=e81]
+              - columnheader "Time" [ref=e82]
+          - rowgroup [ref=e83]:
+            - row "No active alerts" [ref=e84]:
+              - cell "No active alerts" [ref=e85]

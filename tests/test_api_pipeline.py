@@ -61,3 +61,11 @@ def test_pipeline_status_unreachable(client):
         resp = client.get("/api/pipeline/status")
     assert resp.status_code == 200
     assert resp.json()["status"] == "unreachable"
+
+
+def test_latest_partition_endpoint(client):
+    with patch("api.routers.pipeline.dagster_client") as mock_dc:
+        mock_dc.get_latest_partition_key = AsyncMock(return_value="2026-04-02")
+        resp = client.get("/api/pipeline/latest-partition")
+    assert resp.status_code == 200
+    assert resp.json() == {"partition": "2026-04-02"}

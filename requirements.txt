@@ -1,13 +1,23 @@
 streamlit>=1.33.0
 plotly>=5.20.0
 pandas>=2.0.0
+polars>=1.0.0
+yfinance>=0.2.40
+feedparser>=6.0.11
 numpy>=1.26.0
 scipy>=1.11.0
+lightgbm>=4.3.0
+shap>=0.45.0
+hmmlearn>=0.3.2
+cvxpy>=1.5.0
 pyyaml>=6.0
 loguru>=0.7.0
 # Monitoring & drift detection (Agent 09)
 evidently>=0.4.0
 mlflow>=2.10.0
+dagster>=1.6.0
+dagster-graphql>=1.6.0
+dagster-webserver>=1.6.0
 
 # Admin API
 -r requirements_api.txt

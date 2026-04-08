@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from pathlib import Path
 
 from fastapi import APIRouter
+from runtime_env import load_runtime_env
 
 from api.services.dagster_client import DagsterClient
 
 router = APIRouter(tags=["health"])
 
+load_runtime_env()
 _dagster_client = DagsterClient()
 
 
@@ -32,9 +35,11 @@ def _data_freshness() -> dict:
 def _arctic_store_status() -> str:
     try:
         from data.store.arctic_store import FeatureStore
-        fs = FeatureStore()
+        fs = FeatureStore(uri=os.getenv("ARCTICDB_URI", "lmdb://data/arctic/"))
         symbols = fs.list_symbols()
         return "ok" if symbols else "empty"
+    except ImportError:
+        return "unavailable"
     except Exception:
         return "error"
 
@@ -49,14 +54,12 @@ async def health():
     components = {
         "data_freshness": data_fresh["status"],
         "arctic_store": arctic,
-        "monitoring": "active" if has_alerts else "no_file",
+        "monitoring": "active" if has_alerts else "idle",
     }
 
     overall = "ok"
-    if data_fresh["status"] == "stale" or arctic == "error":
+    if data_fresh["status"] in ("stale", "no_data") or arctic in ("unavailable", "error"):
         overall = "degraded"
-    if data_fresh["status"] in ("no_data",) and arctic in ("error", "empty"):
-        overall = "unhealthy"
 
     return {
         "status": overall,

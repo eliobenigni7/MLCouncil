@@ -7,6 +7,8 @@ Architecture
   model's rolling 60-day Information Ratio (mean IC / std IC * sqrt(252)).
 * Models with consistently negative Sharpe are down-weighted toward their floor
   (``weight_clip.min``); no model can exceed ``weight_clip.max``.
+* Orthogonality constraints: correlated models are down-weighted to maintain
+  maximum pairwise correlation below threshold.
 * Every call to ``aggregate()`` is logged (weights + contributions) so that
   ``get_attribution()`` can reconstruct per-model P&L attribution.
 
@@ -19,7 +21,7 @@ Typical daily flow
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -28,11 +30,7 @@ from loguru import logger
 from scipy.stats import spearmanr
 
 
-# ---------------------------------------------------------------------------
-# Default config (fallback when YAML is missing, e.g. in tests)
-# ---------------------------------------------------------------------------
-
-_DEFAULT_CONFIG: dict[str, Any] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "regime_weights": {
         "bull":       {"lgbm": 0.50, "sentiment": 0.30, "hmm": 0.20},
         "bear":       {"lgbm": 0.40, "sentiment": 0.20, "hmm": 0.40},
@@ -44,21 +42,173 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "ic_rolling_window":   30,
         "sharpe_rolling_window": 60,
     },
+    "orthogonality": {
+        "max_correlation": 0.70,
+        "correlation_window": 60,
+        "auto_downweight": True,
+        "downweight_factor": 0.5,
+    },
 }
 
 
-# ---------------------------------------------------------------------------
-# CouncilAggregator
-# ---------------------------------------------------------------------------
+class OrthogonalityMonitor:
+    """Monitor and enforce orthogonality between model signals.
+
+    Tracks rolling correlations between model signals and automatically
+    downweights models that become too correlated with others.
+    """
+
+    def __init__(
+        self,
+        max_correlation: float = 0.70,
+        correlation_window: int = 60,
+        auto_downweight: bool = True,
+        downweight_factor: float = 0.5,
+    ):
+        self.max_correlation = max_correlation
+        self.correlation_window = correlation_window
+        self.auto_downweight = auto_downweight
+        self.downweight_factor = downweight_factor
+        self._signal_history: dict[str, pd.DataFrame] = {}
+        self._correlation_alerts: list[dict] = []
+
+    def update_signals(
+        self,
+        signals: dict[str, pd.Series],
+        date: date,
+    ) -> None:
+        for model_name, sig in signals.items():
+            if model_name not in self._signal_history:
+                self._signal_history[model_name] = pd.DataFrame(columns=sig.index)
+            df = self._signal_history[model_name].copy()
+            df = df.reindex(columns=df.columns.union(sig.index, sort=False))
+            df.loc[date, sig.index] = sig.values
+            # Trim to correlation_window rows to bound memory growth.
+            if len(df) > self.correlation_window:
+                df = df.iloc[-self.correlation_window:]
+            self._signal_history[model_name] = df
+
+    def compute_correlation_matrix(
+        self,
+        models: list[str],
+        end_date: Optional[date] = None,
+    ) -> pd.DataFrame:
+        if len(models) < 2:
+            return pd.DataFrame()
+
+        series_list = []
+        for model in models:
+            if model in self._signal_history:
+                df = self._signal_history[model]
+                if end_date and end_date in df.index:
+                    df = df.loc[:end_date]
+                if len(df) >= 10:
+                    series_list.append(df.mean(axis=1).tail(self.correlation_window))
+
+        if len(series_list) < 2:
+            return pd.DataFrame()
+
+        combined = pd.concat(series_list, axis=1)
+        combined.columns = models[: len(series_list)]
+        return combined.corr()
+
+    def get_correlated_pairs(
+        self,
+        models: list[str],
+        end_date: Optional[date] = None,
+    ) -> list[tuple[str, str, float]]:
+        corr_matrix = self.compute_correlation_matrix(models, end_date)
+        if corr_matrix.empty:
+            return []
+
+        correlated = []
+        for i, model1 in enumerate(corr_matrix.columns):
+            for j, model2 in enumerate(corr_matrix.columns):
+                if i < j:
+                    corr = corr_matrix.loc[model1, model2]
+                    if abs(corr) > self.max_correlation:
+                        correlated.append((model1, model2, corr))
+
+        return correlated
+
+    def compute_orthogonality_penalty(
+        self,
+        models: list[str],
+        base_weights: dict[str, float],
+        end_date: Optional[date] = None,
+    ) -> dict[str, float]:
+        penalties = {m: 1.0 for m in models}
+        correlated = self.get_correlated_pairs(models, end_date)
+
+        if not correlated:
+            return penalties
+
+        for model1, model2, corr in correlated:
+            if model1 in base_weights and model2 in base_weights:
+                if base_weights[model1] >= base_weights[model2]:
+                    penalties[model2] *= self.downweight_factor
+                else:
+                    penalties[model1] *= self.downweight_factor
+
+                self._correlation_alerts.append({
+                    "date": end_date,
+                    "model1": model1,
+                    "model2": model2,
+                    "correlation": corr,
+                    "action": "downweighted",
+                })
+
+        return penalties
+
+    def get_orthogonality_report(
+        self,
+        models: list[str],
+        end_date: Optional[date] = None,
+    ) -> dict:
+        corr_matrix = self.compute_correlation_matrix(models, end_date)
+        correlated = self.get_correlated_pairs(models, end_date)
+
+        if corr_matrix.empty:
+            return {"status": "insufficient_data"}
+
+        upper_tri = corr_matrix.where(
+            np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+        )
+        correlations = upper_tri.stack().values
+
+        return {
+            "status": "ok" if not correlated else "correlated",
+            "max_correlation": float(correlations.max()) if len(correlations) > 0 else 0.0,
+            "mean_correlation": float(correlations.mean()) if len(correlations) > 0 else 0.0,
+            "correlated_pairs": [
+                {"model1": m1, "model2": m2, "correlation": corr}
+                for m1, m2, corr in correlated
+            ],
+            "n_alerts": len(self._correlation_alerts),
+        }
+
 
 class CouncilAggregator:
     """Aggregate signals from N specialised models into a single council signal.
 
-    The weight of each model depends on the current market regime and its
-    rolling Sharpe over the last 60 days of IC observations.
+    The weight of each model depends on:
+    1. Current market regime (base weights from config)
+    2. Rolling Sharpe over the last 60 days of IC observations
+    3. Orthogonality constraints (correlation-based downweighting)
+
+    Supports up to 5 alpha models:
+    - lgbm: LightGBM technical model
+    - sentiment: FinBERT sentiment model
+    - short_interest: FINRA short interest model
+    - earnings_nlp: EDGAR earnings NLP model
+    - hmm: Hidden Markov Model regime
     """
 
-    def __init__(self, config_path: str = "config/regime_weights.yaml") -> None:
+    def __init__(
+        self,
+        config_path: str = "config/regime_weights.yaml",
+        use_orthogonality: bool = True,
+    ) -> None:
         try:
             with open(config_path) as f:
                 cfg: dict[str, Any] = yaml.safe_load(f)
@@ -66,7 +216,7 @@ class CouncilAggregator:
             logger.warning(
                 f"Config not found at {config_path!r}; using built-in defaults."
             )
-            cfg = _DEFAULT_CONFIG
+            cfg = DEFAULT_CONFIG
 
         self._base_weights: dict[str, dict[str, float]] = cfg["regime_weights"]
         self._min_weight: float = cfg["weight_clip"]["min"]
@@ -75,15 +225,16 @@ class CouncilAggregator:
         self._ic_window: int = cfg["performance"]["ic_rolling_window"]
         self._sharpe_window: int = cfg["performance"]["sharpe_rolling_window"]
 
-        # model_name → {date: ic_value}  (populated by update_performance)
+        ortho_cfg = cfg.get("orthogonality", DEFAULT_CONFIG["orthogonality"])
+        self._ortho_monitor = OrthogonalityMonitor(
+            max_correlation=ortho_cfg.get("max_correlation", 0.70),
+            correlation_window=ortho_cfg.get("correlation_window", 60),
+            auto_downweight=ortho_cfg.get("auto_downweight", True),
+            downweight_factor=ortho_cfg.get("downweight_factor", 0.5),
+        ) if use_orthogonality else None
+
         self._ic_by_date: dict[str, dict[date, float]] = {}
-
-        # date → {"weights": {...}, "regime": str, "contributions": {...}}
         self._weights_log: dict[date, dict[str, Any]] = {}
-
-    # ------------------------------------------------------------------
-    # aggregate
-    # ------------------------------------------------------------------
 
     def aggregate(
         self,
@@ -91,39 +242,24 @@ class CouncilAggregator:
         regime: str,
         date: date,
     ) -> pd.Series:
-        """Combine model signals into a single z-scored council signal.
-
-        Parameters
-        ----------
-        signals:
-            Mapping model_name → pd.Series(index=ticker, values=float z-score).
-        regime:
-            Current market regime label: "bull", "bear", or "transition".
-        date:
-            Valuation date — used for logging and attribution lookup.
-
-        Returns
-        -------
-        pd.Series(index=ticker, values=council_signal)
-            Cross-sectional z-score across all active tickers.
-        """
         base_weights = self._base_weights.get(
             regime, self._base_weights.get("transition", {})
         )
 
-        # Only consider models that have both a configured weight and a live signal
         active_models = [m for m in base_weights if m in signals]
         if not active_models:
             logger.warning(
                 f"aggregate() [{date}]: no overlap between config models "
                 f"{list(base_weights)} and provided signals {list(signals)}. "
-                "Using equal-weight fallback over all provided signals."
+                "Using equal-weight fallback."
             )
             active_models = list(signals.keys())
             uw = 1.0 / max(len(active_models), 1)
             base_weights = {m: uw for m in active_models}
 
-        # Adaptive weighting once sufficient IC history is available
+        if self._ortho_monitor:
+            self._ortho_monitor.update_signals(signals, date)
+
         if self._has_sufficient_history(active_models):
             sharpe = self._compute_rolling_sharpe(active_models)
             weights = self._adjust_weights_for_performance(
@@ -134,13 +270,20 @@ class CouncilAggregator:
             total = sum(raw.values()) or 1.0
             weights = {m: v / total for m, v in raw.items()}
 
-        # Union of all tickers across active model signals
+        if self._ortho_monitor and self._ortho_monitor.auto_downweight:
+            penalties = self._ortho_monitor.compute_orthogonality_penalty(
+                active_models, weights, date
+            )
+            for m in weights:
+                weights[m] *= penalties.get(m, 1.0)
+            total = sum(weights.values()) or 1.0
+            weights = {m: v / total for m, v in weights.items()}
+
         all_tickers: set[str] = set()
         for m in active_models:
             all_tickers.update(signals[m].index.tolist())
         tickers = sorted(all_tickers)
 
-        # Weighted average
         combined = pd.Series(0.0, index=tickers)
         contributions: dict[str, float] = {}
         for model in active_models:
@@ -148,17 +291,22 @@ class CouncilAggregator:
             combined += weights[model] * sig
             contributions[model] = float((weights[model] * sig).mean())
 
-        # Cross-sectional z-score
         std = float(combined.std())
         if std > 1e-9:
             combined = (combined - combined.mean()) / std
 
-        # Log for attribution
         self._weights_log[date] = {
             "weights": weights.copy(),
             "regime": regime,
             "contributions": contributions,
         }
+
+        if self._ortho_monitor:
+            ortho_report = self._ortho_monitor.get_orthogonality_report(
+                active_models, date
+            )
+            self._weights_log[date]["orthogonality"] = ortho_report
+
         logger.debug(
             f"[{date}] regime={regime} weights={weights} "
             f"n_tickers={len(tickers)} active_models={active_models}"
@@ -167,32 +315,12 @@ class CouncilAggregator:
         combined.index.name = "ticker"
         return combined
 
-    # ------------------------------------------------------------------
-    # update_performance
-    # ------------------------------------------------------------------
-
     def update_performance(
         self,
         signals_history: dict[str, pd.DataFrame],
         returns_history: pd.DataFrame,
         date: date,
     ) -> None:
-        """Update IC history after T+1 returns become available.
-
-        Called daily after realized returns are known.  Computes the
-        cross-sectional IC (Spearman rank correlation) between each
-        model's signal and the realized returns for each date in
-        ``signals_history`` / ``returns_history``.
-
-        Parameters
-        ----------
-        signals_history:
-            model_name → pd.DataFrame(index=date, columns=ticker).
-        returns_history:
-            pd.DataFrame(index=date, columns=ticker) of realized returns.
-        date:
-            Valuation date of the update call (for logging).
-        """
         for model_name, signals_df in signals_history.items():
             if model_name not in self._ic_by_date:
                 self._ic_by_date[model_name] = {}
@@ -200,7 +328,7 @@ class CouncilAggregator:
             common_dates = signals_df.index.intersection(returns_history.index)
             for d in common_dates:
                 if d in self._ic_by_date[model_name]:
-                    continue  # already computed — skip
+                    continue
 
                 sig = signals_df.loc[d].dropna()
                 ret = returns_history.loc[d].dropna()
@@ -214,7 +342,18 @@ class CouncilAggregator:
                 if not np.isnan(ic_val):
                     self._ic_by_date[model_name][d] = float(ic_val)
 
-        # Back-fill contributions in the weights log with IC × weight
+            # Evict oldest IC entries beyond the Sharpe window to bound memory.
+            if len(self._ic_by_date[model_name]) > self._sharpe_window:
+                oldest = sorted(self._ic_by_date[model_name])[:-self._sharpe_window]
+                for old_d in oldest:
+                    del self._ic_by_date[model_name][old_d]
+
+        # Evict oldest weights-log entries beyond the Sharpe window.
+        if len(self._weights_log) > self._sharpe_window:
+            oldest = sorted(self._weights_log)[:-self._sharpe_window]
+            for old_d in oldest:
+                del self._weights_log[old_d]
+
         for log_date, log_entry in self._weights_log.items():
             for model_name, w in log_entry["weights"].items():
                 ic = self._ic_by_date.get(model_name, {}).get(log_date, np.nan)
@@ -225,21 +364,11 @@ class CouncilAggregator:
             f"{list(signals_history.keys())}"
         )
 
-    # ------------------------------------------------------------------
-    # get_attribution
-    # ------------------------------------------------------------------
-
     def get_attribution(self, date: date) -> pd.DataFrame:
-        """Per-model attribution for a given valuation date.
-
-        Returns
-        -------
-        pd.DataFrame with columns:
-            model_name, weight, ic_rolling_30d, sharpe_rolling_60d, pnl_contribution
-        """
         log = self._weights_log.get(date, {})
         weights_used = log.get("weights", {})
         contributions = log.get("contributions", {})
+        ortho_report = log.get("orthogonality", {})
 
         all_models = sorted(
             set(weights_used.keys()) | set(self._ic_by_date.keys())
@@ -251,61 +380,37 @@ class CouncilAggregator:
             recent_30 = [v for _, v in ic_entries[-self._ic_window:]]
             recent_60 = [v for _, v in ic_entries[-self._sharpe_window:]]
 
-            ic_30d = (
-                float(np.mean(recent_30))
-                if len(recent_30) >= self._ic_window
-                else np.nan
-            )
+            ic_30d = float(np.mean(recent_30)) if len(recent_30) >= self._ic_window else np.nan
             sharpe_60d = (
-                float(
-                    np.mean(recent_60) / (np.std(recent_60) + 1e-9) * np.sqrt(252)
-                )
+                float(np.mean(recent_60) / (np.std(recent_60) + 1e-9) * np.sqrt(252))
                 if len(recent_60) >= 2
                 else np.nan
             )
 
-            rows.append(
-                {
-                    "model_name": model_name,
-                    "weight": weights_used.get(model_name, np.nan),
-                    "ic_rolling_30d": ic_30d,
-                    "sharpe_rolling_60d": sharpe_60d,
-                    "pnl_contribution": contributions.get(model_name, np.nan),
-                }
-            )
+            rows.append({
+                "model_name": model_name,
+                "weight": weights_used.get(model_name, np.nan),
+                "ic_rolling_30d": ic_30d,
+                "sharpe_rolling_60d": sharpe_60d,
+                "pnl_contribution": contributions.get(model_name, np.nan),
+            })
 
         return pd.DataFrame(
             rows,
-            columns=[
-                "model_name",
-                "weight",
-                "ic_rolling_30d",
-                "sharpe_rolling_60d",
-                "pnl_contribution",
-            ],
+            columns=["model_name", "weight", "ic_rolling_30d", "sharpe_rolling_60d", "pnl_contribution"],
         )
 
-    # ------------------------------------------------------------------
-    # _adjust_weights_for_performance
-    # ------------------------------------------------------------------
+    def get_orthogonality_status(self, date: Optional[date] = None) -> dict:
+        if not self._ortho_monitor:
+            return {"status": "disabled"}
+        models = list(self._ic_by_date.keys())
+        return self._ortho_monitor.get_orthogonality_report(models, date)
 
     def _adjust_weights_for_performance(
         self,
         base_weights: dict[str, float],
         sharpe_rolling: dict[str, float],
     ) -> dict[str, float]:
-        """Scale base weights by max(0, Sharpe), clip, then renormalize.
-
-        Algorithm
-        ---------
-        1. adjusted[m] = base_weight[m] * max(0, sharpe_rolling[m])
-        2. Normalize adjusted weights to sum 1.
-        3. Clip each weight to [min_weight, max_weight].
-        4. Renormalize to sum 1.
-
-        Falls back to renormalized base weights when every model has
-        non-positive rolling Sharpe (avoids an all-zero weight vector).
-        """
         adjusted = {
             m: w * max(0.0, sharpe_rolling.get(m, 0.0))
             for m, w in base_weights.items()
@@ -313,34 +418,25 @@ class CouncilAggregator:
         total = sum(adjusted.values())
 
         if total < 1e-9:
-            # All models have non-positive Sharpe — fall back to base weights
             total_base = sum(base_weights.values()) or 1.0
             return {m: v / total_base for m, v in base_weights.items()}
 
-        # Normalize, then clip to [min_weight, max_weight]
         normalized = {m: v / total for m, v in adjusted.items()}
         clipped = {
             m: max(self._min_weight, min(self._max_weight, v))
             for m, v in normalized.items()
         }
 
-        # Final renormalization after clipping
         total_clipped = sum(clipped.values()) or 1.0
         return {m: v / total_clipped for m, v in clipped.items()}
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _has_sufficient_history(self, models: list[str]) -> bool:
-        """True if at least one model has >= min_history_days of IC entries."""
-        return any(
+        return all(
             len(self._ic_by_date.get(m, {})) >= self._min_history
             for m in models
         )
 
     def _compute_rolling_sharpe(self, models: list[str]) -> dict[str, float]:
-        """Rolling Sharpe (60-day IC mean / std * sqrt(252)) per model."""
         result: dict[str, float] = {}
         for m in models:
             entries = sorted(self._ic_by_date.get(m, {}).items())

@@ -28,6 +28,19 @@ _RAW_DIR = _ROOT / "data" / "raw"
 _RESULTS_DIR = _ROOT / "data" / "results"
 
 
+def _flatten_universe_tickers(universe: dict) -> list[str]:
+    tickers = universe.get("tickers")
+    if isinstance(tickers, list):
+        return tickers
+
+    flattened: list[str] = []
+    for key, value in universe.items():
+        if key == "settings" or not isinstance(value, list):
+            continue
+        flattened.extend(str(ticker) for ticker in value)
+    return list(dict.fromkeys(flattened))
+
+
 # ============================================================================
 # Equity curve
 # ============================================================================
@@ -461,7 +474,7 @@ def _synthetic_portfolio_snapshot() -> pd.DataFrame:
     try:
         with open(_ROOT / "config" / "universe.yaml") as f:
             cfg = yaml.safe_load(f)
-        tickers = cfg["universe"]["tickers"]
+        tickers = _flatten_universe_tickers(cfg["universe"])
     except Exception:
         tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]
 
@@ -522,12 +535,20 @@ def load_sidebar_metrics() -> dict:
         sharpe_prev = sharpe_ytd
 
     # Max drawdown (YTD)
-    equity_ytd = load_equity_curve()[ytd_start:]
+    equity = load_equity_curve()
+    equity_ytd = equity[equity.index >= ytd_start]
     if equity_ytd.empty:
-        equity_ytd = load_equity_curve()
+        equity_ytd = equity
     rolling_max = equity_ytd.cummax()
     dd_series = (equity_ytd - rolling_max) / rolling_max
     max_dd = float(dd_series.min()) if not dd_series.empty else 0.0
+    
+    # Drawdown delta (yesterday's dd vs current dd)
+    dd_delta = 0.0
+    if len(equity_ytd) >= 2:
+        dd_today = float(dd_series.iloc[-1])
+        dd_prev = float(dd_series.iloc[-2])
+        dd_delta = round(dd_today - dd_prev, 4)
 
     # IC 30d (latest from attribution)
     attr = load_model_attribution()
@@ -551,6 +572,6 @@ def load_sidebar_metrics() -> dict:
         "regime": regime,
         "regime_prob": round(regime_prob * 100, 1),
         "sharpe_delta": round(sharpe_ytd - sharpe_prev, 3),
-        "dd_delta": 0.0,   # placeholder — needs prior-day equity
+        "dd_delta": dd_delta,
         "ic_delta": round(ic_30d - ic_prev, 4),
     }
