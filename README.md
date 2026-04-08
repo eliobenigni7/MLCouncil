@@ -1,432 +1,323 @@
 # MLCouncil
 
-A multi-model ensemble trading system with regime-conditional adaptive weighting, conformal position sizing, and comprehensive monitoring.
+MLCouncil is an end-to-end paper trading platform for US equities.
+It ingests market, news, and macro data, builds features, trains and evaluates multiple alpha models, aggregates them with regime-aware weights, optimizes a target portfolio, and can automatically submit paper orders to Alpaca after a successful pipeline run.
 
-## Overview
+## How It Works
 
-MLCouncil implements a **council of alpha models** that combine signals from:
-- **Technical Model**: LightGBM with Alpha158 features and CPCV cross-validation
-- **Sentiment Model**: FinBERT-based financial news sentiment with recency decay
-- **Regime Model**: Gaussian HMM for market state detection (bull/bear/transition)
+At a high level, the system runs this loop:
 
-The system aggregates these signals using **regime-conditional weights** that adapt based on rolling performance metrics, then optimizes portfolio allocations via mean-variance optimization with uncertainty-aware position sizing.
+1. Ingest daily OHLCV, news, and macro data.
+2. Build point-in-time features with lookahead protection.
+3. Train or refresh the alpha models and log runs to MLflow.
+4. Generate model signals and combine them in the council.
+5. Optimize target weights under trading and risk constraints.
+6. Write dated orders with lineage metadata.
+7. Run pre-trade checks, reconciliation, and risk validation.
+8. Submit paper orders to Alpaca automatically or manually.
+9. Expose status, positions, fills, monitoring, and diagnostics in the Admin UI, Dashboard, Dagster, and MLflow.
+
+In production-style local usage, Dagster orchestrates the pipeline, the FastAPI admin service exposes operations and controls, Streamlit exposes the read-only dashboard, and MLflow tracks experiments and backtests.
 
 ## Architecture
 
+```text
+                                  +----------------------+
+                                  |      MLflow          |
+                                  | runs, metrics, tags  |
+                                  +----------+-----------+
+                                             ^
+                                             |
++-------------+      +-------------+      +--+----------------+      +-------------------+
+| data/ingest | ---> | data/features| ---> | models + council | ---> | council/portfolio |
+| OHLCV/news  |      | Alpha158 etc |      | signals, weights |      | target weights    |
++------+------+      +------+------+      +---------+---------+      +---------+---------+
+       |                    |                        |                          |
+       v                    v                        v                          v
++-------------+      +-------------+      +-------------------+      +-------------------+
+| raw datasets |      | feature sets |      | model artifacts   |      | data/orders/*.parquet |
++-------------+      +------+------+      +-------------------+      +---------+---------+
+                             |                                                  |
+                             v                                                  v
+                       +-------------+                                +-------------------+
+                       | ArcticDB /  |                                | trading_service   |
+                       | local store |                                | preflight, risk,  |
+                       +------+------+                                | reconcile, submit |
+                              |                                       +---------+---------+
+                              |                                                 |
+                              v                                                 v
+                       +-------------+                                +-------------------+
+                       |  Dagster    |                                | Alpaca Paper      |
+                       | orchestration|                               | orders and fills  |
+                       +------+------+                                +---------+---------+
+                              |                                                 |
+                              +---------------------+---------------------------+
+                                                    |
+                         +--------------------------+--------------------------+
+                         |                                                     |
+                         v                                                     v
+                +-------------------+                                 +-------------------+
+                | FastAPI Admin UI  |                                 | Streamlit Dashboard |
+                | control plane     |                                 | monitoring/read-only|
+                +-------------------+                                 +-------------------+
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    MLCouncil System Architecture                     │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐          │
-│  │  Dagster     │────▶│  Council     │────▶│  Portfolio   │          │
-│  │  Pipeline    │     │  Aggregator  │     │  Constructor │          │
-│  └──────────────┘     └──────────────┘     └──────────────┘          │
-│         │                    │                    │                  │
-│         ▼                    ▼                    ▼                  │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐          │
-│  │ Data Ingest  │     │  Monitoring  │     │  Backtest    │          │
-│  │ (yfinance)   │     │  & Alerts    │     │  Engine      │          │
-│  └──────────────┘     └──────────────┘     └──────────────┘          │
-│                                                                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                          Frontends                                   │
-│  ┌──────────────────────┐     ┌──────────────────────┐              │
-│  │  Streamlit Dashboard  │     │   FastAPI Admin UI   │              │
-│  │  (Public, Read-only)  │     │   (Private, Full)    │              │
-│  └──────────────────────┘     └──────────────────────┘              │
-└─────────────────────────────────────────────────────────────────────┘
-```
 
-## Features
+## Core Components
 
-### Alpha Models
-- **LightGBM Technical Model**: 158+ technical indicators with Combinatorial Purged Cross-Validation (CPCV)
-- **FinBERT Sentiment Model**: Financial news sentiment with source credibility weighting and recency decay
-- **HMM Regime Detection**: 3-state Gaussian Hidden Markov Model for market regime classification
+### Pipeline and Data Layer
+- `data/pipeline.py`: Dagster assets, jobs, partitions, and asset checks.
+- `data/ingest/`: market, news, and macro ingestion.
+- `data/features/`: Alpha158, sentiment, sector exposure, and related feature builders.
+- `data/store/arctic_store.py`: point-in-time feature storage.
 
-### Council System
-- Regime-conditional base weights (bull/bear/transition configurations)
-- Adaptive weighting based on rolling 60-day Sharpe ratio
-- Weight bounds: min 5%, max 70% per model
-- Full attribution logging for performance analysis
+### Models and Council
+- `models/technical.py`: LightGBM-based technical alpha model.
+- `models/sentiment.py`: sentiment alpha model.
+- `models/regime.py`: regime detection model.
+- `council/aggregator.py`: combines model outputs with regime-conditional weights.
+- `council/portfolio.py`: converts council signals into feasible portfolio weights.
 
-### Risk Management
-- Mean-variance portfolio optimization via CVXPY
-- Constraints: long-only, max 10% per position, 30% turnover cap, 20% vol ceiling
-- Conformal position sizing using MAPIE Jackknife+ intervals
-- Low-confidence signal filtering
+### Trading and Operations
+- `api/services/trading_service.py`: preflight checks, reconciliation, execution, live status, trade history.
+- `api/services/pipeline_automation.py`: monitors Dagster runs and auto-executes orders when enabled.
+- `execution/alpaca_adapter.py`: Alpaca paper broker adapter.
+- `council/risk_engine.py`: operational risk checks used before execution.
 
-### Monitoring & Alerts
-- Alpha decay detection (IC < 0.01 for 5+ consecutive days)
-- Feature drift detection via KS test on SHAP features
-- SHAP stability monitoring (Jaccard overlap < 70%)
-- Regime change alerts
-- Email notifications for CRITICAL issues
+### Interfaces
+- `api/`: FastAPI backend and Admin UI.
+- `dashboard/`: Streamlit dashboard.
+- `docker-compose.yml`: local multi-service runtime.
 
-### Dashboards
-- **Public Dashboard** (Streamlit): Performance metrics, model attribution, regime timeline
-- **Admin Dashboard** (FastAPI): Pipeline control, portfolio management, config editing, alert monitoring
+## Daily Operational Flow
 
-## Installation
+### 1. Pipeline Run
+A Dagster run produces the daily datasets and artifacts:
+- raw market, news, macro inputs
+- feature tables
+- model outputs and council scores
+- optimized portfolio weights
+- `data/orders/{date}.parquet`
 
-### Requirements
-- Python 3.10+
-- PostgreSQL (optional, for production)
-- MLflow server (optional, for experiment tracking)
+### 2. Lineage and Contracts
+Orders and model-related artifacts carry minimum lineage metadata:
+- `pipeline_run_id`
+- `data_version`
+- `feature_version`
+- `model_version`
 
-### Setup
+Dagster asset checks fail closed when the expected contracts are violated.
+
+### 3. Pre-Trade Controls
+Before orders are sent, the trading service evaluates:
+- paper-mode enforcement
+- kill switch / automation pause
+- max daily order count
+- max turnover
+- max position size
+- projected risk breaches
+- reconciliation between current positions and target orders
+
+### 4. Execution
+If preflight is green, the service:
+- normalizes notionals to share quantities
+- submits paper orders to Alpaca
+- records operations artifacts and trade logs
+- updates trade history with live broker order status
+
+### 5. Monitoring
+The system exposes runtime status through:
+- Admin UI: operational control and execution status
+- Dashboard: portfolio, regime, attribution, alerts
+- Dagster UI: orchestration state
+- MLflow UI: training, retraining, backtest, promotion evidence
+
+## Main Features
+
+### Ensemble Alpha Stack
+- Technical model with Alpha158-style features
+- Sentiment model built from financial news
+- Regime-aware weighting logic in the council
+- Adaptive aggregation based on model diagnostics and regime context
+
+### Portfolio Construction
+- Long-only optimization
+- Max position cap
+- Turnover control
+- Sector exposure handling
+- Feasible bootstrap behavior for an empty paper portfolio
+
+### Paper Trading Controls
+- Automatic order execution after successful Dagster runs
+- Preflight and reconciliation endpoints
+- Kill switch support
+- Runtime environment validation
+- Persistent operations and risk artifacts
+
+### Experiment Tracking and Validation
+- Standardized MLflow runs and tags
+- Backtest metrics with gross/net realism
+- Walk-forward diagnostics and promotion gates
+- Data, feature, and model lineage propagation
+
+## Quick Start
+
+### Local Python Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/MLCouncil.git
-cd MLCouncil
-
-# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Environment Variables
+### Required Environment
 
 Create a `.env` file in the project root:
 
 ```env
-# Trading API
 ALPACA_API_KEY=your_alpaca_key
 ALPACA_SECRET_KEY=your_alpaca_secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
-
-# Market Data
-POLYGON_API_KEY=your_polygon_key
-
-# Alerts (Gmail SMTP)
-ALERT_EMAIL=your_email@gmail.com
-SMTP_PASSWORD=your_app_password
-
-# Storage
 ARCTICDB_URI=lmdb://data/arctic/
 MLFLOW_TRACKING_URI=http://localhost:5000
-DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
 ```
 
-## Usage
+Runtime profiles and examples live under `config/`:
+- `config/runtime.env`
+- `config/runtime.local.env.example`
+- `config/runtime.paper.env.example`
 
-## Fase 1 Foundations
+## Run the System
 
-- Dagster ora espone asset checks bloccanti per i contratti di `raw_ohlcv`, `raw_news`, `raw_macro`, `alpha158_features`, `sentiment_features` e `daily_orders`.
-- Gli ordini salvati in `data/orders/*.parquet` includono lineage minimo (`pipeline_run_id`, `data_version`, `feature_version`, `model_version`).
-- MLflow usa tag standardizzati per training, retraining e backtest.
-- La baseline CI vive in [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
-- Le convenzioni operative di Fase 1 sono riepilogate in [`docs/fase1-foundations.md`](./docs/fase1-foundations.md).
-
-## Fase 2 Realism
-
-- I costi di transazione usano un contratto condiviso in `council/transaction_costs.py`.
-- Il backtest usa l'equity netta come default operativo ma conserva anche la curva lorda.
-- Il runner e MLflow espongono metriche `gross` e `net`, inclusi `estimated_costs_usd`, `gross_final_equity` e `net_final_equity`.
-- Il retraining aggiunge diagnostica out-of-sample deterministica (`oos_sharpe`, `oos_max_drawdown`, `oos_turnover`, `walk_forward_window_count`, `pbo`).
-- Il promotion gate blocca candidati senza diagnostica walk-forward sufficiente, con `oos_sharpe <= 0` o con `pbo > 0.50`.
-- Le convenzioni operative di Fase 2 sono riepilogate in [`docs/fase2-realism.md`](./docs/fase2-realism.md).
-
-## Fase 3 Operational Controls
-
-- `api/services/trading_service.py` ora esegue un preflight unico con paper-mode enforcement, kill switch operativo, pre-trade risk e reconciliation.
-- Gli ordini generati dalla pipeline vengono normalizzati da notional USD a share quantity usando i prezzi correnti prima dell'invio ad Alpaca.
-- `POST /api/trading/execute` blocca l'esecuzione con HTTP `409` quando il preflight rileva un hard stop.
-- Nuovi endpoint: `GET /api/trading/preflight/{date}` e `GET /api/trading/reconcile/{date}`.
-- I run di paper trading persistono artifact operativi in `data/operations/{date}.json` e report di rischio in `data/risk/risk_report_{date}.json`.
-- Il monitoring settings service espone anche `MLCOUNCIL_AUTOMATION_PAUSED`, `MLCOUNCIL_MAX_DAILY_ORDERS`, `MLCOUNCIL_MAX_TURNOVER` e `MLCOUNCIL_MAX_POSITION_SIZE`.
-- Le convenzioni operative di Fase 3 sono riepilogate in [`docs/fase3-operational-controls.md`](./docs/fase3-operational-controls.md).
-
-## Fase 4 Hardening
-
-- `runtime_env.py` valida ora i profili runtime e segnala configurazioni `paper` incoerenti.
-- `GET /api/health` include lo stato `runtime_env` e lo stato dell'ultimo artifact operativo in `data/operations/`.
-- Sono stati aggiunti test mirati per `runtime_env.py`, `execution/alpaca_adapter.py` e `data/store/arctic_store.py`.
-- Il runbook operativo giornaliero vive in [`docs/paper-trading-runbook.md`](./docs/paper-trading-runbook.md).
-- I criteri di promozione dei modelli vivono in [`docs/model-promotion-criteria.md`](./docs/model-promotion-criteria.md).
-- Le convenzioni di hardening sono riepilogate in [`docs/fase4-hardening.md`](./docs/fase4-hardening.md).
-
-## Pipeline Auto-Execute
-
-- `runtime_env.py` tratta ora i placeholder `replace-me` come non configurati, quindi le vere credenziali legacy (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) possono essere promosse correttamente a `ALPACA_PAPER_KEY` e `ALPACA_PAPER_SECRET`.
-- `MLCOUNCIL_AUTO_EXECUTE=true` abilita il monitor della run Dagster: quando `POST /api/pipeline/run` completa con `SUCCESS`, il sistema esegue automaticamente `POST /api/trading/execute` sulla stessa partition.
-- Lo stato dell’automazione è interrogabile via `GET /api/pipeline/automation/{run_id}`.
-- L’Admin UI espone il toggle `Auto-execute on pipeline completion` nel tab Trading e lo salva nel runtime shared env.
-
-### Run the Pipeline (Demo)
+### Docker Compose
 
 ```bash
-python scripts/run_pipeline.py
+docker compose build
+docker compose up -d
 ```
 
-This runs a standalone demo pipeline that:
-1. Downloads OHLCV data
-2. Computes Alpha158 features
-3. Trains LightGBM and HMM models
-4. Generates signals and portfolio weights
-5. Outputs daily orders
+Services:
+- Admin UI and API: `http://localhost:8000`
+- Streamlit Dashboard: `http://localhost:8501`
+- Dagster UI: `http://localhost:3000`
+- MLflow UI: `http://localhost:5000`
 
-### Run Dagster Pipeline (Production)
-
-```bash
-# Start Dagster UI
-dagster dev -f data/pipeline.py
-
-# Or run programmatically
-python -c "from data.pipeline import defs; defs.get_job('daily_pipeline').execute_in_process()"
-```
-
-### Run Public Dashboard
-
-```bash
-streamlit run dashboard/app.py
-```
-
-Access at: http://localhost:8501
-
-### Run Admin Dashboard
+### Local Services Without Docker
 
 ```bash
 python run_admin.py
+streamlit run dashboard/app.py
+dagster dev -f data/pipeline.py
 ```
 
-Access at: http://localhost:8000
+## Pipeline and Trading Usage
 
-- **Admin UI**: http://localhost:8000
-- **API Docs**: http://localhost:8000/api/docs
+### Trigger a Pipeline Run
 
-## API Endpoints
+```bash
+curl -X POST http://localhost:8000/api/pipeline/run \
+  -H "Content-Type: application/json" \
+  -d '{"partition":"2026-04-07"}'
+```
 
-### Health
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/health` | System health status |
-| GET | `/api/health/dagster` | Dagster connectivity |
+### Check Automation Status
+
+```bash
+curl http://localhost:8000/api/pipeline/automation/<run_id>
+```
+
+### Manual Preflight and Execution
+
+```bash
+curl http://localhost:8000/api/trading/preflight/2026-04-07
+curl -X POST http://localhost:8000/api/trading/execute \
+  -H "Content-Type: application/json" \
+  -d '{"date":"2026-04-07"}'
+```
+
+### Enable Auto-Execute
+
+Set:
+
+```env
+MLCOUNCIL_AUTO_EXECUTE=true
+```
+
+When enabled, a successful pipeline run automatically monitors the Dagster run and executes the matching order date through the trading service.
+
+## Important Endpoints
+
+### Health and Runtime
+- `GET /api/health`
+- `GET /api/health/dagster`
+- `GET /api/trading/status`
 
 ### Pipeline
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/pipeline/run` | Trigger pipeline execution |
-| GET | `/api/pipeline/status` | Last run status |
-
-### Portfolio
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/portfolio/weights` | Current portfolio weights |
-| GET | `/api/portfolio/orders/dates` | Available order dates |
-| GET | `/api/portfolio/orders/{date}` | Orders for specific date |
-
-### Configuration
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/config/universe` | Get universe config |
-| PUT | `/api/config/universe` | Update universe config |
-| GET | `/api/config/models` | Get model hyperparameters |
-| GET | `/api/config/regime-weights` | Get regime weights |
-| PUT | `/api/config/regime-weights` | Update regime weights |
-
-### Monitoring
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/monitoring/alerts` | Current active alerts |
-| GET | `/api/monitoring/alerts/history` | Alert history |
+- `POST /api/pipeline/run`
+- `GET /api/pipeline/status`
+- `GET /api/pipeline/automation/{run_id}`
 
 ### Trading
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/trading/status` | Alpaca paper status + runtime flags |
-| GET | `/api/trading/orders/latest` | Latest order date |
-| GET | `/api/trading/orders/pending/{date}` | Pending orders for date |
-| GET | `/api/trading/preflight/{date}` | Pre-trade risk and reconciliation snapshot |
-| GET | `/api/trading/reconcile/{date}` | Target vs current positions summary |
-| POST | `/api/trading/execute` | Execute paper orders, blocked with `409` on hard stops |
-| POST | `/api/trading/liquidate` | Liquidate all current paper positions |
-| GET | `/api/trading/history` | Local trade log history |
+- `GET /api/trading/orders/latest`
+- `GET /api/trading/orders/pending/{date}`
+- `GET /api/trading/preflight/{date}`
+- `GET /api/trading/reconcile/{date}`
+- `POST /api/trading/execute`
+- `POST /api/trading/liquidate`
+- `GET /api/trading/history`
 
-## Configuration
+### Configuration and Monitoring
+- `GET /api/config/universe`
+- `PUT /api/config/universe`
+- `GET /api/config/regime-weights`
+- `PUT /api/config/regime-weights`
+- `GET /api/monitoring/alerts`
+- `GET /api/monitoring/alerts/history`
 
-### Universe (`config/universe.yaml`)
+## Project Structure
 
-```yaml
-universe:
-  tickers: [AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, JPM, JNJ, V, UNH, XOM, WMT, PG, MA]
-settings:
-  data_dir: data/raw
-  transaction_timezone: America/New_York
-  transaction_time_hour: 20
-  transaction_time_minute: 30
-macro:
-  fred_series:
-    vix: VIXCLS
-    treasury_10y: DGS10
-    treasury_2y: DGS2
-    sp500: SP500
+```text
+MLCouncil/
+|-- api/                  FastAPI backend, Admin UI, service layer
+|-- backtest/             Backtest engine and validation
+|-- config/               Runtime and model configuration
+|-- council/              Aggregation, portfolio, risk, monitoring
+|-- dashboard/            Streamlit dashboard
+|-- data/                 Ingestion, features, storage, Dagster pipeline
+|-- docs/                 Operational documentation and phase notes
+|-- execution/            Broker adapter(s)
+|-- models/               Alpha and regime models
+|-- scripts/              Utility and support scripts
+|-- tests/                Pytest suite
+|-- docker-compose.yml    Local multi-service stack
+|-- requirements.txt      Main dependencies
+`-- run_admin.py          Admin server entry point
 ```
 
-### Model Parameters (`config/models.yaml`)
+## Documentation
 
-```yaml
-lgbm:
-  n_estimators: 500
-  learning_rate: 0.05
-  num_leaves: 64
-  
-cpcv:
-  n_splits: 6
-  embargo_days: 5
-  n_test_folds: 2
+### Foundation and Architecture Phases
+- [docs/fase1-foundations.md](docs/fase1-foundations.md)
+- [docs/fase2-realism.md](docs/fase2-realism.md)
+- [docs/fase3-operational-controls.md](docs/fase3-operational-controls.md)
+- [docs/fase4-hardening.md](docs/fase4-hardening.md)
 
-hmm:
-  n_states: 3
-  n_iter: 100
-
-sentiment:
-  model_name: "ProsusAI/finbert"
-  recency_decay: 0.7
-```
-
-### Regime Weights (`config/regime_weights.yaml`)
-
-```yaml
-regime_weights:
-  bull:       {lgbm: 0.50, sentiment: 0.30, hmm: 0.20}
-  bear:       {lgbm: 0.40, sentiment: 0.20, hmm: 0.40}
-  transition: {lgbm: 0.45, sentiment: 0.25, hmm: 0.30}
-
-weight_clip:
-  min: 0.05
-  max: 0.70
-```
+### Operations
+- [docs/paper-trading-runbook.md](docs/paper-trading-runbook.md)
+- [docs/model-promotion-criteria.md](docs/model-promotion-criteria.md)
 
 ## Testing
 
 ```bash
-# Run all API tests
-python -m pytest tests/test_api_*.py -v
-
-# Run specific test modules
+python -m pytest
 python -m pytest tests/test_council.py -v
-python -m pytest tests/test_models.py -v
+python -m pytest tests/test_trading_service.py -v
 ```
 
-## Project Structure
+## Current Scope
 
-```
-MLCouncil/
-├── api/                    # FastAPI Admin Backend
-│   ├── main.py            # App factory
-│   ├── routers/           # API endpoints
-│   ├── services/          # Business logic
-│   ├── static/            # CSS/JS for admin UI
-│   └── templates/         # HTML templates
-├── backtest/              # NautilusTrader backtest engine
-├── council/               # Ensemble aggregation & portfolio
-│   ├── aggregator.py      # CouncilAggregator
-│   ├── portfolio.py       # PortfolioConstructor
-│   ├── conformal.py       # ConformalPositionSizer
-│   ├── monitor.py         # CouncilMonitor
-│   └── alerts.py          # AlertDispatcher
-├── config/                # YAML configuration files
-├── dashboard/             # Streamlit public dashboard
-├── data/                  # Data pipeline & storage
-│   ├── ingest/           # Market data, news, macro
-│   ├── features/         # Alpha158, targets
-│   ├── store/            # ArcticDB feature store
-│   └── pipeline.py       # Dagster assets & jobs
-├── models/                # ML models
-│   ├── technical.py      # LightGBM model
-│   ├── sentiment.py      # FinBERT model
-│   └── regime.py         # HMM model
-├── scripts/               # Utility scripts
-├── tests/                 # Test suite
-├── requirements.txt       # Main dependencies
-├── requirements_api.txt   # API-only dependencies
-└── run_admin.py          # Admin server entry point
-```
-
-## Deployment
-
-### Docker (Recommended)
-
-Build and run with Docker Compose:
-
-```bash
-# Build all services
-docker-compose build
-
-# Run admin API only
-docker-compose up admin-api
-
-# Run all services (API, Dashboard, Dagster, MLflow)
-docker-compose up
-
-# Run in background
-docker-compose up -d
-```
-
-**Services:**
-| Service | Port | Description |
-|---------|------|-------------|
-| admin-api | 8000 | FastAPI Admin backend |
-| dashboard | 8501 | Streamlit public dashboard |
-| dagster | 3000 | Pipeline orchestration UI |
-| mlflow | 5000 | Experiment tracking |
-
-**Production deployment:**
-```bash
-# Build image
-docker build -t mlcouncil .
-
-# Run API
-docker run -p 8000:8000 -v ./data:/app/data mlcouncil
-
-# Run Dashboard
-docker run -p 8501:8501 mlcouncil streamlit run dashboard/app.py
-```
-
-### Streamlit Cloud (Dashboard Only)
-
-1. Push to GitHub
-2. Connect to Streamlit Cloud
-3. Set `dashboard/app.py` as entry point
-4. Configure secrets for API keys
-
-### Render/Railway (API)
-
-1. Connect GitHub repository
-2. Set build command: `pip install -r requirements.txt`
-3. Set start command: `python run_admin.py`
-4. Configure environment variables
-
-## Roadmap
-
-- [ ] Live trading integration with Alpaca
-- [ ] Additional alpha models (momentum, fundamental)
-- [ ] Multi-asset support (crypto, futures)
-- [ ] Real-time dashboard updates via WebSockets
-- [ ] User authentication for admin panel
-- [ ] Automated model retraining pipeline
+The current target is robust paper trading on US equities with Alpaca Paper.
+Kubernetes, GitOps, and live trading are intentionally out of scope until the paper-trading path remains stable end to end.
 
 ## License
 
-MIT License - See LICENSE file for details.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## Acknowledgments
-
-- [NautilusTrader](https://nautilustrader.io/) - Backtesting engine
-- [ArcticDB](https://github.com/man-group/ArcticDB) - Feature store
-- [Evidently](https://evidentlyai.com/) - Drift detection
-- [Dagster](https://dagster.io/) - Pipeline orchestration
+MIT License. See `LICENSE`.
