@@ -6,7 +6,12 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from runtime_env import LEGACY_ENV_ALIASES, get_runtime_env_path, load_runtime_env
+from runtime_env import (
+    LEGACY_ENV_ALIASES,
+    get_runtime_env_path,
+    is_placeholder_env_value,
+    load_runtime_env,
+)
 
 ALERTS_DIR = Path("data/alerts")
 CURRENT_ALERTS_PATH = Path("data/monitoring/current_alerts.json")
@@ -61,6 +66,13 @@ SETTINGS_FIELDS = [
         "description": "Paper or live endpoint base URL.",
         "secret": False,
         "placeholder": "https://paper-api.alpaca.markets",
+    },
+    {
+        "key": "MLCOUNCIL_AUTO_EXECUTE",
+        "label": "Auto Execute",
+        "description": "Automatically execute paper orders when a pipeline run succeeds.",
+        "secret": False,
+        "placeholder": "false",
     },
     {
         "key": "MLCOUNCIL_AUTOMATION_PAUSED",
@@ -170,7 +182,7 @@ def get_runtime_settings() -> dict:
             {
                 **field,
                 "value": value,
-                "configured": bool(value),
+                "configured": not is_placeholder_env_value(value),
             }
         )
 
@@ -228,18 +240,23 @@ def _read_runtime_env_file() -> dict[str, str]:
 
 
 def _resolve_setting_value(key: str, values: dict[str, str]) -> str:
-    if key in values:
-        return values[key]
-
     legacy_key = LEGACY_ENV_ALIASES.get(key)
-    if legacy_key and legacy_key in values:
-        return values[legacy_key]
+    env_value = os.getenv(key)
+    legacy_env_value = os.getenv(legacy_key) if legacy_key else None
+    file_value = values.get(key)
+    legacy_file_value = values.get(legacy_key) if legacy_key else None
 
-    if os.getenv(key):
-        return os.environ[key]
+    if not is_placeholder_env_value(env_value):
+        return env_value or ""
 
-    if legacy_key and os.getenv(legacy_key):
-        return os.environ[legacy_key]
+    if not is_placeholder_env_value(legacy_env_value):
+        return legacy_env_value or ""
+
+    if not is_placeholder_env_value(file_value):
+        return file_value or ""
+
+    if not is_placeholder_env_value(legacy_file_value):
+        return legacy_file_value or ""
 
     return ""
 

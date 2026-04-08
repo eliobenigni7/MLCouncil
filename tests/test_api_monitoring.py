@@ -35,6 +35,10 @@ def test_get_runtime_settings(client, tmp_path, monkeypatch):
         "POLYGON_API_KEY=polygon-test\n"
     )
     monkeypatch.setattr(monitoring_service, "RUNTIME_ENV_PATH", runtime_env)
+    monkeypatch.delenv("ALPACA_PAPER_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_PAPER_SECRET", raising=False)
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
 
     resp = client.get("/api/monitoring/settings")
     assert resp.status_code == 200
@@ -45,6 +49,34 @@ def test_get_runtime_settings(client, tmp_path, monkeypatch):
     assert keys["POLYGON_API_KEY"]["value"] == "polygon-test"
     assert keys["ALPACA_PAPER_KEY"]["value"] == "legacy-paper-key"
     assert keys["ALPACA_PAPER_SECRET"]["value"] == "legacy-paper-secret"
+
+
+def test_get_runtime_settings_prefers_env_over_placeholder_file_values(
+    client, tmp_path, monkeypatch
+):
+    from api.services import monitoring_service
+
+    runtime_env = tmp_path / "runtime.env"
+    runtime_env.write_text(
+        "ALPACA_PAPER_KEY=replace-me\n"
+        "ALPACA_PAPER_SECRET=replace-me\n"
+        "MLCOUNCIL_AUTO_EXECUTE=false\n"
+    )
+    monkeypatch.setattr(monitoring_service, "RUNTIME_ENV_PATH", runtime_env)
+    monkeypatch.setenv("ALPACA_API_KEY", "runtime-paper-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "runtime-paper-secret")
+    monkeypatch.setenv("MLCOUNCIL_AUTO_EXECUTE", "true")
+    monkeypatch.delenv("ALPACA_PAPER_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_PAPER_SECRET", raising=False)
+
+    resp = client.get("/api/monitoring/settings")
+    assert resp.status_code == 200
+
+    body = resp.json()
+    keys = {item["key"]: item for item in body["settings"]}
+    assert keys["ALPACA_PAPER_KEY"]["value"] == "runtime-paper-key"
+    assert keys["ALPACA_PAPER_SECRET"]["value"] == "runtime-paper-secret"
+    assert keys["MLCOUNCIL_AUTO_EXECUTE"]["value"] == "true"
 
 
 def test_update_runtime_settings_persists_shared_env(client, tmp_path, monkeypatch):

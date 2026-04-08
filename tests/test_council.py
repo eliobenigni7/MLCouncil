@@ -13,6 +13,7 @@ Coverage
 from __future__ import annotations
 
 from datetime import date, timedelta
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -423,3 +424,32 @@ class TestPortfolioConstructor:
         weights = pd.Series([0.5, 0.5], index=tickers)
         orders = constructor.compute_orders(weights, weights, portfolio_value=100.0)
         assert len(orders) == 0, "No orders expected when weights are identical"
+
+    def test_sector_aware_fallback_respects_dynamic_sector_cap(self, constructor):
+        """Il fallback deve restare investibile senza concentrare tutto nel tech."""
+        import builtins
+        from data.features.sector_exposure import compute_sector_exposures
+
+        tickers = [
+            "AAPL", "MSFT", "GOOGL", "NVDA", "META",
+            "AMZN", "ABNB", "UBER", "ETSY",
+            "ROKU",
+        ]
+        alpha = pd.Series(range(len(tickers), 0, -1), index=tickers, dtype=float)
+        multipliers = pd.Series(1.0, index=tickers)
+        current_w = pd.Series(0.0, index=tickers)
+        cov = pd.DataFrame(np.eye(len(tickers)) * 0.0001, index=tickers, columns=tickers)
+        real_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "cvxpy":
+                raise ModuleNotFoundError("No module named 'cvxpy'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=guarded_import):
+            target = constructor.optimize(alpha, multipliers, current_w, cov)
+
+        sector_weights = compute_sector_exposures(target)
+        assert abs(target.sum() - 1.0) < 1e-6
+        assert sector_weights["Technology"] <= 0.5 + 1e-6
+        assert sector_weights["Consumer Discretionary"] <= 0.4 + 1e-6

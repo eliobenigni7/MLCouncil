@@ -22,11 +22,37 @@ def _load_adapter(monkeypatch, tmp_path):
             )
 
         def list_positions(self):
-            return []
+            return [
+                types.SimpleNamespace(
+                    symbol="AAPL",
+                    qty="5",
+                    avg_entry_price="120.00",
+                    current_price="123.45",
+                    market_value="617.25",
+                    unrealized_pl="17.25",
+                    unrealized_plpc="0.02875",
+                )
+            ]
 
         def submit_order(self, **kwargs):
             self.orders.append(kwargs)
             return types.SimpleNamespace(id="ord-123", status="accepted")
+
+        def list_orders(self, status="all", limit=100):
+            return [
+                types.SimpleNamespace(
+                    id="ord-123",
+                    symbol="AAPL",
+                    qty="5",
+                    filled_qty="5",
+                    side="buy",
+                    order_type="market",
+                    status="filled",
+                    submitted_at="2026-04-08T17:47:31Z",
+                    filled_at="2026-04-08T17:47:35Z",
+                    filled_avg_price="123.45",
+                )
+            ]
 
         def get_latest_trade(self, symbol):
             return types.SimpleNamespace(price=123.45)
@@ -84,3 +110,27 @@ def test_submit_order_logs_trade(monkeypatch, tmp_path):
     assert result["status"] == "accepted"
     assert log_entries
     assert log_entries[0]["symbol"] == "AAPL"
+
+
+def test_get_all_positions_supports_alpaca_unrealized_plpc(monkeypatch, tmp_path):
+    adapter = _load_adapter(monkeypatch, tmp_path)
+    node = adapter.AlpacaLiveNode(adapter.AlpacaConfig.from_env())
+
+    positions = node.get_all_positions()
+
+    assert len(positions) == 1
+    row = positions.iloc[0]
+    assert row["symbol"] == "AAPL"
+    assert row["unrealized_pnl_pct"] == 0.02875
+
+
+def test_list_orders_normalizes_payload(monkeypatch, tmp_path):
+    adapter = _load_adapter(monkeypatch, tmp_path)
+    node = adapter.AlpacaLiveNode(adapter.AlpacaConfig.from_env())
+
+    orders = node.list_orders()
+
+    assert len(orders) == 1
+    assert orders[0]["order_id"] == "ord-123"
+    assert orders[0]["status"] == "filled"
+    assert orders[0]["filled_qty"] == 5

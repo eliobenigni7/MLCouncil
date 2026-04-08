@@ -52,6 +52,16 @@ def _color_with_alpha(color: str, alpha: float = 0.25) -> str:
     return color
 
 
+def _annotation_color(color: str) -> str:
+    """Convert rgba fill colors into rgb annotation colors accepted by Plotly."""
+    if color.startswith("rgba(") and color.endswith(")"):
+        channels = [part.strip() for part in color[5:-1].split(",")]
+        if len(channels) >= 3:
+            red, green, blue = channels[:3]
+            return f"rgb({red}, {green}, {blue})"
+    return color
+
+
 # ============================================================================
 # Performance Tab
 # ============================================================================
@@ -497,7 +507,7 @@ def regime_timeline(
             line_width=0,
             annotation_text=regime.capitalize() if (j - i) > 10 else "",
             annotation_position="top left",
-            annotation_font=dict(size=9, color=color.replace("rgba(", "rgb(").split(",0")[0] + ")"),
+            annotation_font=dict(size=9, color=_annotation_color(color)),
         )
         i = j
 

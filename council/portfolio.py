@@ -31,8 +31,10 @@ from council.transaction_costs import TransactionCostModel
 from data.features.sector_exposure import (
     SECTOR_MAP,
     UNIQUE_SECTORS,
+    compute_effective_sector_cap,
     compute_sector_exposures,
     compute_beta_vector,
+    get_ticker_sector,
 )
 
 
@@ -153,6 +155,11 @@ class PortfolioConstructor:
         cov = (cov_raw + cov_raw.T) / 2 + np.eye(n) * 1e-6
 
         max_vol_daily = self.max_vol_ann / np.sqrt(252)
+        effective_sector_cap = compute_effective_sector_cap(
+            tickers,
+            base_sector_cap=self.sector_cap,
+            max_position=self.max_position,
+        )
 
         w = cp.Variable(n, name="weights")
 
@@ -169,19 +176,20 @@ class PortfolioConstructor:
         constraints: list = [
             cp.sum(w) == 1.0,
             w <= self.max_position,
-            cp.norm1(w - w_curr) <= self.max_turnover,
             cp.quad_form(w, cov) <= max_vol_daily ** 2,
         ]
+        if np.abs(w_curr).sum() > 1e-9:
+            constraints.append(cp.norm1(w - w_curr) <= self.max_turnover)
         if self.long_only:
             constraints.append(w >= 0.0)
 
-        if self.sector_cap < 1.0:
+        if effective_sector_cap < 1.0:
             for sector in UNIQUE_SECTORS:
                 sector_tickers = [t for t in tickers if SECTOR_MAP.get(t) == sector]
                 if sector_tickers:
                     sector_indices = [tickers.index(t) for t in sector_tickers]
                     sector_exposure = cp.sum(w[sector_indices])
-                    constraints.append(sector_exposure <= self.sector_cap)
+                    constraints.append(sector_exposure <= effective_sector_cap)
 
         if self.beta_neutral and market_returns is not None:
             beta_vec = compute_beta_vector(
@@ -209,9 +217,12 @@ class PortfolioConstructor:
         if not solved or w.value is None:
             logger.warning(
                 f"Portfolio optimisation failed (status={prob.status!r}). "
-                "Returning equal-weight fallback."
+                "Returning sector-aware fallback."
             )
-            return pd.Series(np.ones(n) / n, index=tickers, name="target_weight")
+            return self._feasible_fallback_weights(
+                alpha_signals=alpha_signals.reindex(tickers).fillna(0.0),
+                sector_cap=effective_sector_cap,
+            )
 
         weights = np.clip(w.value, 0.0, None)
 
@@ -223,6 +234,56 @@ class PortfolioConstructor:
             weights /= total
 
         return pd.Series(weights, index=tickers, name="target_weight")
+
+    def _feasible_fallback_weights(
+        self,
+        *,
+        alpha_signals: pd.Series,
+        sector_cap: float,
+    ) -> pd.Series:
+        tickers = alpha_signals.sort_values(ascending=False).index.tolist()
+        weights = pd.Series(0.0, index=tickers, dtype=float, name="target_weight")
+        sector_weights: dict[str, float] = {}
+        remaining = 1.0
+
+        while remaining > 1e-9:
+            progress = False
+            for ticker in tickers:
+                current_weight = float(weights[ticker])
+                ticker_room = self.max_position - current_weight
+                if ticker_room <= 1e-9:
+                    continue
+
+                sector = get_ticker_sector(ticker)
+                sector_room = sector_cap - sector_weights.get(sector, 0.0)
+                if sector_room <= 1e-9:
+                    continue
+
+                increment = min(ticker_room, sector_room, remaining)
+                if increment <= 1e-9:
+                    continue
+
+                weights[ticker] = current_weight + increment
+                sector_weights[sector] = sector_weights.get(sector, 0.0) + increment
+                remaining -= increment
+                progress = True
+                if remaining <= 1e-9:
+                    break
+
+            if not progress:
+                break
+
+        if remaining > 1e-6:
+            logger.warning(
+                "Sector-aware fallback could not deploy the full budget. "
+                f"Remaining cash fraction: {remaining:.2%}"
+            )
+
+        total = weights.sum()
+        if total <= 1e-9:
+            return pd.Series(np.ones(len(tickers)) / len(tickers), index=tickers, name="target_weight")
+
+        return (weights / total).rename("target_weight")
 
     def compute_orders(
         self,

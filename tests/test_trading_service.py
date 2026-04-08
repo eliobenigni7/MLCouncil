@@ -107,6 +107,92 @@ class TestTradingService:
 
         assert result is None
 
+    def test_get_trade_history_enriches_logs_with_live_broker_status(self):
+        from api.services import trading_service as ts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svc = _make_service()
+            svc._node.list_orders.return_value = [
+                {
+                    "order_id": "ord-123",
+                    "symbol": "AAPL",
+                    "status": "filled",
+                    "filled_qty": 5,
+                    "filled_avg_price": 199.5,
+                    "submitted_at": "2026-04-08T17:47:31+00:00",
+                    "filled_at": "2026-04-08T17:47:35+00:00",
+                    "mode": "paper",
+                }
+            ]
+
+            trade_dir = Path(tmpdir) / "paper_trades"
+            trade_dir.mkdir(parents=True, exist_ok=True)
+            (trade_dir / "2026-04-08.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "order_id": "ord-123",
+                            "symbol": "AAPL",
+                            "qty": 5,
+                            "side": "buy",
+                            "order_type": "market",
+                            "status": "pending_new",
+                            "submitted_at": "2026-04-08T17:47:31+00:00",
+                            "mode": "paper",
+                        }
+                    ]
+                )
+            )
+
+            original_dir = ts.TRADE_LOG_DIR
+            ts.TRADE_LOG_DIR = trade_dir
+            try:
+                result = svc.get_trade_history(days=1)
+            finally:
+                ts.TRADE_LOG_DIR = original_dir
+
+        assert len(result) == 1
+        assert result[0]["order_id"] == "ord-123"
+        assert result[0]["status"] == "filled"
+        assert result[0]["filled_qty"] == 5
+
+    def test_get_trade_history_returns_logs_when_broker_sync_fails(self):
+        from api.services import trading_service as ts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svc = _make_service()
+            svc._node.list_orders.side_effect = RuntimeError("broker offline")
+
+            trade_dir = Path(tmpdir) / "paper_trades"
+            trade_dir.mkdir(parents=True, exist_ok=True)
+            (trade_dir / "2026-04-08.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "order_id": "ord-456",
+                            "symbol": "MSFT",
+                            "qty": 3,
+                            "side": "buy",
+                            "order_type": "market",
+                            "status": "accepted",
+                            "submitted_at": "2026-04-08T17:50:00+00:00",
+                            "mode": "paper",
+                        }
+                    ]
+                )
+            )
+
+            original_dir = ts.TRADE_LOG_DIR
+            ts.TRADE_LOG_DIR = trade_dir
+            try:
+                result = svc.get_trade_history(days=1)
+            finally:
+                ts.TRADE_LOG_DIR = original_dir
+
+        assert len(result) == 1
+        assert result[0]["order_id"] == "ord-456"
+        assert result[0]["status"] == "accepted"
+
     def test_get_status_connected_includes_runtime_flags(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "paper")
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "true")
@@ -181,6 +267,63 @@ class TestTradingService:
             breach["limit_name"] == "Position Limit"
             for breach in snapshot["pretrade"]["breaches"]
         )
+
+    def test_build_pretrade_snapshot_allows_initial_bootstrap_turnover(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+        monkeypatch.setenv("MLCOUNCIL_MAX_TURNOVER", "0.30")
+
+        svc = _make_service(account={"portfolio_value": 100000.0, "buying_power": 100000.0})
+        svc.get_pending_orders = MagicMock(
+            return_value=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 10000.0,
+                    "target_weight": 0.10,
+                    "pipeline_run_id": "run-bootstrap",
+                    "data_version": "data-v1",
+                    "feature_version": "feat-v1",
+                    "model_version": "model-v1",
+                },
+                {
+                    "ticker": "MSFT",
+                    "direction": "buy",
+                    "quantity": 10000.0,
+                    "target_weight": 0.10,
+                    "pipeline_run_id": "run-bootstrap",
+                    "data_version": "data-v1",
+                    "feature_version": "feat-v1",
+                    "model_version": "model-v1",
+                },
+                {
+                    "ticker": "GOOGL",
+                    "direction": "buy",
+                    "quantity": 10000.0,
+                    "target_weight": 0.10,
+                    "pipeline_run_id": "run-bootstrap",
+                    "data_version": "data-v1",
+                    "feature_version": "feat-v1",
+                    "model_version": "model-v1",
+                },
+                {
+                    "ticker": "AMZN",
+                    "direction": "buy",
+                    "quantity": 10000.0,
+                    "target_weight": 0.10,
+                    "pipeline_run_id": "run-bootstrap",
+                    "data_version": "data-v1",
+                    "feature_version": "feat-v1",
+                    "model_version": "model-v1",
+                },
+            ]
+        )
+
+        snapshot = svc.build_pretrade_snapshot("2024-01-15")
+
+        assert snapshot["reconciliation"]["current_symbols"] == []
+        assert snapshot["pretrade"]["projected_turnover"] > 0.30
+        assert snapshot["pretrade"]["blocked"] is False
+        assert any("bootstrap" in warning.lower() for warning in snapshot["pretrade"]["warnings"])
 
     def test_execute_orders_converts_notional_to_share_quantity(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")

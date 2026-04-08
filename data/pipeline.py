@@ -55,6 +55,7 @@ _ORDERS_DIR     = _ROOT / "data" / "orders"
 _CHECKPOINTS    = _ROOT / "models" / "checkpoints"
 _EXCLUDE_COLS   = {"ticker", "valid_time", "transaction_time"}
 _MIN_ALPHA_FEATURES = 50
+_DEFAULT_PORTFOLIO_VALUE = 100_000.0
 
 # ---------------------------------------------------------------------------
 # Shared config
@@ -180,6 +181,38 @@ def _contract_check_result(asset_name: str, payload, partition_date: str | None 
             "partition_date": partition_date or "n/a",
         },
     )
+
+
+def _load_live_portfolio_snapshot(target_tickers: list[str]) -> tuple[pd.Series, float]:
+    zero_weights = pd.Series(0.0, index=target_tickers, dtype=float, name="current_weight")
+    try:
+        from execution.alpaca_adapter import AlpacaConfig, AlpacaLiveNode
+
+        node = AlpacaLiveNode(AlpacaConfig.from_env())
+        account = node.get_account_info()
+        portfolio_value = float(account.get("portfolio_value", 0.0) or 0.0)
+        if portfolio_value <= 0:
+            return zero_weights, _DEFAULT_PORTFOLIO_VALUE
+
+        positions_df = node.get_all_positions()
+        if positions_df.empty or "symbol" not in positions_df.columns:
+            return zero_weights, portfolio_value
+
+        position_values = positions_df.copy()
+        if "current_value" not in position_values.columns:
+            position_values["current_value"] = (
+                position_values.get("qty", 0).astype(float)
+                * position_values.get("current_price", 0).astype(float)
+            )
+
+        current_weights = (
+            position_values.assign(weight=position_values["current_value"].astype(float) / portfolio_value)
+            .set_index("symbol")["weight"]
+            .rename("current_weight")
+        )
+        return current_weights.reindex(target_tickers).fillna(0.0), portfolio_value
+    except Exception:
+        return zero_weights, _DEFAULT_PORTFOLIO_VALUE
 
 
 # ===========================================================================
@@ -737,9 +770,8 @@ def portfolio_weights(
         )
         multipliers = pd.Series(1.0, index=cov_tickers, name="multiplier")
 
-    # Pesi correnti: equal-weight (giorno 1 / baseline)
-    n = len(cov_tickers)
-    current_w = pd.Series(np.ones(n) / n, index=cov_tickers)
+    # Pesi correnti: portafoglio live se disponibile, altrimenti bootstrap da zero.
+    current_w, _ = _load_live_portfolio_snapshot(cov_tickers)
 
     constructor = PortfolioConstructor()
     weights = constructor.optimize(
@@ -796,17 +828,15 @@ def daily_orders(
         _record_asset_metadata(context, "daily_orders", empty_orders, partition_date, lineage)
         return empty_orders
 
-    PORTFOLIO_VALUE = 1_000_000.0
-    n = len(portfolio_weights)
-    current_w = pd.Series(
-        np.ones(n) / n, index=portfolio_weights.index
+    current_w, portfolio_value = _load_live_portfolio_snapshot(
+        portfolio_weights.index.tolist()
     )
 
     constructor = PortfolioConstructor()
     orders = constructor.compute_orders(
         target_weights=portfolio_weights,
         current_weights=current_w,
-        portfolio_value=PORTFOLIO_VALUE,
+        portfolio_value=portfolio_value,
     )
     if orders.empty:
         orders = pd.DataFrame(columns=["ticker", "direction", "quantity", "target_weight"])
@@ -939,7 +969,12 @@ _ALL_ASSETS = [
 ]
 
 
-@dg.asset_check(asset=raw_ohlcv, name="raw_ohlcv_contract", blocking=True)
+@dg.asset_check(
+    asset=raw_ohlcv,
+    name="raw_ohlcv_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
 def raw_ohlcv_contract(raw_ohlcv: pl.DataFrame) -> dg.AssetCheckResult:
     partition_date = None
     if not raw_ohlcv.is_empty() and "valid_time" in raw_ohlcv.columns:
@@ -947,7 +982,12 @@ def raw_ohlcv_contract(raw_ohlcv: pl.DataFrame) -> dg.AssetCheckResult:
     return _contract_check_result("raw_ohlcv", raw_ohlcv, partition_date)
 
 
-@dg.asset_check(asset=raw_news, name="raw_news_contract", blocking=True)
+@dg.asset_check(
+    asset=raw_news,
+    name="raw_news_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
 def raw_news_contract(raw_news: pl.DataFrame) -> dg.AssetCheckResult:
     partition_date = None
     if not raw_news.is_empty() and "valid_time" in raw_news.columns:
@@ -955,7 +995,12 @@ def raw_news_contract(raw_news: pl.DataFrame) -> dg.AssetCheckResult:
     return _contract_check_result("raw_news", raw_news, partition_date)
 
 
-@dg.asset_check(asset=raw_macro, name="raw_macro_contract", blocking=True)
+@dg.asset_check(
+    asset=raw_macro,
+    name="raw_macro_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
 def raw_macro_contract(raw_macro: pl.DataFrame) -> dg.AssetCheckResult:
     partition_date = None
     if not raw_macro.is_empty() and "valid_time" in raw_macro.columns:
@@ -963,7 +1008,12 @@ def raw_macro_contract(raw_macro: pl.DataFrame) -> dg.AssetCheckResult:
     return _contract_check_result("raw_macro", raw_macro, partition_date)
 
 
-@dg.asset_check(asset=alpha158_features, name="alpha158_features_contract", blocking=True)
+@dg.asset_check(
+    asset=alpha158_features,
+    name="alpha158_features_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
 def alpha158_features_contract(alpha158_features: pl.DataFrame) -> dg.AssetCheckResult:
     partition_date = None
     if not alpha158_features.is_empty() and "valid_time" in alpha158_features.columns:
@@ -971,7 +1021,12 @@ def alpha158_features_contract(alpha158_features: pl.DataFrame) -> dg.AssetCheck
     return _contract_check_result("alpha158_features", alpha158_features, partition_date)
 
 
-@dg.asset_check(asset=sentiment_features, name="sentiment_features_contract", blocking=True)
+@dg.asset_check(
+    asset=sentiment_features,
+    name="sentiment_features_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
 def sentiment_features_contract(sentiment_features: pl.DataFrame) -> dg.AssetCheckResult:
     partition_date = None
     if not sentiment_features.is_empty() and "valid_time" in sentiment_features.columns:
@@ -979,7 +1034,12 @@ def sentiment_features_contract(sentiment_features: pl.DataFrame) -> dg.AssetChe
     return _contract_check_result("sentiment_features", sentiment_features, partition_date)
 
 
-@dg.asset_check(asset=daily_orders, name="daily_orders_contract", blocking=True)
+@dg.asset_check(
+    asset=daily_orders,
+    name="daily_orders_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
 def daily_orders_contract(daily_orders: pd.DataFrame) -> dg.AssetCheckResult:
     partition_date = None
     if not daily_orders.empty and "ticker" in daily_orders.columns:

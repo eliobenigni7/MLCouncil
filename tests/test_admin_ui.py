@@ -1,5 +1,6 @@
 import sys
 import types
+import warnings
 
 from fastapi.testclient import TestClient
 from unittest.mock import patch
@@ -69,3 +70,32 @@ def test_admin_api_accepts_valid_key_when_configured():
             )
 
     assert resp.status_code == 200
+
+
+def test_admin_api_does_not_warn_when_key_is_optional():
+    _install_slowapi_stub()
+    from api.main import create_app
+
+    with patch.dict("os.environ", {}, clear=True):
+        app = create_app()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with TestClient(app, raise_server_exceptions=False):
+                pass
+
+    assert not [w for w in caught if "MLCOUNCIL_API_KEY" in str(w.message)]
+
+
+def test_admin_api_warns_when_required_key_is_missing():
+    _install_slowapi_stub()
+    from api.main import create_app
+
+    with patch.dict("os.environ", {"MLCOUNCIL_REQUIRE_API_KEY": "true"}, clear=True):
+        app = create_app()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with TestClient(app, raise_server_exceptions=False):
+                pass
+
+    messages = [str(w.message) for w in caught]
+    assert any("MLCOUNCIL_API_KEY is required" in message for message in messages)

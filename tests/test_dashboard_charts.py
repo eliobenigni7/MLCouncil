@@ -1,6 +1,6 @@
 import pandas as pd
 
-from dashboard.charts import weight_evolution_chart
+from dashboard.charts import _annotation_color, regime_timeline, weight_evolution_chart
 
 
 def test_weight_evolution_chart_uses_valid_fillcolor():
@@ -21,3 +21,26 @@ def test_weight_evolution_chart_uses_valid_fillcolor():
         "rgba(255, 127, 14, 0.25)",
         "rgba(44, 160, 44, 0.25)",
     ]
+
+
+def test_regime_timeline_uses_valid_annotation_colors():
+    assert _annotation_color("rgba(44, 160, 44, 0.25)") == "rgb(44, 160, 44)"
+
+    regime_history = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-04-01", periods=12, freq="D"),
+            "regime": ["bull"] * 12,
+            "prob_bull": [0.7] * 12,
+            "prob_bear": [0.2] * 12,
+            "prob_transition": [0.1] * 12,
+        }
+    )
+    equity = pd.Series(
+        [100 + i for i in range(12)],
+        index=pd.date_range("2026-04-01", periods=12, freq="D"),
+    )
+
+    fig = regime_timeline(regime_history, equity)
+
+    assert fig.layout.title.text == "Market Regime History"
+    assert len(fig.data) == 4

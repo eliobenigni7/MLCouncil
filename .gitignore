@@ -11,6 +11,11 @@ data/orders/
 data/cache/
 data/monitoring/
 data/alerts/
+data/dagster/
+data/operations/
+data/paper_trades/
+data/risk/
+/.playwright-cli/
 
 # Python
 __pycache__/

@@ -29,6 +29,15 @@ PROFILE_REQUIRED_KEYS = {
     ],
 }
 
+PLACEHOLDER_ENV_VALUES = {
+    "",
+    "replace-me",
+    "changeme",
+    "change-me",
+    "your-api-key",
+    "your-secret",
+}
+
 
 def get_runtime_profile() -> str:
     profile = os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower()
@@ -50,6 +59,8 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
     path = get_runtime_env_path()
     loaded: dict[str, str] = {}
 
+    _apply_legacy_aliases()
+
     if path.exists():
         loaded = {
             key: value
@@ -57,7 +68,7 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
             if value is not None
         }
         for key, value in loaded.items():
-            if override or key not in os.environ:
+            if _should_set_env_value(key=key, value=value, override=override):
                 os.environ[key] = value
 
     _apply_legacy_aliases()
@@ -65,7 +76,7 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
 
 
 def validate_required_env(*keys: str) -> list[str]:
-    missing = [key for key in keys if not os.getenv(key)]
+    missing = [key for key in keys if is_placeholder_env_value(os.getenv(key))]
     return missing
 
 
@@ -115,5 +126,33 @@ def validate_runtime_profile(profile: str | None = None) -> dict[str, object]:
 
 def _apply_legacy_aliases() -> None:
     for canonical_key, legacy_key in LEGACY_ENV_ALIASES.items():
-        if not os.getenv(canonical_key) and os.getenv(legacy_key):
+        canonical_value = os.getenv(canonical_key)
+        legacy_value = os.getenv(legacy_key)
+        if (
+            is_placeholder_env_value(canonical_value)
+            and not is_placeholder_env_value(legacy_value)
+        ):
             os.environ[canonical_key] = os.environ[legacy_key]
+
+
+def is_placeholder_env_value(value: str | None) -> bool:
+    if value is None:
+        return True
+    return value.strip().lower() in PLACEHOLDER_ENV_VALUES
+
+
+def _should_set_env_value(*, key: str, value: str, override: bool) -> bool:
+    current_value = os.getenv(key)
+    loaded_is_placeholder = is_placeholder_env_value(value)
+    current_is_placeholder = is_placeholder_env_value(current_value)
+
+    if loaded_is_placeholder and not current_is_placeholder:
+        return False
+
+    if not loaded_is_placeholder:
+        return True
+
+    if override:
+        return True
+
+    return current_value is None or current_is_placeholder

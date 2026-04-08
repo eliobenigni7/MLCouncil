@@ -87,6 +87,24 @@ query GetRuns($jobName: String!, $limit: Int!) {
 }
 """
 
+_RUN_QUERY = """
+query GetRun($runId: ID!) {
+  runOrError(runId: $runId) {
+    __typename
+    ... on Run {
+      runId
+      status
+      startTime
+      endTime
+      tags {
+        key
+        value
+      }
+    }
+  }
+}
+"""
+
 _PARTITION_KEYS_QUERY = """
 query GetPartitionKeys(
   $repositoryName: String!,
@@ -271,5 +289,59 @@ class DagsterClient:
             status=last["status"],
             start_time=self._format_timestamp(last.get("startTime")),
             end_time=self._format_timestamp(last.get("endTime")),
+            partition=partition,
+        )
+
+    async def get_run_status(self, run_id: str) -> PipelineStatus:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                self._url,
+                json={
+                    "query": _RUN_QUERY,
+                    "variables": {"runId": run_id},
+                },
+            )
+
+        if resp.status_code != 200:
+            return PipelineStatus(
+                last_run_id=run_id,
+                status="unreachable",
+                start_time=None,
+                end_time=None,
+                partition=None,
+            )
+
+        data = resp.json()
+        errors = data.get("errors")
+        if errors:
+            return PipelineStatus(
+                last_run_id=run_id,
+                status="error",
+                start_time=None,
+                end_time=None,
+                partition=None,
+            )
+
+        run_data = data.get("data", {}).get("runOrError", {})
+        if run_data.get("__typename") != "Run":
+            return PipelineStatus(
+                last_run_id=run_id,
+                status="not_found",
+                start_time=None,
+                end_time=None,
+                partition=None,
+            )
+
+        tags = run_data.get("tags", [])
+        partition = next(
+            (tag["value"] for tag in tags if tag.get("key") == "dagster/partition"),
+            None,
+        )
+
+        return PipelineStatus(
+            last_run_id=run_data.get("runId"),
+            status=run_data.get("status", "unknown"),
+            start_time=self._format_timestamp(run_data.get("startTime")),
+            end_time=self._format_timestamp(run_data.get("endTime")),
             partition=partition,
         )

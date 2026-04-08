@@ -661,7 +661,11 @@ class TestFullPipelineSynthetic:
         weights = pd.Series([0.5, 0.3, 0.2], index=self.TICKERS)
 
         # Mocka to_parquet per non richiedere filesystem/parquet engine
-        with patch("pandas.DataFrame.to_parquet", return_value=None):
+        with patch("pandas.DataFrame.to_parquet", return_value=None), patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
+        ):
             result = _call_asset(_pipeline.daily_orders, ctx, weights)
 
         assert isinstance(result, pd.DataFrame)
@@ -682,6 +686,21 @@ class TestFullPipelineSynthetic:
         assert isinstance(result, pd.DataFrame)
         assert result.empty
         mocked_save.assert_called_once()
+
+    def test_daily_orders_bootstrap_from_zero_positions_generates_buys(self):
+        """Con portafoglio corrente vuoto, daily_orders deve generare ordini iniziali."""
+        ctx = _make_context(self.PARTITION)
+        weights = pd.Series([1 / 3, 1 / 3, 1 / 3], index=self.TICKERS)
+
+        with patch("pandas.DataFrame.to_parquet", return_value=None), patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
+        ):
+            result = _call_asset(_pipeline.daily_orders, ctx, weights)
+
+        assert not result.empty
+        assert set(result["direction"]) == {"buy"}
 
 
 # ===========================================================================

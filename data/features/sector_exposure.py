@@ -50,6 +50,37 @@ def get_ticker_sector(ticker: str) -> str:
     return SECTOR_MAP.get(ticker, "Other")
 
 
+def compute_effective_sector_cap(
+    tickers: list[str],
+    *,
+    base_sector_cap: float,
+    max_position: float,
+) -> float:
+    sector_capacity: dict[str, float] = {}
+    for ticker in tickers:
+        sector = get_ticker_sector(ticker)
+        sector_capacity[sector] = sector_capacity.get(sector, 0.0) + max_position
+
+    capacities = sorted(sector_capacity.values())
+    if not capacities:
+        return base_sector_cap
+
+    if sum(min(base_sector_cap, cap) for cap in capacities) >= 1.0:
+        return base_sector_cap
+
+    low = base_sector_cap
+    high = min(1.0, max(1.0, max(capacities)))
+    for _ in range(50):
+        mid = (low + high) / 2
+        investable = sum(min(mid, cap) for cap in capacities)
+        if investable >= 1.0:
+            high = mid
+        else:
+            low = mid
+
+    return min(high, 1.0)
+
+
 def compute_beta_vector(
     returns: pd.DataFrame,
     market_returns: pd.Series,

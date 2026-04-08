@@ -1,9 +1,8 @@
-version: '3.8'
-
 services:
   # Admin API
   admin-api:
     build: .
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment:
@@ -24,7 +23,14 @@ services:
       - ./data:/app/data
       - ./config:/app/config
     depends_on:
-      - mlflow
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # Streamlit Dashboard
   dashboard:
@@ -39,31 +45,59 @@ services:
       - ./data:/app/data
       - ./config:/app/config
     depends_on:
-      - admin-api
+      admin-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # Dagster Pipeline (optional)
   dagster:
     build: .
     ports:
       - "3000:3000"
-    command: dagster dev -f data/pipeline.py -h 0.0.0.0 -p 3000
+    command:
+      - sh
+      - -c
+      - mkdir -p /app/data/dagster && touch /app/data/dagster/dagster.yaml && dagster dev -f data/pipeline.py -h 0.0.0.0 -p 3000
     volumes:
       - ./data:/app/data
       - ./config:/app/config
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
+      - DAGSTER_HOME=/app/data/dagster
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # MLflow Tracking (optional)
   mlflow:
     build: .
     ports:
       - "5000:5000"
-    command: python -m mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns
+    command:
+      - sh
+      - -c
+      - python scripts/patch_mlflow_assistant.py && python -m mlflow db upgrade sqlite:///mlflow.db && python -m mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns
+    environment:
+      MLFLOW_ASSISTANT_ALLOW_PRIVATE_NETWORK: "true"
     volumes:
       - ./mlruns:/app/mlruns
       - ./mlflow.db:/app/mlflow.db
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
 volumes:
   data:

@@ -143,15 +143,27 @@ class AlpacaLiveNode:
             positions = self._api.list_positions()
             if not positions:
                 return pd.DataFrame()
+
+            def _position_float(position, *names: str, default: float = 0.0) -> float:
+                for name in names:
+                    value = getattr(position, name, None)
+                    if value is not None:
+                        return float(value)
+                return default
+
             return pd.DataFrame([
                 {
                     "symbol": p.symbol,
                     "qty": int(p.qty),
-                    "avg_price": float(p.avg_entry_price),
-                    "current_price": float(p.current_price),
-                    "current_value": float(p.market_value),
-                    "unrealized_pnl": float(p.unrealized_pl),
-                    "unrealized_pnl_pct": float(p.unrealized_pl_pc),
+                    "avg_price": _position_float(p, "avg_entry_price"),
+                    "current_price": _position_float(p, "current_price"),
+                    "current_value": _position_float(p, "market_value"),
+                    "unrealized_pnl": _position_float(p, "unrealized_pl"),
+                    "unrealized_pnl_pct": _position_float(
+                        p,
+                        "unrealized_plpc",
+                        "unrealized_pl_pc",
+                    ),
                 }
                 for p in positions
             ])
@@ -215,6 +227,37 @@ class AlpacaLiveNode:
             }
         except Exception as e:
             return {"order_id": order_id, "error": str(e)}
+
+    def list_orders(self, status: str = "all", limit: int = 100) -> list[dict]:
+        try:
+            orders = self._api.list_orders(status=status, limit=limit)
+        except Exception:
+            return []
+
+        payload = []
+        for order in orders:
+            payload.append(
+                {
+                    "order_id": order.id,
+                    "symbol": order.symbol,
+                    "qty": int(order.qty) if getattr(order, "qty", None) else 0,
+                    "filled_qty": (
+                        int(order.filled_qty) if getattr(order, "filled_qty", None) else 0
+                    ),
+                    "side": order.side,
+                    "order_type": order.order_type,
+                    "status": order.status,
+                    "submitted_at": getattr(order, "submitted_at", None),
+                    "filled_at": getattr(order, "filled_at", None),
+                    "filled_avg_price": (
+                        float(order.filled_avg_price)
+                        if getattr(order, "filled_avg_price", None)
+                        else None
+                    ),
+                    "mode": self.config.mode.value,
+                }
+            )
+        return payload
 
     def cancel_order(self, order_id: str) -> bool:
         try:

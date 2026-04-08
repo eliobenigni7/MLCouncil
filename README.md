@@ -151,6 +151,13 @@ DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
 - I criteri di promozione dei modelli vivono in [`docs/model-promotion-criteria.md`](./docs/model-promotion-criteria.md).
 - Le convenzioni di hardening sono riepilogate in [`docs/fase4-hardening.md`](./docs/fase4-hardening.md).
 
+## Pipeline Auto-Execute
+
+- `runtime_env.py` tratta ora i placeholder `replace-me` come non configurati, quindi le vere credenziali legacy (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) possono essere promosse correttamente a `ALPACA_PAPER_KEY` e `ALPACA_PAPER_SECRET`.
+- `MLCOUNCIL_AUTO_EXECUTE=true` abilita il monitor della run Dagster: quando `POST /api/pipeline/run` completa con `SUCCESS`, il sistema esegue automaticamente `POST /api/trading/execute` sulla stessa partition.
+- Lo stato dell’automazione è interrogabile via `GET /api/pipeline/automation/{run_id}`.
+- L’Admin UI espone il toggle `Auto-execute on pipeline completion` nel tab Trading e lo salva nel runtime shared env.
+
 ### Run the Pipeline (Demo)
 
 ```bash

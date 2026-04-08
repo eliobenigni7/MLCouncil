@@ -27,6 +27,13 @@ def get_allowed_origins() -> list[str]:
     return [o.strip() for o in origins.split(",") if o.strip()]
 
 
+def is_api_key_required() -> bool:
+    explicit = os.getenv("MLCOUNCIL_REQUIRE_API_KEY")
+    if explicit is not None:
+        return explicit.strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower() == "paper"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="MLCouncil Admin API",
@@ -70,11 +77,12 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def validate_environment():
-        required_vars = ["MLCOUNCIL_API_KEY"]
-        missing = [v for v in required_vars if not os.getenv(v)]
-        if missing:
+        if is_api_key_required() and not os.getenv("MLCOUNCIL_API_KEY"):
             import warnings
-            warnings.warn(f"Missing environment variables: {missing}. API may not be fully functional.")
+            warnings.warn(
+                "MLCOUNCIL_API_KEY is required for this runtime profile but is not configured. "
+                "API endpoints will remain unauthenticated until it is set."
+            )
 
     from api.routers import health, pipeline, portfolio, config, monitoring, trading
 

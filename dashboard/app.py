@@ -115,6 +115,7 @@ def render_performance_tab(mode: str, start_date: date, end_date: date) -> None:
     st.plotly_chart(
         charts.equity_curve_chart(equity, benchmark),
         use_container_width=True,
+        key=f"performance_equity_{mode}",
     )
 
     # Rolling Sharpe + Drawdown
@@ -129,17 +130,20 @@ def render_performance_tab(mode: str, start_date: date, end_date: date) -> None:
         st.plotly_chart(
             charts.rolling_sharpe_chart(returns, window=window),
             use_container_width=True,
+            key=f"performance_rolling_sharpe_{mode}_{window}",
         )
     with col_r:
         st.plotly_chart(
             charts.drawdown_chart(equity),
             use_container_width=True,
+            key=f"performance_drawdown_{mode}",
         )
 
     # Monthly heatmap
     st.plotly_chart(
         charts.monthly_returns_heatmap(returns),
         use_container_width=True,
+        key=f"performance_monthly_heatmap_{mode}",
     )
 
 
@@ -171,6 +175,7 @@ def render_attribution_tab(start_date: date, end_date: date) -> None:
         st.plotly_chart(
             charts.model_contribution_bar(attribution, selected_date),
             use_container_width=True,
+            key=f"attribution_contribution_{selected_date or 'latest'}",
         )
     with col_r:
         if not attribution.empty and selected_date is not None:
@@ -187,18 +192,21 @@ def render_attribution_tab(start_date: date, end_date: date) -> None:
         st.plotly_chart(
             charts.current_weights_radar(weights_dict),
             use_container_width=True,
+            key=f"attribution_weights_radar_{selected_date or 'latest'}",
         )
 
     # IC rolling
     st.plotly_chart(
         charts.ic_rolling_chart(ic_history),
         use_container_width=True,
+        key="attribution_ic_rolling",
     )
 
     # Weight evolution
     st.plotly_chart(
         charts.weight_evolution_chart(weights_history),
         use_container_width=True,
+        key="attribution_weight_evolution",
     )
 
     # Raw table
@@ -234,6 +242,7 @@ def render_regime_tab(mode: str, start_date: date, end_date: date) -> None:
     st.plotly_chart(
         charts.regime_probability_gauge(regime_info),
         use_container_width=True,
+        key=f"regime_probability_{regime_info.get('regime', 'unknown')}",
     )
 
     # Timeline + radar
@@ -242,6 +251,7 @@ def render_regime_tab(mode: str, start_date: date, end_date: date) -> None:
         st.plotly_chart(
             charts.regime_timeline(regime_history, equity),
             use_container_width=True,
+            key=f"regime_timeline_{mode}",
         )
     with col_r:
         if not attribution.empty:
@@ -258,6 +268,7 @@ def render_regime_tab(mode: str, start_date: date, end_date: date) -> None:
         st.plotly_chart(
             charts.current_weights_radar(weights_dict),
             use_container_width=True,
+            key=f"regime_weights_radar_{regime_info.get('regime', 'unknown')}",
         )
 
     # Regime stats

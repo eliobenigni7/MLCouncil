@@ -300,15 +300,10 @@ class TradingService:
 
     def get_trade_history(self, days: int = 7) -> list[dict]:
         """Load trade history from log files."""
-        if not TRADE_LOG_DIR.exists():
+        logs = self._load_trade_logs(days)
+        if not logs:
             return []
-        logs = []
-        for payload in sorted(TRADE_LOG_DIR.glob("*.json"))[-days:]:
-            try:
-                logs.extend(json.loads(payload.read_text()))
-            except Exception:  # noqa: BLE001
-                pass
-        return logs
+        return self._sync_trade_history_with_broker(logs)
 
     def _prepare_execution_context(self, date: str) -> dict[str, Any]:
         runtime_profile = get_runtime_profile()
@@ -394,11 +389,16 @@ class TradingService:
                     pretrade["blocked"] = True
                     pretrade["reason"] = risk_report["reason"]
                 elif reconciliation["projected_turnover"] > max_turnover:
-                    pretrade["blocked"] = True
-                    pretrade["reason"] = (
-                        f"Projected turnover {reconciliation['projected_turnover']:.2%} "
-                        f"exceeds limit {max_turnover:.2%}"
-                    )
+                    if reconciliation["current_symbols"]:
+                        pretrade["blocked"] = True
+                        pretrade["reason"] = (
+                            f"Projected turnover {reconciliation['projected_turnover']:.2%} "
+                            f"exceeds limit {max_turnover:.2%}"
+                        )
+                    else:
+                        pretrade["warnings"].append(
+                            "Initial portfolio bootstrap detected; turnover limit waived for first deployment."
+                        )
 
         snapshot = {
             "date": date,
@@ -440,6 +440,52 @@ class TradingService:
             return "Trading blocked - ALPACA_BASE_URL must point to Alpaca paper"
 
         return None
+
+    def _load_trade_logs(self, days: int) -> list[dict[str, Any]]:
+        if not TRADE_LOG_DIR.exists():
+            return []
+
+        logs: list[dict[str, Any]] = []
+        for payload in sorted(TRADE_LOG_DIR.glob("*.json"))[-days:]:
+            try:
+                entries = json.loads(payload.read_text())
+                if isinstance(entries, list):
+                    logs.extend(entry for entry in entries if isinstance(entry, dict))
+            except Exception:  # noqa: BLE001
+                continue
+        return logs
+
+    def _sync_trade_history_with_broker(self, logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        try:
+            live_orders = self.node.list_orders(status="all", limit=max(len(logs) * 2, 50))
+        except Exception:  # noqa: BLE001
+            return logs
+
+        if not live_orders:
+            return logs
+
+        live_by_id = {
+            order.get("order_id"): order for order in live_orders if order.get("order_id")
+        }
+        merged: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for entry in logs:
+            order_id = entry.get("order_id")
+            if order_id and order_id in live_by_id:
+                seen_ids.add(order_id)
+                merged.append({**entry, **live_by_id[order_id]})
+            else:
+                merged.append(entry)
+
+        for order_id, order in live_by_id.items():
+            if order_id not in seen_ids:
+                merged.append(order)
+
+        merged.sort(
+            key=lambda item: str(item.get("submitted_at") or item.get("filled_at") or ""),
+            reverse=True,
+        )
+        return merged
 
     def _is_automation_paused(self) -> bool:
         flag = os.getenv("MLCOUNCIL_AUTOMATION_PAUSED", "").strip().lower()
@@ -546,6 +592,7 @@ class TradingService:
     ) -> dict[str, Any]:
         from council import risk_engine as risk_mod
         from council.risk_engine import Position
+        from data.features.sector_exposure import compute_effective_sector_cap
 
         portfolio_value = float(account.get("portfolio_value", 0) or 0)
         target_symbols = sorted({order["ticker"] for order in normalized_orders})
@@ -580,6 +627,12 @@ class TradingService:
             )
 
         returns = self._load_historical_returns(target_symbols)
+        base_sector_limit = float(os.getenv("MLCOUNCIL_MAX_SECTOR_EXPOSURE", "0.25"))
+        self.risk_engine.limits.max_sector_exposure = compute_effective_sector_cap(
+            target_symbols,
+            base_sector_cap=base_sector_limit,
+            max_position=float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.10")),
+        )
         report = self.risk_engine.compute_full_risk(
             positions=projected_positions,
             returns=returns,

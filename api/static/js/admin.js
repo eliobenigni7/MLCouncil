@@ -236,12 +236,32 @@ async function refreshMonitoring() {
             </div>
         `).join('');
 
+        const autoExecuteSetting = settingsPayload.settings.find(
+            setting => setting.key === 'MLCOUNCIL_AUTO_EXECUTE'
+        );
+        const autoExecuteCheckbox = document.getElementById('auto-execute');
+        if (autoExecuteCheckbox && autoExecuteSetting) {
+            autoExecuteCheckbox.checked = String(autoExecuteSetting.value || '').toLowerCase() === 'true';
+        }
+
         document.getElementById('settings-status').textContent = settingsPayload.path
             ? `Shared file: ${settingsPayload.path}`
             : '';
     } catch (e) {
         console.error('Failed to refresh monitoring:', e);
     }
+}
+
+async function updateSingleSetting(key, value) {
+    const response = await fetch(`${API_BASE}/monitoring/settings`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({values: {[key]: value}})
+    });
+    if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+    }
+    return response.json();
 }
 
 async function saveMonitoringSettings(event) {
@@ -299,9 +319,12 @@ async function refreshTrading() {
     try {
         const status = await fetchAPI('/trading/status');
         const statusKpis = document.getElementById('trading-status-kpis');
+        const executeBtn = document.getElementById('execute-btn');
+        let executeDisabledReason = '';
         
         if (!status.connected) {
             statusKpis.innerHTML = `<div class="kpi-card"><div class="kpi-value error">Disconnected</div><div class="kpi-label">${status.error || 'Check Alpaca config'}</div></div>`;
+            executeDisabledReason = status.error || 'Trading connection unavailable';
         } else {
             statusKpis.innerHTML = `
                 <div class="kpi-card">
@@ -318,6 +341,9 @@ async function refreshTrading() {
                 </div>
             `;
         }
+
+        executeBtn.disabled = Boolean(executeDisabledReason);
+        executeBtn.title = executeDisabledReason;
         
         const posBody = document.querySelector('#positions-table tbody');
         if (status.positions && status.positions.length > 0) {
@@ -338,8 +364,14 @@ async function refreshTrading() {
             const latest = await fetchAPI('/trading/orders/latest');
             const select = document.getElementById('trading-order-date');
             select.innerHTML = `<option value="${latest.date}">${latest.date}</option>`;
+            if (!executeDisabledReason) {
+                executeBtn.disabled = false;
+                executeBtn.title = '';
+            }
             await loadPendingOrders(latest.date);
         } catch (e) {
+            executeBtn.disabled = true;
+            executeBtn.title = 'No pending orders available';
             document.querySelector('#pending-orders-table tbody').innerHTML = '<tr><td colspan="4" style="color: var(--text-secondary);">No orders found</td></tr>';
         }
         
@@ -390,6 +422,7 @@ document.getElementById('execute-btn').addEventListener('click', async () => {
     if (!date) return;
     
     const btn = document.getElementById('execute-btn');
+    if (btn.disabled) return;
     btn.disabled = true;
     btn.textContent = 'Executing...';
     
@@ -409,7 +442,7 @@ document.getElementById('execute-btn').addEventListener('click', async () => {
     } catch (e) {
         showToast('Execution failed: ' + e.message, 'error');
     } finally {
-        btn.disabled = false;
+        btn.disabled = Boolean(btn.title);
         btn.textContent = 'Execute Orders';
     }
 });
@@ -417,6 +450,24 @@ document.getElementById('execute-btn').addEventListener('click', async () => {
 document.getElementById('trading-order-date').addEventListener('change', async (e) => {
     if (e.target.value) {
         await loadPendingOrders(e.target.value);
+    }
+});
+
+document.getElementById('auto-execute').addEventListener('change', async (e) => {
+    const checkbox = e.target;
+    checkbox.disabled = true;
+    try {
+        await updateSingleSetting(
+            'MLCOUNCIL_AUTO_EXECUTE',
+            checkbox.checked ? 'true' : 'false'
+        );
+        showToast(`Auto-execute ${checkbox.checked ? 'enabled' : 'disabled'}`);
+        await refreshMonitoring();
+    } catch (err) {
+        checkbox.checked = !checkbox.checked;
+        showToast('Failed to update auto-execute: ' + err.message, 'error');
+    } finally {
+        checkbox.disabled = false;
     }
 });
 

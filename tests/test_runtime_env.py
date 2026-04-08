@@ -92,3 +92,52 @@ def test_validate_runtime_profile_flags_live_base_url_in_paper(monkeypatch, tmp_
     assert result["valid"] is False
     assert result["paper_guard_ok"] is False
     assert any("paper endpoint" in error.lower() for error in result["errors"])
+
+
+def test_load_runtime_env_prefers_real_legacy_keys_over_placeholder_canonical_values(
+    monkeypatch, tmp_path
+):
+    env_path = tmp_path / "runtime.paper.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ALPACA_PAPER_KEY=replace-me",
+                "ALPACA_PAPER_SECRET=replace-me",
+                "ALPACA_BASE_URL=https://paper-api.alpaca.markets",
+            ]
+        )
+        + "\n"
+    )
+
+    monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "paper")
+    monkeypatch.setenv("MLCOUNCIL_RUNTIME_ENV_PATH", str(env_path))
+    monkeypatch.setenv("ALPACA_API_KEY", "live-legacy-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "live-legacy-secret")
+    monkeypatch.delenv("ALPACA_PAPER_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_PAPER_SECRET", raising=False)
+
+    import runtime_env
+
+    importlib.reload(runtime_env)
+    runtime_env.load_runtime_env(override=True)
+
+    assert runtime_env.validate_required_env("ALPACA_PAPER_KEY", "ALPACA_PAPER_SECRET") == []
+    assert runtime_env.os.getenv("ALPACA_PAPER_KEY") == "live-legacy-key"
+    assert runtime_env.os.getenv("ALPACA_PAPER_SECRET") == "live-legacy-secret"
+
+
+def test_load_runtime_env_applies_real_file_values_over_existing_env_defaults(
+    monkeypatch, tmp_path
+):
+    env_path = tmp_path / "runtime.local.env"
+    env_path.write_text("MLCOUNCIL_AUTO_EXECUTE=true\n")
+
+    monkeypatch.setenv("MLCOUNCIL_RUNTIME_ENV_PATH", str(env_path))
+    monkeypatch.setenv("MLCOUNCIL_AUTO_EXECUTE", "false")
+
+    import runtime_env
+
+    importlib.reload(runtime_env)
+    runtime_env.load_runtime_env()
+
+    assert runtime_env.os.getenv("MLCOUNCIL_AUTO_EXECUTE") == "true"
