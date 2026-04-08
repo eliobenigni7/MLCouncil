@@ -31,6 +31,8 @@ def test_health_includes_components(client):
     assert "components" in body
     assert "data_freshness" in body["components"]
     assert "arctic_store" in body["components"]
+    assert "runtime_env" in body["components"]
+    assert "trading_operations" in body["components"]
 
 
 def test_health_dagster_endpoint(client):
@@ -54,11 +56,45 @@ def test_health_dagster_endpoint(client):
 def test_health_treats_empty_arctic_and_missing_alert_file_as_bootstrap_states(client, tmp_path: Path):
     with patch("api.routers.health._data_freshness", return_value={"status": "fresh", "last_order_date": "2026-04-02", "days_ago": 0}):
         with patch("api.routers.health._arctic_store_status", return_value="empty"):
-            with patch("api.routers.health.Path") as mock_path:
-                mock_path.return_value.exists.return_value = False
-                resp = client.get("/api/health")
+            with patch("api.routers.health._monitoring_status", return_value="idle"):
+                with patch(
+                    "api.routers.health._runtime_env_status",
+                    return_value={"status": "valid", "profile": "local", "valid": True, "missing": [], "errors": []},
+                ):
+                    with patch(
+                        "api.routers.health._latest_operations_status",
+                        return_value={"status": "no_runs", "last_date": None},
+                    ):
+                        resp = client.get("/api/health")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
     assert body["components"]["monitoring"] == "idle"
+    assert body["components"]["trading_operations"] == "no_runs"
+
+
+def test_health_degrades_when_runtime_profile_invalid(client):
+    with patch("api.routers.health._data_freshness", return_value={"status": "fresh", "last_order_date": "2026-04-02", "days_ago": 0}):
+        with patch("api.routers.health._arctic_store_status", return_value="ok"):
+            with patch("api.routers.health._monitoring_status", return_value="idle"):
+                with patch(
+                    "api.routers.health._runtime_env_status",
+                    return_value={
+                        "status": "invalid",
+                        "profile": "paper",
+                        "valid": False,
+                        "missing": ["ALPACA_PAPER_KEY"],
+                        "errors": ["Paper profile must point to Alpaca paper endpoint."],
+                    },
+                ):
+                    with patch(
+                        "api.routers.health._latest_operations_status",
+                        return_value={"status": "success", "last_date": "2026-04-08"},
+                    ):
+                        resp = client.get("/api/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert body["components"]["runtime_env"] == "invalid"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -17,6 +18,8 @@ def _make_service(
     positions: pd.DataFrame | None = None,
 ):
     from api.services.trading_service import TradingService
+
+    os.environ["ALPACA_BASE_URL"] = "https://paper-api.alpaca.markets"
 
     svc = TradingService.__new__(TradingService)
     svc._node = MagicMock()

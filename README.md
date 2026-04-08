@@ -142,6 +142,15 @@ DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
 - Il monitoring settings service espone anche `MLCOUNCIL_AUTOMATION_PAUSED`, `MLCOUNCIL_MAX_DAILY_ORDERS`, `MLCOUNCIL_MAX_TURNOVER` e `MLCOUNCIL_MAX_POSITION_SIZE`.
 - Le convenzioni operative di Fase 3 sono riepilogate in [`docs/fase3-operational-controls.md`](./docs/fase3-operational-controls.md).
 
+## Fase 4 Hardening
+
+- `runtime_env.py` valida ora i profili runtime e segnala configurazioni `paper` incoerenti.
+- `GET /api/health` include lo stato `runtime_env` e lo stato dell'ultimo artifact operativo in `data/operations/`.
+- Sono stati aggiunti test mirati per `runtime_env.py`, `execution/alpaca_adapter.py` e `data/store/arctic_store.py`.
+- Il runbook operativo giornaliero vive in [`docs/paper-trading-runbook.md`](./docs/paper-trading-runbook.md).
+- I criteri di promozione dei modelli vivono in [`docs/model-promotion-criteria.md`](./docs/model-promotion-criteria.md).
+- Le convenzioni di hardening sono riepilogate in [`docs/fase4-hardening.md`](./docs/fase4-hardening.md).
+
 ### Run the Pipeline (Demo)
 
 ```bash
