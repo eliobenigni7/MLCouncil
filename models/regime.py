@@ -1,18 +1,18 @@
 """HMM Gaussian 3-state regime detector.
 
-This model is NOT a BaseModel — it does not generate alpha signals.
+This model is NOT a BaseModel - it does not generate alpha signals.
 It generates a regime label ("bull" / "bear" / "transition") that is
 used by the council ensemble to condition portfolio weights.
 
 State labelling convention
 --------------------------
-After fitting, HMM states are sorted by the mean of the first feature
-column (expected to be an equity return series).  The state with the
+After fitting, latent states are sorted by the mean of the first feature
+column (expected to be an equity return series). The state with the
 highest mean return is labelled "bull", the lowest "bear", and the
-middle state "transition".  This ordering is deterministic regardless
-of the arbitrary internal numbering hmmlearn assigns.
+middle state "transition". This ordering is deterministic regardless
+of the arbitrary internal numbering assigned by the backend.
 
-Macro DataFrame schema (minimum required columns — flexible)
+Macro DataFrame schema (minimum required columns - flexible)
 ------------------------------------------------------------
 Preference order (first matching set is used):
   1. sp500_ret_21d, vix_level, yield_spread
@@ -31,8 +31,13 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import yaml
-from hmmlearn import hmm
+from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
+
+try:
+    from hmmlearn import hmm
+except ModuleNotFoundError:  # pragma: no cover - exercised via fallback tests
+    hmm = None
 
 
 # Ordered preference lists for feature column selection
@@ -45,15 +50,7 @@ _FEATURE_PREFERENCES: list[list[str]] = [
 
 
 class RegimeModel:
-    """Gaussian HMM regime detector.
-
-    Attributes
-    ----------
-    name : str
-        Model identifier.
-    n_states : int
-        Number of hidden Markov states (default 3).
-    """
+    """Gaussian regime detector with a graceful fallback backend."""
 
     name = "hmm_regime"
 
@@ -77,12 +74,15 @@ class RegimeModel:
             self._covariance_type = "full"
             self._random_state = 42
 
-        self._model: hmm.GaussianHMM | None = None
+        self._model: Any | None = None
         self._scaler: StandardScaler | None = None
         self._feature_cols: list[str] | None = None
-        # Maps HMM state int → label str
         self._state_map: dict[int, str] = {}
         self._last_trained: str | None = None
+        self._training_returns: np.ndarray | None = None
+        self._backend = (
+            "hmmlearn" if hmm is not None else "gaussian_mixture_fallback"
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -95,7 +95,6 @@ class RegimeModel:
             if all(c in df.columns for c in cols):
                 return cols
 
-        # Last resort: any 3 numeric columns (exclude valid_time)
         numeric = [
             c
             for c in df.columns
@@ -108,10 +107,7 @@ class RegimeModel:
         return numeric[:3]
 
     def _prepare_X(self, macro_df: pl.DataFrame) -> tuple[np.ndarray, pd.DataFrame]:
-        """Convert macro Polars DataFrame → scaled numpy array.
-
-        Also returns the pandas DataFrame (sorted by valid_time) for alignment.
-        """
+        """Convert macro Polars DataFrame to scaled numpy array."""
         if self._scaler is None or self._feature_cols is None:
             raise RuntimeError("Model not fitted. Call fit() first.")
 
@@ -119,19 +115,58 @@ class RegimeModel:
         X = df[self._feature_cols].ffill().bfill().fillna(0.0).values
         return self._scaler.transform(X), df
 
+    def _build_model(self) -> Any:
+        """Build the preferred regime model backend."""
+        if hmm is not None:
+            return hmm.GaussianHMM(
+                n_components=self.n_states,
+                covariance_type=self._covariance_type,
+                n_iter=self._n_iter,
+                random_state=self._random_state,
+            )
+
+        return GaussianMixture(
+            n_components=self.n_states,
+            covariance_type=self._covariance_type,
+            max_iter=self._n_iter,
+            random_state=self._random_state,
+        )
+
+    def _label_states(self, model: Any, states: np.ndarray) -> dict[int, str]:
+        """Create a deterministic mapping from latent state id to regime label."""
+        means = getattr(model, "means_", None)
+        if means is not None and len(means) >= self.n_states:
+            sorted_states = sorted(
+                range(self.n_states),
+                key=lambda idx: float(np.ravel(means[idx])[0]),
+                reverse=True,
+            )
+        else:
+            summary = (
+                pd.DataFrame({"state": states, "value": self._training_returns})
+                .groupby("state")["value"]
+                .mean()
+            )
+            sorted_states = summary.sort_values(ascending=False).index.tolist()
+
+        if self.n_states == 1:
+            return {sorted_states[0]: "transition"}
+
+        if self.n_states == 2:
+            return {
+                sorted_states[0]: "bull",
+                sorted_states[-1]: "bear",
+            }
+
+        labels = ["bull"] + ["transition"] * (self.n_states - 2) + ["bear"]
+        return {state: label for state, label in zip(sorted_states, labels)}
+
     # ------------------------------------------------------------------
     # fit
     # ------------------------------------------------------------------
 
     def fit(self, macro_df: pl.DataFrame) -> None:
-        """Fit the Gaussian HMM on macro time-series data.
-
-        Parameters
-        ----------
-        macro_df:
-            Polars DataFrame with at least `valid_time` and macro feature
-            columns.  See module docstring for accepted column sets.
-        """
+        """Fit the regime model on macro time-series data."""
         df = macro_df.sort("valid_time").to_pandas()
         feat_cols = self._select_feature_cols(df)
         self._feature_cols = feat_cols
@@ -141,33 +176,12 @@ class RegimeModel:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        model = hmm.GaussianHMM(
-            n_components=self.n_states,
-            covariance_type=self._covariance_type,
-            n_iter=self._n_iter,
-            random_state=self._random_state,
-        )
+        model = self._build_model()
         model.fit(X_scaled)
 
-        # Label states by mean of the first feature (equity return proxy)
-        states = model.predict(X_scaled)
-        df["_hmm_state"] = states
-
-        return_col = feat_cols[0]
-        state_means = df.groupby("_hmm_state")[return_col].mean()
-
-        # Sort descending: highest return → bull, lowest → bear, middle → transition
-        sorted_states = state_means.sort_values(ascending=False).index.tolist()
-
-        if self.n_states == 3:
-            self._state_map = {
-                sorted_states[0]: "bull",
-                sorted_states[1]: "transition",
-                sorted_states[2]: "bear",
-            }
-        else:
-            labels = ["bull"] + ["transition"] * (self.n_states - 2) + ["bear"]
-            self._state_map = {s: l for s, l in zip(sorted_states, labels)}
+        states = np.asarray(model.predict(X_scaled), dtype=int)
+        self._training_returns = df[feat_cols[0]].to_numpy(copy=True)
+        self._state_map = self._label_states(model, states)
 
         self._model = model
         self._scaler = scaler
@@ -178,28 +192,18 @@ class RegimeModel:
     # ------------------------------------------------------------------
 
     def predict_regime(self, macro_df: pl.DataFrame) -> str:
-        """Return the regime label for the most recent observation.
-
-        Returns
-        -------
-        str
-            One of: "bull", "bear", "transition".
-        """
+        """Return the regime label for the most recent observation."""
+        if self._model is None:
+            raise RuntimeError("Model not fitted. Call fit() first.")
         X_scaled, _ = self._prepare_X(macro_df)
         state = int(self._model.predict(X_scaled)[-1])
         return self._state_map.get(state, "transition")
 
     def predict_probabilities(self, macro_df: pl.DataFrame) -> dict[str, float]:
-        """Return regime probabilities for the most recent observation.
-
-        Returns
-        -------
-        dict
-            {"bull": float, "bear": float, "transition": float}
-            Values sum to 1.0.
-        """
+        """Return regime probabilities for the most recent observation."""
+        if self._model is None:
+            raise RuntimeError("Model not fitted. Call fit() first.")
         X_scaled, _ = self._prepare_X(macro_df)
-        # predict_proba returns (n_samples, n_states) posterior probabilities
         probs = self._model.predict_proba(X_scaled)
         last_probs = probs[-1]
 
@@ -209,15 +213,9 @@ class RegimeModel:
         }
 
     def get_regime_history(self, macro_df: pl.DataFrame) -> pd.DataFrame:
-        """Return full regime history with per-state probabilities.
-
-        Used by the dashboard and backtesting engine.
-
-        Returns
-        -------
-        pd.DataFrame
-            Columns: valid_time, regime, prob_bull, prob_bear, prob_transition.
-        """
+        """Return full regime history with per-state probabilities."""
+        if self._model is None:
+            raise RuntimeError("Model not fitted. Call fit() first.")
         X_scaled, df = self._prepare_X(macro_df)
         states = self._model.predict(X_scaled)
         probs = self._model.predict_proba(X_scaled)
@@ -254,4 +252,5 @@ class RegimeModel:
             "last_trained": self._last_trained,
             "state_map": self._state_map,
             "feature_cols": self._feature_cols,
+            "backend": self._backend,
         }

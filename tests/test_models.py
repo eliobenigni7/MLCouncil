@@ -465,6 +465,31 @@ class TestHMM:
         regime = m.predict_regime(macro)
         assert regime in {"bull", "bear", "transition"}
 
+    def test_regime_model_fallback_without_hmmlearn(self, macro_df, monkeypatch):
+        """Il modello di regime deve funzionare anche senza hmmlearn installato."""
+        import builtins
+        import importlib
+        import sys
+
+        monkeypatch.delitem(sys.modules, "models.regime", raising=False)
+        real_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hmmlearn":
+                raise ModuleNotFoundError("No module named 'hmmlearn'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr("builtins.__import__", guarded_import)
+
+        regime_module = importlib.import_module("models.regime")
+        model = regime_module.RegimeModel(n_states=3)
+        model._n_iter = 20
+        model.fit(macro_df)
+
+        probs = model.predict_probabilities(macro_df)
+        assert set(probs) == {"bull", "bear", "transition"}
+        assert abs(sum(probs.values()) - 1.0) < 1e-6
+
 
 # ---------------------------------------------------------------------------
 # BaseModel interface tests
