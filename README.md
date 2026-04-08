@@ -120,8 +120,17 @@ DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
 - Dagster ora espone asset checks bloccanti per i contratti di `raw_ohlcv`, `raw_news`, `raw_macro`, `alpha158_features`, `sentiment_features` e `daily_orders`.
 - Gli ordini salvati in `data/orders/*.parquet` includono lineage minimo (`pipeline_run_id`, `data_version`, `feature_version`, `model_version`).
 - MLflow usa tag standardizzati per training, retraining e backtest.
-- La baseline CI vive in [`.github/workflows/ci.yml`](/E:/Github/MLCouncil/.worktrees/codex-fase1-foundations/.github/workflows/ci.yml).
-- Le convenzioni operative di Fase 1 sono riepilogate in [`docs/fase1-foundations.md`](/E:/Github/MLCouncil/.worktrees/codex-fase1-foundations/docs/fase1-foundations.md).
+- La baseline CI vive in [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
+- Le convenzioni operative di Fase 1 sono riepilogate in [`docs/fase1-foundations.md`](./docs/fase1-foundations.md).
+
+## Fase 2 Realism
+
+- I costi di transazione usano un contratto condiviso in `council/transaction_costs.py`.
+- Il backtest usa l'equity netta come default operativo ma conserva anche la curva lorda.
+- Il runner e MLflow espongono metriche `gross` e `net`, inclusi `estimated_costs_usd`, `gross_final_equity` e `net_final_equity`.
+- Il retraining aggiunge diagnostica out-of-sample deterministica (`oos_sharpe`, `oos_max_drawdown`, `oos_turnover`, `walk_forward_window_count`, `pbo`).
+- Il promotion gate blocca candidati senza diagnostica walk-forward sufficiente, con `oos_sharpe <= 0` o con `pbo > 0.50`.
+- Le convenzioni operative di Fase 2 sono riepilogate in [`docs/fase2-realism.md`](./docs/fase2-realism.md).
 
 ### Run the Pipeline (Demo)
 

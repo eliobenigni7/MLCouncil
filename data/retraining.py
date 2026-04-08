@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from runtime_env import load_runtime_env
 
+from backtest.validation import build_walk_forward_splits, summarize_walk_forward_metrics
 from council.mlflow_utils import MLflowTracker, build_run_tags, validate_promotion_gate
 
 _ROOT = Path(__file__).parents[1]
@@ -59,6 +60,9 @@ class ValidationResult:
     production_max_dd: float
     dd_worsened: bool
     ic_positive: bool
+    candidate_oos_sharpe: float = 0.0
+    candidate_pbo: float = 1.0
+    walk_forward_window_count: int = 0
     messages: list[str] = field(default_factory=list)
 
 
@@ -169,10 +173,16 @@ class ModelValidator:
         max_sharpe_degradation: float = 0.2,
         max_dd_worsening: float = 0.05,
         min_ic: float = 0.0,
+        min_oos_sharpe: float = 0.0,
+        max_pbo: float = 0.5,
+        min_walk_forward_windows: int = 1,
     ):
         self.max_sharpe_degradation = max_sharpe_degradation
         self.max_dd_worsening = max_dd_worsening
         self.min_ic = min_ic
+        self.min_oos_sharpe = min_oos_sharpe
+        self.max_pbo = max_pbo
+        self.min_walk_forward_windows = min_walk_forward_windows
 
     def validate(
         self,
@@ -190,6 +200,9 @@ class ModelValidator:
         dd_worsened = candidate_max_dd > (production_max_dd + self.max_dd_worsening)
 
         ic_positive = candidate_metrics.get("ic_mean", 0) > self.min_ic
+        candidate_oos_sharpe = float(candidate_metrics.get("oos_sharpe", 0.0))
+        candidate_pbo = float(candidate_metrics.get("pbo", 1.0))
+        walk_forward_window_count = int(candidate_metrics.get("walk_forward_window_count", 0))
 
         is_valid = True
 
@@ -214,6 +227,26 @@ class ModelValidator:
                 f"below minimum {self.min_ic}"
             )
 
+        if candidate_oos_sharpe <= self.min_oos_sharpe:
+            is_valid = False
+            messages.append(
+                f"CANDIDATE_REJECTED: OOS Sharpe {candidate_oos_sharpe:.2f} "
+                f"below minimum {self.min_oos_sharpe:.2f}"
+            )
+
+        if walk_forward_window_count < self.min_walk_forward_windows:
+            is_valid = False
+            messages.append(
+                f"CANDIDATE_REJECTED: walk-forward windows {walk_forward_window_count} "
+                f"below minimum {self.min_walk_forward_windows}"
+            )
+
+        if candidate_pbo > self.max_pbo:
+            is_valid = False
+            messages.append(
+                f"CANDIDATE_REJECTED: pbo {candidate_pbo:.2f} exceeds limit {self.max_pbo:.2f}"
+            )
+
         if is_valid:
             messages.append("CANDIDATE_ACCEPTED: All validation checks passed")
 
@@ -226,6 +259,9 @@ class ModelValidator:
             production_max_dd=production_max_dd,
             dd_worsened=dd_worsened,
             ic_positive=ic_positive,
+            candidate_oos_sharpe=candidate_oos_sharpe,
+            candidate_pbo=candidate_pbo,
+            walk_forward_window_count=walk_forward_window_count,
             messages=messages,
         )
 
@@ -345,6 +381,124 @@ class RetrainingPipeline:
 
         self._last_train_date: Optional[datetime] = None
 
+    def _build_model(self, model_name: str):
+        if model_name == "lgbm":
+            from models.technical import TechnicalModel
+            return TechnicalModel()
+        if model_name == "hmm":
+            from models.regime import RegimeModel
+            return RegimeModel()
+        raise ValueError(f"Unknown model type: {model_name}")
+
+    def _score_predictions(
+        self,
+        predictions,
+        actuals,
+    ) -> dict[str, float]:
+        from scipy.stats import spearmanr
+
+        ic_values = []
+        common_dates = predictions.index.intersection(actuals.index)
+        for date in common_dates:
+            pred = predictions.loc[date]
+            actual = actuals.loc[date]
+            if hasattr(pred, "dropna"):
+                pred = pred.dropna()
+            if hasattr(actual, "dropna"):
+                actual = actual.dropna()
+            if not hasattr(pred, "index") or not hasattr(actual, "index"):
+                continue
+            common = pred.index.intersection(actual.index)
+            if len(common) < 3:
+                continue
+            ic, _ = spearmanr(pred[common], actual[common])
+            if not np.isnan(ic):
+                ic_values.append(float(ic))
+
+        ic_mean = float(np.mean(ic_values)) if ic_values else 0.0
+        sharpe = (
+            float(ic_mean / (np.std(ic_values) + 1e-9) * np.sqrt(252))
+            if len(ic_values) >= 2
+            else 0.0
+        )
+
+        aligned_returns = actuals.loc[common_dates]
+        if isinstance(aligned_returns, pd.DataFrame):
+            daily_returns = aligned_returns.mean(axis=1).fillna(0.0)
+        else:
+            daily_returns = pd.Series(aligned_returns, index=common_dates, dtype=float).fillna(0.0)
+        equity = (1 + daily_returns).cumprod()
+        peak = equity.cummax()
+        max_dd = float(((equity - peak) / peak).min()) if not equity.empty else 0.0
+
+        return {
+            "ic_mean": ic_mean,
+            "sharpe": sharpe,
+            "max_drawdown": max_dd,
+            "turnover": 0.0,
+            "n_validation_days": len(ic_values),
+        }
+
+    def _compute_walk_forward_diagnostics(
+        self,
+        model_name: str,
+        features: pd.DataFrame,
+        targets,
+        validation_window: int,
+    ) -> dict[str, float]:
+        unique_dates = pd.DatetimeIndex(pd.to_datetime(pd.Index(features.index).unique())).sort_values()
+        if len(unique_dates) < 6:
+            return summarize_walk_forward_metrics(pd.DataFrame())
+
+        test_window = min(validation_window, max(2, len(unique_dates) // 5))
+        train_window = max(4, len(unique_dates) - (test_window * 2))
+        if train_window + test_window > len(unique_dates):
+            train_window = max(2, len(unique_dates) - test_window)
+
+        splits = build_walk_forward_splits(
+            unique_dates,
+            train_window=train_window,
+            test_window=test_window,
+            step=test_window,
+        )
+
+        rows = []
+        for window_id, split in enumerate(splits):
+            train_mask = (
+                (pd.to_datetime(features.index) >= split.train_start)
+                & (pd.to_datetime(features.index) <= split.train_end)
+            )
+            test_mask = (
+                (pd.to_datetime(features.index) >= split.test_start)
+                & (pd.to_datetime(features.index) <= split.test_end)
+            )
+            if int(train_mask.sum()) < 3 or int(test_mask.sum()) < 3:
+                continue
+
+            wf_model = self._build_model(model_name)
+            train_features = features.loc[train_mask]
+            train_targets = targets.loc[train_mask]
+            test_features = features.loc[test_mask]
+            test_targets = targets.loc[test_mask]
+
+            wf_model.fit(train_features, train_targets)
+            train_predictions = wf_model.predict(train_features)
+            test_predictions = wf_model.predict(test_features)
+
+            train_metrics = self._score_predictions(train_predictions, train_targets)
+            test_metrics = self._score_predictions(test_predictions, test_targets)
+            rows.append(
+                {
+                    "window_id": window_id,
+                    "train_sharpe": train_metrics["sharpe"],
+                    "test_sharpe": test_metrics["sharpe"],
+                    "test_max_drawdown": test_metrics["max_drawdown"],
+                    "test_turnover": test_metrics["turnover"],
+                }
+            )
+
+        return summarize_walk_forward_metrics(pd.DataFrame(rows))
+
     def load_state(self) -> None:
         state_file = MODELS_DIR / "retraining_state.json"
         if state_file.exists():
@@ -387,14 +541,7 @@ class RetrainingPipeline:
         targets: pd.Series,
         validation_window: int = 60,
     ) -> tuple[any, dict]:
-        if model_name == "lgbm":
-            from models.technical import TechnicalModel
-            model = TechnicalModel()
-        elif model_name == "hmm":
-            from models.regime import RegimeModel
-            model = RegimeModel()
-        else:
-            raise ValueError(f"Unknown model type: {model_name}")
+        model = self._build_model(model_name)
 
         split_idx = len(features) - validation_window
         if split_idx < 100:
@@ -408,34 +555,15 @@ class RetrainingPipeline:
         model.fit(train_features, train_targets)
 
         val_predictions = model.predict(val_features)
-
-        from scipy.stats import spearmanr
-        ic_values = []
-        for date in val_predictions.index:
-            if date in val_targets.index:
-                pred = val_predictions.loc[date].dropna()
-                actual = val_targets.loc[date].dropna()
-                common = pred.index.intersection(actual.index)
-                if len(common) >= 3:
-                    ic, _ = spearmanr(pred[common], actual[common])
-                    if not np.isnan(ic):
-                        ic_values.append(ic)
-
-        ic_mean = np.mean(ic_values) if ic_values else 0
-        sharpe = ic_mean / (np.std(ic_values) + 1e-9) * np.sqrt(252) if len(ic_values) >= 2 else 0
-
-        returns = val_targets.loc[val_predictions.index]
-        equity = (1 + returns).cumprod()
-        peak = equity.cummax()
-        max_dd = float(((equity - peak) / peak).min())
-
-        metrics = {
-            "ic_mean": ic_mean,
-            "sharpe": sharpe,
-            "max_drawdown": max_dd,
-            "turnover": 0.0,
-            "n_validation_days": len(ic_values),
-        }
+        metrics = self._score_predictions(val_predictions, val_targets)
+        metrics.update(
+            self._compute_walk_forward_diagnostics(
+                model_name=model_name,
+                features=features,
+                targets=targets,
+                validation_window=validation_window,
+            )
+        )
 
         return model, metrics
 
@@ -479,21 +607,10 @@ class RetrainingPipeline:
         production_metrics = {}
         if production_model:
             try:
-                prod_predictions = production_model.predict(features.tail(60))
-                prod_ic = []
-                prod_targets = targets.tail(60)
-                for date in prod_predictions.index:
-                    if date in prod_targets.index:
-                        pred = prod_predictions.loc[date].dropna()
-                        actual = prod_targets.loc[date].dropna()
-                        common = pred.index.intersection(actual.index)
-                        if len(common) >= 3:
-                            ic, _ = spearmanr(pred[common], actual[common])
-                            if not np.isnan(ic):
-                                prod_ic.append(ic)
-                if prod_ic:
-                    production_metrics["ic_mean"] = np.mean(prod_ic)
-                    production_metrics["sharpe"] = np.mean(prod_ic) / (np.std(prod_ic) + 1e-9) * np.sqrt(252)
+                prod_features = features.tail(60)
+                prod_targets = targets.loc[prod_features.index]
+                prod_predictions = production_model.predict(prod_features)
+                production_metrics = self._score_predictions(prod_predictions, prod_targets)
             except Exception:
                 pass
 

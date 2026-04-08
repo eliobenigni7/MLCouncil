@@ -44,7 +44,19 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import polars as pl
+try:
+    import polars as pl
+except ImportError:  # pragma: no cover
+    class _PolarsStub:
+        class DataFrame:  # minimal type placeholder for postponed runtime access
+            pass
+
+        def __getattr__(self, name):
+            raise ImportError(
+                "polars is required for OHLCV loading. Install with: pip install polars"
+            )
+
+    pl = _PolarsStub()
 
 try:
     from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
@@ -105,6 +117,7 @@ class BacktestResult:
     fills: pd.DataFrame = field(default_factory=pd.DataFrame)
     positions: pd.DataFrame = field(default_factory=pd.DataFrame)
     equity_curve: pd.Series = field(default_factory=pd.Series)
+    gross_equity_curve: pd.Series = field(default_factory=pd.Series)
     stats: dict = field(default_factory=dict)
     strategy_fills: pd.DataFrame = field(default_factory=pd.DataFrame)
 
@@ -398,15 +411,22 @@ def run_backtest(
     positions_df = engine.trader.generate_positions_report()
     strategy_fills_df = strategy.get_fill_report()
 
-    equity_curve = _compute_equity_curve(fills_df, initial_capital)
-    stats = _compute_stats(equity_curve, fills_df, initial_capital)
+    gross_equity_curve = _compute_equity_curve(fills_df, initial_capital)
+    stats = _compute_stats(
+        gross_equity_curve,
+        fills_df,
+        initial_capital,
+        commission_bps=commission_bps,
+        slippage_bps=slippage_bps,
+    )
 
     engine.dispose()
 
     result = BacktestResult(
         fills=fills_df,
         positions=positions_df,
-        equity_curve=equity_curve,
+        equity_curve=stats.pop("_net_equity_curve", gross_equity_curve),
+        gross_equity_curve=gross_equity_curve,
         stats=stats,
         strategy_fills=strategy_fills_df,
     )
@@ -694,47 +714,75 @@ def _compute_stats(
     fills_df: pd.DataFrame,
     initial_capital: float,
     risk_free_rate: float = 0.05,
+    commission_bps: float = 1.0,
+    slippage_bps: float = 3.0,
 ) -> dict:
-    """Calcola le metriche principali del backtest."""
+    """Calcola metriche nette e lorde del backtest da un'unica reportistica."""
     stats: dict = {}
 
     if equity.empty or len(equity) < 2:
         return stats
 
-    returns = equity.pct_change().dropna()
+    from backtest.report import BacktestReport
 
-    # Sharpe annualizzato
-    if returns.std() > 0:
-        excess = returns - risk_free_rate / 252
-        stats["sharpe"] = float(excess.mean() / returns.std() * np.sqrt(252))
+    report = BacktestReport(
+        fills=fills_df,
+        prices=pd.DataFrame(),
+        initial_capital=initial_capital,
+        risk_free_rate=risk_free_rate,
+        equity_curve=equity,
+        commission_bps=commission_bps,
+        slippage_bps=slippage_bps,
+    )
+    turnover_df = report.turnover_analysis()
+    net_equity = report.equity_curve
+    gross_equity = report.gross_equity_curve
+    n_years = len(net_equity) / 252 if len(net_equity) else 0.0
+
+    gross_returns = report.gross_returns
+    if not gross_returns.empty and gross_returns.std() > 0:
+        gross_excess = gross_returns - risk_free_rate / 252
+        gross_sharpe = float(gross_excess.mean() / gross_returns.std() * np.sqrt(252))
     else:
-        stats["sharpe"] = 0.0
+        gross_sharpe = 0.0
 
-    # Max drawdown
-    rolling_max = equity.cummax()
-    drawdown = (equity - rolling_max) / rolling_max
-    stats["max_drawdown"] = float(drawdown.min())
+    gross_rolling_max = gross_equity.cummax()
+    gross_drawdown = (gross_equity - gross_rolling_max) / gross_rolling_max if not gross_equity.empty else pd.Series(dtype=float)
+    gross_max_drawdown = float(gross_drawdown.min()) if not gross_drawdown.empty else 0.0
 
-    # CAGR
-    n_years = len(equity) / 252
     if n_years > 0 and initial_capital > 0:
-        final_equity = float(equity.iloc[-1])
-        cagr = (final_equity / initial_capital) ** (1 / n_years) - 1
-        stats["cagr"] = float(cagr)
+        gross_final_equity = float(gross_equity.iloc[-1])
+        net_final_equity = float(net_equity.iloc[-1])
+        gross_cagr = (gross_final_equity / initial_capital) ** (1 / n_years) - 1
+        net_cagr = (net_final_equity / initial_capital) ** (1 / n_years) - 1
     else:
-        stats["cagr"] = 0.0
+        gross_final_equity = float(gross_equity.iloc[-1]) if not gross_equity.empty else initial_capital
+        net_final_equity = float(net_equity.iloc[-1]) if not net_equity.empty else initial_capital
+        gross_cagr = 0.0
+        net_cagr = 0.0
 
-    # Calmar
-    if abs(stats.get("max_drawdown", 0)) > 1e-9:
-        stats["calmar"] = stats["cagr"] / abs(stats["max_drawdown"])
-    else:
-        stats["calmar"] = float("inf")
-
-    # Numero di trade
+    stats["sharpe"] = float(report.sharpe_ratio())
+    stats["gross_sharpe"] = gross_sharpe
+    stats["max_drawdown"] = float(report.max_drawdown())
+    stats["gross_max_drawdown"] = gross_max_drawdown
+    stats["cagr"] = float(net_cagr)
+    stats["gross_cagr"] = float(gross_cagr)
+    stats["calmar"] = float(report.calmar_ratio())
+    stats["gross_calmar"] = (
+        float(gross_cagr / abs(gross_max_drawdown))
+        if abs(gross_max_drawdown) > 1e-9
+        else float("inf")
+    )
     stats["n_trades"] = len(fills_df)
-
-    # Annate simulate
     stats["n_years"] = round(n_years, 2)
-    stats["final_equity"] = float(equity.iloc[-1])
+    stats["final_equity"] = net_final_equity
+    stats["gross_final_equity"] = gross_final_equity
+    stats["estimated_costs_usd"] = float(report.total_estimated_cost_usd)
+    stats["turnover"] = (
+        float(turnover_df["turnover_pct"].mean())
+        if not turnover_df.empty and "turnover_pct" in turnover_df.columns
+        else 0.0
+    )
+    stats["_net_equity_curve"] = net_equity
 
     return stats

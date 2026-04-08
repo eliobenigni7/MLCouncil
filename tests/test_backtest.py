@@ -107,6 +107,25 @@ def _make_equity_curve(fills: pd.DataFrame, initial_capital: float = 100_000.0) 
     return equity
 
 
+def _make_trade_fills(
+    dates: list[pd.Timestamp],
+    prices: list[float],
+    quantities: list[float],
+) -> pd.DataFrame:
+    """Create fills with Nautilus-style columns for turnover and cost tests."""
+    rows = []
+    for ts, price, qty in zip(dates, prices, quantities, strict=True):
+        rows.append(
+            {
+                "ts_event": int(pd.Timestamp(ts, tz="UTC").value),
+                "last_px": float(price),
+                "last_qty": float(qty),
+                "order_side": "BUY",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 # ---------------------------------------------------------------------------
 # Test 1 — No lookahead: fills on T+1, not T
 # ---------------------------------------------------------------------------
@@ -327,3 +346,103 @@ class TestSharpeComputable:
 
         assert isinstance(calmar, float), "calmar_ratio() must return a float"
         assert np.isfinite(calmar), f"Calmar ratio must be finite, got {calmar}"
+
+
+class TestTransactionCostRealism:
+    def test_shared_transaction_cost_model_estimates_weights_and_notional(self):
+        """Phase 2 requires one reusable transaction cost model for optimizer and report."""
+        from council.transaction_costs import TransactionCostModel
+
+        model = TransactionCostModel(commission_bps=1.0, slippage_bps=3.0)
+        w_old = np.array([0.50, 0.50])
+        w_new = np.array([0.70, 0.30])
+
+        assert model.estimate_turnover(w_old, w_new) == pytest.approx(0.20)
+        assert model.estimate_cost_from_turnover(0.20, portfolio_value=100_000.0) == pytest.approx(8.0)
+        assert model.estimate_cost_from_notional(25_000.0) == pytest.approx(10.0)
+
+    def test_turnover_analysis_respects_configured_cost_model(self):
+        """BacktestReport must use configured bps instead of a hardcoded default."""
+        from backtest.report import BacktestReport
+
+        fills = _make_trade_fills(
+            dates=[
+                pd.Timestamp("2024-01-03"),
+                pd.Timestamp("2024-01-03"),
+                pd.Timestamp("2024-01-04"),
+            ],
+            prices=[100.0, 50.0, 120.0],
+            quantities=[10.0, 20.0, 5.0],
+        )
+        prices = _make_prices(n_days=5)
+
+        report = BacktestReport(
+            fills=fills,
+            prices=prices,
+            initial_capital=100_000.0,
+            commission_bps=2.0,
+            slippage_bps=5.0,
+        )
+        turnover_df = report.turnover_analysis()
+
+        assert turnover_df.loc[pd.Timestamp("2024-01-03"), "estimated_cost_usd"] == pytest.approx(1.40)
+        assert turnover_df.loc[pd.Timestamp("2024-01-04"), "estimated_cost_usd"] == pytest.approx(0.42)
+
+    def test_report_defaults_to_net_equity_curve(self):
+        """Gross equity must be preserved, but the default reported curve should be net of estimated costs."""
+        from backtest.report import BacktestReport
+
+        index = pd.bdate_range("2024-01-02", periods=3)
+        gross_equity = pd.Series([100_000.0, 101_000.0, 100_500.0], index=index, name="equity")
+        fills = _make_trade_fills(
+            dates=[index[1], index[2]],
+            prices=[100.0, 100.0],
+            quantities=[100.0, 50.0],
+        )
+        prices = _make_prices(n_days=5)
+
+        report = BacktestReport(
+            fills=fills,
+            prices=prices,
+            initial_capital=100_000.0,
+            equity_curve=gross_equity,
+            commission_bps=10.0,
+            slippage_bps=0.0,
+        )
+
+        expected_net = pd.Series(
+            [100_000.0, 100_990.0, 100_485.0],
+            index=index,
+            name="equity_net",
+        )
+
+        pd.testing.assert_series_equal(report.gross_equity_curve, gross_equity.astype(float), check_names=False)
+        pd.testing.assert_series_equal(report.equity_curve, expected_net, check_names=False)
+        assert report.total_estimated_cost_usd == pytest.approx(15.0)
+
+    def test_runner_stats_expose_gross_and_net_metrics(self):
+        """The backtest runner stats contract must persist both gross and net metrics."""
+        sys.modules.setdefault("polars", types.SimpleNamespace())
+        from backtest.runner import _compute_stats
+
+        index = pd.bdate_range("2024-01-02", periods=3)
+        gross_equity = pd.Series([100_000.0, 101_000.0, 100_500.0], index=index, name="equity")
+        fills = _make_trade_fills(
+            dates=[index[1], index[2]],
+            prices=[100.0, 100.0],
+            quantities=[100.0, 50.0],
+        )
+
+        stats = _compute_stats(
+            gross_equity,
+            fills,
+            100_000.0,
+            commission_bps=10.0,
+            slippage_bps=0.0,
+        )
+
+        assert stats["gross_final_equity"] == pytest.approx(100_500.0)
+        assert stats["final_equity"] == pytest.approx(100_485.0)
+        assert stats["estimated_costs_usd"] == pytest.approx(15.0)
+        assert "gross_sharpe" in stats
+        assert "gross_max_drawdown" in stats

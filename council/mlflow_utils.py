@@ -43,7 +43,19 @@ REQUIRED_RUN_TAGS = (
     "feature_version",
     "environment",
 )
-REQUIRED_PROMOTION_METRICS = ("sharpe", "max_drawdown", "turnover")
+REQUIRED_PROMOTION_METRICS = (
+    "sharpe",
+    "max_drawdown",
+    "turnover",
+    "oos_sharpe",
+    "oos_max_drawdown",
+    "oos_turnover",
+    "walk_forward_window_count",
+    "pbo",
+)
+MAX_PROMOTION_PBO = 0.50
+MIN_WALK_FORWARD_WINDOWS = 1
+MIN_OOS_SHARPE = 0.0
 
 
 def build_run_tags(
@@ -87,6 +99,15 @@ def validate_promotion_gate(
     missing_metrics = [key for key in REQUIRED_PROMOTION_METRICS if key not in metrics]
     if missing_metrics:
         raise ValueError(f"missing required metrics: {', '.join(missing_metrics)}")
+
+    if float(metrics.get("walk_forward_window_count", 0)) < MIN_WALK_FORWARD_WINDOWS:
+        raise ValueError("walk-forward diagnostics missing or insufficient")
+
+    if float(metrics.get("oos_sharpe", 0.0)) <= MIN_OOS_SHARPE:
+        raise ValueError("oos_sharpe must be positive for promotion")
+
+    if float(metrics.get("pbo", 1.0)) > MAX_PROMOTION_PBO:
+        raise ValueError(f"pbo above allowed threshold: {metrics.get('pbo')}")
 
 
 class MLflowTracker:
@@ -281,6 +302,9 @@ def log_backtest_result(
     if not _MLFLOW_AVAILABLE:
         return
 
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
     tags = build_run_tags(
         model_name=model_name,
         pipeline_run_id=pipeline_run_id,
@@ -305,5 +329,12 @@ def log_backtest_result(
             "max_drawdown": result.max_drawdown,
             "n_trades": result.n_trades,
             "turnover": float(getattr(result, "stats", {}).get("turnover", 0.0)),
+            "gross_sharpe": float(getattr(result, "stats", {}).get("gross_sharpe", 0.0)),
+            "gross_max_drawdown": float(getattr(result, "stats", {}).get("gross_max_drawdown", 0.0)),
+            "gross_cagr": float(getattr(result, "stats", {}).get("gross_cagr", 0.0)),
+            "gross_calmar": float(getattr(result, "stats", {}).get("gross_calmar", 0.0)),
+            "estimated_costs_usd": float(getattr(result, "stats", {}).get("estimated_costs_usd", 0.0)),
+            "gross_final_equity": float(getattr(result, "stats", {}).get("gross_final_equity", 0.0)),
+            "net_final_equity": float(getattr(result, "stats", {}).get("final_equity", 0.0)),
         }
         mlflow.log_metrics(metrics)

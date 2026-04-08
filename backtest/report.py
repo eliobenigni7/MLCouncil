@@ -42,6 +42,8 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from council.transaction_costs import TransactionCostModel
+
 
 # ===========================================================================
 # BacktestReport
@@ -74,17 +76,35 @@ class BacktestReport:
         initial_capital: float = 100_000.0,
         risk_free_rate: float = 0.05,
         equity_curve: Optional[pd.Series] = None,
+        commission_bps: float = 1.0,
+        slippage_bps: float = 3.0,
+        cost_model: Optional[TransactionCostModel] = None,
     ) -> None:
         self.fills = fills.copy() if not fills.empty else pd.DataFrame()
         self.prices = prices.copy() if not prices.empty else pd.DataFrame()
         self.initial_capital = initial_capital
         self.risk_free_rate = risk_free_rate
+        self.cost_model = cost_model or TransactionCostModel(
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps,
+        )
+        self._turnover_cache: Optional[pd.DataFrame] = None
 
-        # Equity curve: usa quella fornita o ricostruisce dai fill
+        # Equity curve: conserva il lordo e usa il netto come default operativo
         if equity_curve is not None and not equity_curve.empty:
-            self.equity_curve = equity_curve.copy()
+            self.gross_equity_curve = equity_curve.astype(float).copy()
         else:
-            self.equity_curve = self._compute_equity_curve()
+            self.gross_equity_curve = self._compute_equity_curve().astype(float)
+
+        self.equity_curve = self._compute_net_equity_curve(self.gross_equity_curve)
+        self.total_estimated_cost_usd = float(
+            self._turnover_cache["estimated_cost_usd"].sum()
+        ) if self._turnover_cache is not None and not self._turnover_cache.empty else 0.0
+        self.gross_returns: pd.Series = (
+            self.gross_equity_curve.pct_change().dropna()
+            if len(self.gross_equity_curve) > 1
+            else pd.Series(dtype=float)
+        )
 
         self.returns: pd.Series = (
             self.equity_curve.pct_change().dropna()
@@ -194,10 +214,15 @@ class BacktestReport:
         pd.DataFrame
             Colonne: date, turnover_pct, trade_count, estimated_cost_usd.
         """
+        if self._turnover_cache is not None:
+            return self._turnover_cache.copy()
+
+        empty = pd.DataFrame(
+            columns=["date", "turnover_pct", "trade_count", "estimated_cost_usd"]
+        )
         if self.fills.empty:
-            return pd.DataFrame(
-                columns=["date", "turnover_pct", "trade_count", "estimated_cost_usd"]
-            )
+            self._turnover_cache = empty.set_index("date")
+            return self._turnover_cache.copy()
 
         df = self.fills.copy()
 
@@ -206,9 +231,8 @@ class BacktestReport:
             (c for c in ["ts_event", "timestamp", "ts_init"] if c in df.columns), None
         )
         if ts_col is None:
-            return pd.DataFrame(
-                columns=["date", "turnover_pct", "trade_count", "estimated_cost_usd"]
-            )
+            self._turnover_cache = empty.set_index("date")
+            return self._turnover_cache.copy()
 
         df["_date"] = pd.to_datetime(df[ts_col], unit="ns", utc=True).dt.date
 
@@ -223,8 +247,7 @@ class BacktestReport:
                     grp[px_col].astype(float) * grp[qty_col].astype(float)
                 ).sum()
                 turnover_pct = traded_usd / self.initial_capital
-                # Stima costi: 4 bps totali (3 slip + 1 comm)
-                estimated_cost = traded_usd * 0.0004
+                estimated_cost = self.cost_model.estimate_cost_from_notional(traded_usd)
             else:
                 traded_usd = 0.0
                 turnover_pct = 0.0
@@ -238,10 +261,10 @@ class BacktestReport:
             })
 
         if not rows:
-            return pd.DataFrame(
-                columns=["date", "turnover_pct", "trade_count", "estimated_cost_usd"]
-            )
-        return pd.DataFrame(rows).set_index("date")
+            self._turnover_cache = empty.set_index("date")
+            return self._turnover_cache.copy()
+        self._turnover_cache = pd.DataFrame(rows).set_index("date")
+        return self._turnover_cache.copy()
 
     def model_attribution(
         self,
@@ -547,6 +570,28 @@ class BacktestReport:
 
         equity.index = pd.to_datetime(equity.index)
         return equity
+
+    def _compute_net_equity_curve(self, gross_equity: pd.Series) -> pd.Series:
+        """Sottrae i costi stimati cumulati dall'equity curve lorda."""
+        if gross_equity.empty:
+            return gross_equity.copy()
+
+        gross = gross_equity.astype(float).copy()
+        gross.index = pd.to_datetime(gross.index)
+
+        turnover_df = self.turnover_analysis()
+        if turnover_df.empty:
+            net = gross.copy()
+            net.name = "equity_net"
+            return net
+
+        daily_costs = turnover_df["estimated_cost_usd"].astype(float).copy()
+        daily_costs.index = pd.to_datetime(daily_costs.index)
+        aligned_costs = daily_costs.reindex(gross.index, fill_value=0.0).cumsum()
+
+        net = gross - aligned_costs
+        net.name = "equity_net"
+        return net
 
     def _drawdown_series(self) -> pd.Series:
         if self.equity_curve.empty:

@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from council.transaction_costs import TransactionCostModel
 from data.features.sector_exposure import (
     SECTOR_MAP,
     UNIQUE_SECTORS,
@@ -76,6 +77,10 @@ class PortfolioConstructor:
         self.commission_bps: float = 1.0
         self.slippage_bps: float = 3.0
         self.tc_lambda: float = 1.0
+        self.cost_model = TransactionCostModel(
+            commission_bps=self.commission_bps,
+            slippage_bps=self.slippage_bps,
+        )
 
     def compute_transaction_cost(
         self,
@@ -83,10 +88,15 @@ class PortfolioConstructor:
         w_new: np.ndarray,
         portfolio_value: float = 1.0,
     ) -> float:
-        turnover = np.abs(w_new - w_old).sum() / 2
-        cost_bps = self.commission_bps + self.slippage_bps
-        tc_cost = turnover * cost_bps / 10000 * portfolio_value
-        return tc_cost
+        self.cost_model = TransactionCostModel(
+            commission_bps=self.commission_bps,
+            slippage_bps=self.slippage_bps,
+        )
+        return self.cost_model.estimate_cost_from_weights(
+            w_old,
+            w_new,
+            portfolio_value=portfolio_value,
+        )
 
     def optimize(
         self,
@@ -149,7 +159,11 @@ class PortfolioConstructor:
         alpha_objective = effective_alpha @ w
 
         turnover = cp.norm1(w - w_curr) / 2
-        tc_cost = turnover * (self.commission_bps + self.slippage_bps) / 10000
+        self.cost_model = TransactionCostModel(
+            commission_bps=self.commission_bps,
+            slippage_bps=self.slippage_bps,
+        )
+        tc_cost = turnover * self.cost_model.total_cost_bps / 10000
         objective = cp.Maximize(alpha_objective - self.tc_lambda * tc_cost)
 
         constraints: list = [
