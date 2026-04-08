@@ -6,7 +6,8 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 _ROOT = Path(__file__).resolve().parent
-_DEFAULT_RUNTIME_ENV_PATH = _ROOT / "config" / "runtime.env"
+_CONFIG_DIR = _ROOT / "config"
+_DEFAULT_RUNTIME_ENV_PATH = _CONFIG_DIR / "runtime.env"
 
 LEGACY_ENV_ALIASES = {
     "ALPACA_PAPER_KEY": "ALPACA_API_KEY",
@@ -14,14 +15,26 @@ LEGACY_ENV_ALIASES = {
 }
 
 
+def get_runtime_profile() -> str:
+    profile = os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower()
+    return profile or "local"
+
+
 def get_runtime_env_path() -> Path:
     override = os.getenv("MLCOUNCIL_RUNTIME_ENV_PATH")
-    return Path(override) if override else _DEFAULT_RUNTIME_ENV_PATH
+    if override:
+        return Path(override)
+
+    profile_path = _CONFIG_DIR / f"runtime.{get_runtime_profile()}.env"
+    if profile_path.exists():
+        return profile_path
+    return _DEFAULT_RUNTIME_ENV_PATH
 
 
 def load_runtime_env(*, override: bool = False) -> dict[str, str]:
     path = get_runtime_env_path()
-    
+    loaded: dict[str, str] = {}
+
     if path.exists():
         loaded = {
             key: value
@@ -29,11 +42,16 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
             if value is not None
         }
         for key, value in loaded.items():
-            if key not in os.environ:
+            if override or key not in os.environ:
                 os.environ[key] = value
 
     _apply_legacy_aliases()
-    return {}
+    return loaded
+
+
+def validate_required_env(*keys: str) -> list[str]:
+    missing = [key for key in keys if not os.getenv(key)]
+    return missing
 
 
 def _apply_legacy_aliases() -> None:

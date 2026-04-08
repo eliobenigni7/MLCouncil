@@ -115,6 +115,14 @@ DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
 
 ## Usage
 
+## Fase 1 Foundations
+
+- Dagster ora espone asset checks bloccanti per i contratti di `raw_ohlcv`, `raw_news`, `raw_macro`, `alpha158_features`, `sentiment_features` e `daily_orders`.
+- Gli ordini salvati in `data/orders/*.parquet` includono lineage minimo (`pipeline_run_id`, `data_version`, `feature_version`, `model_version`).
+- MLflow usa tag standardizzati per training, retraining e backtest.
+- La baseline CI vive in [`.github/workflows/ci.yml`](/E:/Github/MLCouncil/.worktrees/codex-fase1-foundations/.github/workflows/ci.yml).
+- Le convenzioni operative di Fase 1 sono riepilogate in [`docs/fase1-foundations.md`](/E:/Github/MLCouncil/.worktrees/codex-fase1-foundations/docs/fase1-foundations.md).
+
 ### Run the Pipeline (Demo)
 
 ```bash

@@ -22,7 +22,14 @@ from .risk_engine import (
     ExposureReport,
     Position,
 )
-from .mlflow_utils import MLflowTracker, get_tracker, log_ic_metrics, log_signal_metrics
+from .mlflow_utils import (
+    MLflowTracker,
+    build_run_tags,
+    get_tracker,
+    log_ic_metrics,
+    log_signal_metrics,
+    validate_promotion_gate,
+)
 
 __all__ = [
     "CouncilAggregator",
@@ -48,7 +55,9 @@ __all__ = [
     "ExposureReport",
     "Position",
     "MLflowTracker",
+    "build_run_tags",
     "get_tracker",
     "log_ic_metrics",
     "log_signal_metrics",
+    "validate_promotion_gate",
 ]

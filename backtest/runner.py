@@ -403,13 +403,32 @@ def run_backtest(
 
     engine.dispose()
 
-    return BacktestResult(
+    result = BacktestResult(
         fills=fills_df,
         positions=positions_df,
         equity_curve=equity_curve,
         stats=stats,
         strategy_fills=strategy_fills_df,
     )
+    result.start_date = start_date
+    result.end_date = end_date
+    result.initial_capital = initial_capital
+
+    try:
+        from council.mlflow_utils import log_backtest_result
+
+        log_backtest_result(
+            result,
+            pipeline_run_id=f"backtest-{start_date}-{end_date}",
+            data_version=f"backtest-data-{len(loaded_tickers)}",
+            feature_version="backtest-sim",
+            environment="paper",
+            model_name="council",
+        )
+    except Exception:
+        pass
+
+    return result
 
 
 # ===========================================================================

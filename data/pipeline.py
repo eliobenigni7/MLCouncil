@@ -29,6 +29,19 @@ import yaml
 import dagster as dg
 from dagster import AssetExecutionContext, RunFailureSensorContext
 
+from data.contracts import validate_asset_contract, version_payload
+from data.lineage import (
+    attach_lineage,
+    build_feature_lineage,
+    build_pipeline_run_id,
+    checkpoint_version,
+    dataframe_lineage_columns,
+    extract_lineage,
+    lineage_artifact_payload,
+    merge_lineage,
+    merge_versions,
+)
+
 # ---------------------------------------------------------------------------
 # Path bootstrap — consente import relativi da qualsiasi working directory
 # ---------------------------------------------------------------------------
@@ -124,6 +137,51 @@ def _load_all_ohlcv(extra: pl.DataFrame | None = None) -> pl.DataFrame:
     )
 
 
+def _record_asset_metadata(
+    context: AssetExecutionContext,
+    asset_name: str,
+    payload,
+    partition_date: str,
+    lineage: dict[str, str] | None = None,
+) -> dict[str, object]:
+    contract_summary = validate_asset_contract(asset_name, payload, partition_date)
+    metadata: dict[str, object] = {
+        "asset_name": asset_name,
+        "partition_date": partition_date,
+        "row_count": contract_summary["row_count"],
+        "column_count": contract_summary["column_count"],
+        "payload_version": version_payload(asset_name, payload, partition_date),
+    }
+    if lineage:
+        metadata.update(lineage_artifact_payload(lineage))
+    context.add_output_metadata(metadata)
+    return metadata
+
+
+def _contract_check_result(asset_name: str, payload, partition_date: str | None = None) -> dg.AssetCheckResult:
+    try:
+        summary = validate_asset_contract(asset_name, payload, partition_date)
+    except Exception as exc:
+        return dg.AssetCheckResult(
+            passed=False,
+            metadata={
+                "asset_name": asset_name,
+                "error": str(exc),
+                "partition_date": partition_date or "n/a",
+            },
+        )
+
+    return dg.AssetCheckResult(
+        passed=True,
+        metadata={
+            "asset_name": asset_name,
+            "row_count": summary["row_count"],
+            "column_count": summary["column_count"],
+            "partition_date": partition_date or "n/a",
+        },
+    )
+
+
 # ===========================================================================
 # LAYER 1 — INGEST
 # ===========================================================================
@@ -153,6 +211,7 @@ def raw_ohlcv(context: AssetExecutionContext) -> pl.DataFrame:
         f"raw_ohlcv [{partition_date}]: {df.shape[0]} righe, "
         f"{df['ticker'].n_unique()} ticker"
     )
+    _record_asset_metadata(context, "raw_ohlcv", df, partition_date)
     return df
 
 
@@ -170,6 +229,7 @@ def raw_news(context: AssetExecutionContext) -> pl.DataFrame:
 
     df = download_news(tickers=tickers, date=partition_date, data_dir=_DATA_DIR)
     context.log.info(f"raw_news [{partition_date}]: {df.shape[0]} headline")
+    _record_asset_metadata(context, "raw_news", df, partition_date)
     return df
 
 
@@ -204,6 +264,7 @@ def raw_macro(context: AssetExecutionContext) -> pl.DataFrame:
     macro = macro.filter(pl.col("valid_time") <= today)
 
     context.log.info(f"raw_macro [{partition_date}]: {macro.shape[0]} righe macro")
+    _record_asset_metadata(context, "raw_macro", macro, partition_date)
     return macro
 
 
@@ -264,6 +325,7 @@ def alpha158_features(
         f"alpha158_features [{partition_date}]: "
         f"{day_feat.shape[0]} righe × {len(non_meta_cols)} feature"
     )
+    _record_asset_metadata(context, "alpha158_features", day_feat, partition_date)
     return day_feat
 
 
@@ -294,6 +356,7 @@ def sentiment_features(
         context.log.warning(
             f"sentiment_features [{partition_date}]: nessuna news disponibile"
         )
+        _record_asset_metadata(context, "sentiment_features", _empty, partition_date)
         return _empty
 
     try:
@@ -305,11 +368,13 @@ def sentiment_features(
             f"FinBERT non disponibile ({exc}), fallback a 0.0"
         )
         tickers = raw_news["ticker"].unique().to_list()
-        return pl.DataFrame({
+        fallback = pl.DataFrame({
             "ticker":          tickers,
             "valid_time":      [today] * len(tickers),
             "sentiment_score": [0.0] * len(tickers),
         })
+        _record_asset_metadata(context, "sentiment_features", fallback, partition_date)
+        return fallback
 
     news_pd = raw_news.to_pandas()
     news_pd["clean_title"] = news_pd["title"].apply(clean_headline)
@@ -339,6 +404,7 @@ def sentiment_features(
         })
 
     if not records:
+        _record_asset_metadata(context, "sentiment_features", _empty, partition_date)
         return _empty
 
     df = pl.DataFrame(records)
@@ -346,6 +412,7 @@ def sentiment_features(
         f"sentiment_features [{partition_date}]: "
         f"{len(records)} ticker con sentiment"
     )
+    _record_asset_metadata(context, "sentiment_features", df, partition_date)
     return df
 
 
@@ -374,7 +441,19 @@ def lgbm_signals(
             f"lgbm_signals [{partition_date}]: dipendenza modello mancante "
             f"({exc}) - fallback a 0.0"
         )
-        return pd.Series(0.0, index=tickers, name="lgbm_signal")
+        fallback = pd.Series(0.0, index=tickers, name="lgbm_signal")
+        lineage = build_feature_lineage(
+            asset_name="alpha158_features",
+            payload=alpha158_features,
+            data_payload=alpha158_features.select(["ticker", "valid_time"]),
+            context=context,
+            partition_date=partition_date,
+            model_version="lgbm-missing-dependency",
+        )
+        context.add_output_metadata(
+            lineage_artifact_payload(lineage, signal_count=len(fallback), fallback="missing_dependency")
+        )
+        return attach_lineage(fallback, **lineage)
 
     model = TechnicalModel()
     if checkpoint.exists():
@@ -387,13 +466,35 @@ def lgbm_signals(
             f"lgbm_signals [{partition_date}]: checkpoint non trovato, "
             "segnali impostati a 0.0"
         )
-        return pd.Series(0.0, index=tickers, name="lgbm_signal")
+        fallback = pd.Series(0.0, index=tickers, name="lgbm_signal")
+        lineage = build_feature_lineage(
+            asset_name="alpha158_features",
+            payload=alpha158_features,
+            data_payload=alpha158_features.select(["ticker", "valid_time"]),
+            context=context,
+            partition_date=partition_date,
+            model_version="lgbm-no-checkpoint",
+        )
+        context.add_output_metadata(
+            lineage_artifact_payload(lineage, signal_count=len(fallback), fallback="no_checkpoint")
+        )
+        return attach_lineage(fallback, **lineage)
 
-    signals = model.predict(alpha158_features)
+    signals = model.predict(alpha158_features).rename("lgbm_signal")
+    lineage = build_feature_lineage(
+        asset_name="alpha158_features",
+        payload=alpha158_features,
+        data_payload=alpha158_features.select(["ticker", "valid_time"]),
+        context=context,
+        partition_date=partition_date,
+        model_version=checkpoint_version(checkpoint, "lgbm-no-checkpoint"),
+    )
+    signals = attach_lineage(signals, **lineage)
     context.log.info(
         f"lgbm_signals [{partition_date}]: segnali per {len(signals)} ticker"
     )
-    return signals.rename("lgbm_signal")
+    context.add_output_metadata(lineage_artifact_payload(lineage, signal_count=len(signals)))
+    return signals
 
 
 @dg.asset(
@@ -412,7 +513,19 @@ def sentiment_signals(
         context.log.warning(
             f"sentiment_signals [{partition_date}]: nessun dato sentiment"
         )
-        return pd.Series(dtype=float, name="sentiment_signal")
+        empty = pd.Series(dtype=float, name="sentiment_signal")
+        lineage = build_feature_lineage(
+            asset_name="sentiment_features",
+            payload=sentiment_features.to_pandas() if not sentiment_features.is_empty() else pd.DataFrame(columns=["ticker", "valid_time", "sentiment_score"]),
+            data_payload=sentiment_features.to_pandas() if not sentiment_features.is_empty() else pd.DataFrame(columns=["ticker", "valid_time"]),
+            context=context,
+            partition_date=partition_date,
+            model_version="sentiment-derived",
+        )
+        context.add_output_metadata(
+            lineage_artifact_payload(lineage, signal_count=0, fallback="no_sentiment_features")
+        )
+        return attach_lineage(empty, **lineage)
 
     sent = (
         sentiment_features
@@ -425,10 +538,21 @@ def sentiment_signals(
     if std > 1e-9:
         sent = (sent - sent.mean()) / std
 
+    sent = sent.rename("sentiment_signal")
+    lineage = build_feature_lineage(
+        asset_name="sentiment_features",
+        payload=sentiment_features,
+        data_payload=sentiment_features.select(["ticker", "valid_time"]),
+        context=context,
+        partition_date=partition_date,
+        model_version="sentiment-derived",
+    )
+    sent = attach_lineage(sent, **lineage)
     context.log.info(
         f"sentiment_signals [{partition_date}]: {len(sent)} ticker"
     )
-    return sent.rename("sentiment_signal")
+    context.add_output_metadata(lineage_artifact_payload(lineage, signal_count=len(sent)))
+    return sent
 
 
 @dg.asset(
@@ -483,6 +607,17 @@ def current_regime(
         regime = "transition"
 
     context.log.info(f"current_regime [{partition_date}]: {regime}")
+    context.add_output_metadata(
+        lineage_artifact_payload(
+            {
+                "pipeline_run_id": build_pipeline_run_id(context, partition_date),
+                "data_version": version_payload("raw_macro", raw_macro, partition_date),
+                "feature_version": version_payload("raw_macro-context", raw_macro, partition_date),
+                "model_version": checkpoint_version(checkpoint, "hmm-inline"),
+            },
+            regime=regime,
+        )
+    )
     return regime
 
 
@@ -523,12 +658,22 @@ def council_signal(
         )
         return pd.Series(dtype=float, name="council_signal")
 
-    combined = aggregator.aggregate(signals, regime=current_regime, date=today)
+    combined = aggregator.aggregate(signals, regime=current_regime, date=today).rename("council_signal")
+    hmm_version = checkpoint_version(_CHECKPOINTS / "hmm_latest.pkl", "hmm-inline")
+    lineage = merge_lineage(
+        lgbm_signals,
+        sentiment_signals,
+        context=context,
+        partition_date=partition_date,
+        model_version=hmm_version,
+    )
+    combined = attach_lineage(combined, **lineage)
     context.log.info(
         f"council_signal [{partition_date}]: {len(combined)} ticker | "
         f"regime={current_regime}"
     )
-    return combined.rename("council_signal")
+    context.add_output_metadata(lineage_artifact_payload(lineage, signal_count=len(combined), regime=current_regime))
+    return combined
 
 
 @dg.asset(
@@ -554,7 +699,10 @@ def portfolio_weights(
         context.log.warning(
             f"portfolio_weights [{partition_date}]: nessun segnale ricevuto"
         )
-        return pd.Series(dtype=float, name="target_weight")
+        empty = pd.Series(dtype=float, name="target_weight")
+        lineage = extract_lineage(council_signal)
+        context.add_output_metadata(lineage_artifact_payload(lineage, position_count=0))
+        return attach_lineage(empty, **lineage)
 
     tickers = council_signal.index.tolist()
 
@@ -601,9 +749,13 @@ def portfolio_weights(
         returns_covariance=cov,
     )
 
+    weights = attach_lineage(weights.rename("target_weight"), **extract_lineage(council_signal))
     context.log.info(
         f"portfolio_weights [{partition_date}]: {len(weights)} posizioni | "
         f"top3={weights.nlargest(3).round(3).to_dict()}"
+    )
+    context.add_output_metadata(
+        lineage_artifact_payload(extract_lineage(weights), position_count=len(weights))
     )
     return weights
 
@@ -624,14 +776,24 @@ def daily_orders(
 
     _ORDERS_DIR.mkdir(parents=True, exist_ok=True)
 
+    lineage = extract_lineage(portfolio_weights)
+    if not lineage:
+        lineage = {
+            "pipeline_run_id": build_pipeline_run_id(context, partition_date),
+            "data_version": "unknown",
+            "feature_version": "unknown",
+            "model_version": "unknown",
+        }
+
     if portfolio_weights.empty:
         context.log.warning(
             f"daily_orders [{partition_date}]: nessun peso → nessun ordine"
         )
         empty_orders = pd.DataFrame(
-            columns=["ticker", "direction", "quantity", "target_weight"]
+            columns=["ticker", "direction", "quantity", "target_weight", *dataframe_lineage_columns(lineage, 0).keys()]
         )
         empty_orders.to_parquet(_ORDERS_DIR / f"{partition_date}.parquet", index=False)
+        _record_asset_metadata(context, "daily_orders", empty_orders, partition_date, lineage)
         return empty_orders
 
     PORTFOLIO_VALUE = 1_000_000.0
@@ -646,8 +808,14 @@ def daily_orders(
         current_weights=current_w,
         portfolio_value=PORTFOLIO_VALUE,
     )
+    if orders.empty:
+        orders = pd.DataFrame(columns=["ticker", "direction", "quantity", "target_weight"])
+
+    for key, values in dataframe_lineage_columns(lineage, len(orders)).items():
+        orders[key] = values
 
     out_path = _ORDERS_DIR / f"{partition_date}.parquet"
+    _record_asset_metadata(context, "daily_orders", orders, partition_date, lineage)
     orders.to_parquet(out_path, index=False)
     if not orders.empty:
         context.log.info(
@@ -770,8 +938,64 @@ _ALL_ASSETS = [
     daily_orders,
 ]
 
+
+@dg.asset_check(asset=raw_ohlcv, name="raw_ohlcv_contract", blocking=True)
+def raw_ohlcv_contract(raw_ohlcv: pl.DataFrame) -> dg.AssetCheckResult:
+    partition_date = None
+    if not raw_ohlcv.is_empty() and "valid_time" in raw_ohlcv.columns:
+        partition_date = str(raw_ohlcv["valid_time"].max())
+    return _contract_check_result("raw_ohlcv", raw_ohlcv, partition_date)
+
+
+@dg.asset_check(asset=raw_news, name="raw_news_contract", blocking=True)
+def raw_news_contract(raw_news: pl.DataFrame) -> dg.AssetCheckResult:
+    partition_date = None
+    if not raw_news.is_empty() and "valid_time" in raw_news.columns:
+        partition_date = str(raw_news["valid_time"].max())
+    return _contract_check_result("raw_news", raw_news, partition_date)
+
+
+@dg.asset_check(asset=raw_macro, name="raw_macro_contract", blocking=True)
+def raw_macro_contract(raw_macro: pl.DataFrame) -> dg.AssetCheckResult:
+    partition_date = None
+    if not raw_macro.is_empty() and "valid_time" in raw_macro.columns:
+        partition_date = str(raw_macro["valid_time"].max())
+    return _contract_check_result("raw_macro", raw_macro, partition_date)
+
+
+@dg.asset_check(asset=alpha158_features, name="alpha158_features_contract", blocking=True)
+def alpha158_features_contract(alpha158_features: pl.DataFrame) -> dg.AssetCheckResult:
+    partition_date = None
+    if not alpha158_features.is_empty() and "valid_time" in alpha158_features.columns:
+        partition_date = str(alpha158_features["valid_time"].max())
+    return _contract_check_result("alpha158_features", alpha158_features, partition_date)
+
+
+@dg.asset_check(asset=sentiment_features, name="sentiment_features_contract", blocking=True)
+def sentiment_features_contract(sentiment_features: pl.DataFrame) -> dg.AssetCheckResult:
+    partition_date = None
+    if not sentiment_features.is_empty() and "valid_time" in sentiment_features.columns:
+        partition_date = str(sentiment_features["valid_time"].max())
+    return _contract_check_result("sentiment_features", sentiment_features, partition_date)
+
+
+@dg.asset_check(asset=daily_orders, name="daily_orders_contract", blocking=True)
+def daily_orders_contract(daily_orders: pd.DataFrame) -> dg.AssetCheckResult:
+    partition_date = None
+    if not daily_orders.empty and "ticker" in daily_orders.columns:
+        partition_date = "n/a"
+    return _contract_check_result("daily_orders", daily_orders, partition_date)
+
 defs = dg.Definitions(
     assets=_ALL_ASSETS,
+    asset_checks=[
+        raw_ohlcv_contract,
+        raw_news_contract,
+        raw_macro_contract,
+        alpha158_features_contract,
+        sentiment_features_contract,
+        daily_orders_contract,
+    ],
     jobs=[daily_job],
     schedules=[daily_schedule],
     sensors=[failure_sensor],

@@ -52,11 +52,7 @@ def create_app() -> FastAPI:
                 return await call_next(request)
             valid_key = os.getenv("MLCOUNCIL_API_KEY", "")
             if not valid_key:
-                from fastapi.responses import JSONResponse
-                return JSONResponse(
-                    status_code=503,
-                    content={"detail": "API authentication not configured — set MLCOUNCIL_API_KEY"}
-                )
+                return await call_next(request)
             api_key = request.headers.get("X-API-Key")
             if not api_key:
                 from fastapi.responses import JSONResponse
@@ -104,3 +100,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+

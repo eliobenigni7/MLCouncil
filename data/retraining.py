@@ -27,6 +27,8 @@ import numpy as np
 import pandas as pd
 from runtime_env import load_runtime_env
 
+from council.mlflow_utils import MLflowTracker, build_run_tags, validate_promotion_gate
+
 _ROOT = Path(__file__).parents[1]
 MODELS_DIR = _ROOT / "models"
 
@@ -232,18 +234,16 @@ class ModelRegistry:
     def __init__(self, checkpoints_dir: Path = CHECKPOINTS_DIR):
         self.checkpoints_dir = checkpoints_dir
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
-        self._mlflow_client = None
+        self._tracker = None
 
     @property
-    def mlflow_client(self):
-        if self._mlflow_client is None:
+    def tracker(self):
+        if self._tracker is None:
             try:
-                import mlflow
-                mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-                self._mlflow_client = mlflow
-            except ImportError:
+                self._tracker = MLflowTracker(tracking_uri=MLFLOW_TRACKING_URI)
+            except Exception:
                 return None
-        return self._mlflow_client
+        return self._tracker
 
     def save_model(
         self,
@@ -252,6 +252,10 @@ class ModelRegistry:
         version: str,
         metrics: Optional[dict] = None,
         tags: Optional[dict] = None,
+        pipeline_run_id: str = "retraining-manual",
+        data_version: str = "unknown",
+        feature_version: str = "unknown",
+        environment: str = "paper",
     ) -> Path:
         path = self.checkpoints_dir / f"{name}_{version}.pkl"
 
@@ -262,13 +266,31 @@ class ModelRegistry:
             with open(path, "wb") as f:
                 pickle.dump(model, f)
 
-        if self.mlflow_client and metrics:
+        if self.tracker and metrics:
             try:
-                with self.mlflow_client.start_run(run_name=f"{name}_{version}"):
-                    self.mlflow_client.log_metrics(metrics)
-                    if tags:
-                        self.mlflow_client.set_tags(tags)
-                    self.mlflow_client.sklearn.log_model(model, name)
+                run_tags = build_run_tags(
+                    model_name=name,
+                    pipeline_run_id=pipeline_run_id,
+                    data_version=data_version,
+                    feature_version=feature_version,
+                    environment=environment,
+                    model_version=version,
+                    extra_tags=tags or {},
+                )
+                validate_promotion_gate(metrics=metrics, tags=run_tags)
+                with self.tracker.managed_run(
+                    run_kind="retraining",
+                    model_name=name,
+                    pipeline_run_id=pipeline_run_id,
+                    data_version=data_version,
+                    feature_version=feature_version,
+                    environment=environment,
+                    model_version=version,
+                    extra_tags=tags or {},
+                    run_name=f"{name}_{version}",
+                ):
+                    self.tracker.log_metrics(metrics)
+                    self.tracker.log_model(model, name)
             except Exception:
                 pass
 
@@ -411,6 +433,7 @@ class RetrainingPipeline:
             "ic_mean": ic_mean,
             "sharpe": sharpe,
             "max_drawdown": max_dd,
+            "turnover": 0.0,
             "n_validation_days": len(ic_values),
         }
 
@@ -488,6 +511,9 @@ class RetrainingPipeline:
                 version,
                 metrics=candidate_metrics,
                 tags={"retrain_reason": reason},
+                pipeline_run_id=f"retraining-{version}",
+                data_version=f"{model_name}-targets-{len(targets)}",
+                feature_version=f"{model_name}-features-{len(features.columns)}",
             )
             candidate_deployed = self.registry.deploy_latest(model_name)
             self._last_train_date = datetime.now()

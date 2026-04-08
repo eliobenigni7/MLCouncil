@@ -120,6 +120,63 @@ def test_models_regime_import_does_not_require_lightgbm(monkeypatch):
     assert hasattr(regime, "RegimeModel")
 
 
+def test_contract_registry_covers_phase1_assets():
+    """I data contracts coprono tutti gli asset richiesti dalla Fase 1."""
+    from data.contracts import ASSET_CONTRACTS
+
+    expected = {
+        "raw_ohlcv",
+        "raw_news",
+        "raw_macro",
+        "alpha158_features",
+        "sentiment_features",
+        "daily_orders",
+    }
+    assert expected.issubset(ASSET_CONTRACTS.keys())
+
+
+def test_raw_ohlcv_contract_rejects_duplicate_rows():
+    """Il contratto raw_ohlcv rifiuta chiavi duplicate ticker+valid_time."""
+    from data.contracts import validate_asset_contract
+
+    df = pl.DataFrame(
+        {
+            "ticker": ["AAPL", "AAPL"],
+            "valid_time": [date(2024, 1, 15), date(2024, 1, 15)],
+            "transaction_time": [
+                pd.Timestamp("2024-01-15T21:30:00Z"),
+                pd.Timestamp("2024-01-15T21:30:00Z"),
+            ],
+            "open": [100.0, 100.0],
+            "high": [101.0, 101.0],
+            "low": [99.0, 99.0],
+            "close": [100.5, 100.5],
+            "adj_close": [100.5, 100.5],
+            "volume": [1_000, 1_000],
+        }
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_asset_contract("raw_ohlcv", df, partition_date="2024-01-15")
+
+
+def test_daily_orders_contract_requires_lineage_columns():
+    """Gli ordini giornalieri devono includere le colonne di lineage richieste."""
+    from data.contracts import validate_asset_contract
+
+    df = pd.DataFrame(
+        {
+            "ticker": ["AAPL"],
+            "direction": ["buy"],
+            "quantity": [10],
+            "target_weight": [0.25],
+        }
+    )
+
+    with pytest.raises(ValueError, match="pipeline_run_id"):
+        validate_asset_contract("daily_orders", df, partition_date="2024-01-15")
+
+
 def _make_context(partition_date: str = "2024-01-15") -> MagicMock:
     """Context mock generico per test di asset."""
     ctx = MagicMock(spec=dg.AssetExecutionContext)
@@ -236,6 +293,24 @@ class TestAssetDependencies:
                 f"Asset {a.key}: max_retries={retry.max_retries}, atteso 2"
             )
 
+    def test_asset_checks_registered_for_phase1_contracts(self):
+        """La pipeline registra asset checks first-class per i contratti Fase 1."""
+        assert _pipeline.defs.asset_checks is not None
+        check_names = {
+            spec.name
+            for check in _pipeline.defs.asset_checks
+            for spec in check.check_specs
+        }
+        expected = {
+            "raw_ohlcv_contract",
+            "raw_news_contract",
+            "raw_macro_contract",
+            "alpha158_features_contract",
+            "sentiment_features_contract",
+            "daily_orders_contract",
+        }
+        assert expected.issubset(check_names)
+
 
 # ===========================================================================
 # 2. test_quality_checks_fail_on_bad_data
@@ -262,6 +337,40 @@ class TestQualityChecks:
         nan_count = df["close"].is_nan().sum()
         with pytest.raises(AssertionError, match="NaN nei prezzi di chiusura"):
             assert nan_count == 0, f"NaN nei prezzi di chiusura: {nan_count}"
+
+    def test_daily_orders_persist_lineage_columns(self, tmp_path, monkeypatch):
+        """daily_orders persiste il lineage minimo richiesto sia in memoria sia su parquet."""
+        monkeypatch.setattr(_pipeline, "_ORDERS_DIR", tmp_path)
+        ctx = _make_context()
+        ctx.run_id = "run-phase1-001"
+
+        weights = pd.Series(
+            {"AAPL": 0.90, "MSFT": 0.10},
+            name="target_weight",
+        )
+        weights.attrs.update(
+            {
+                "pipeline_run_id": "run-phase1-001",
+                "data_version": "data-v1",
+                "feature_version": "feat-v1",
+                "model_version": "model-v1",
+            }
+        )
+
+        orders = _call_asset(_pipeline.daily_orders, ctx, weights)
+
+        expected_cols = {
+            "pipeline_run_id",
+            "data_version",
+            "feature_version",
+            "model_version",
+        }
+        assert expected_cols.issubset(orders.columns)
+        assert orders["pipeline_run_id"].nunique() == 1
+        assert orders["pipeline_run_id"].iloc[0] == "run-phase1-001"
+
+        stored = pd.read_parquet(tmp_path / "2024-01-15.parquet")
+        assert expected_cols.issubset(stored.columns)
 
     def test_insufficient_features_fails(self):
         """AssertionError se il builder produce meno delle feature minime richieste."""

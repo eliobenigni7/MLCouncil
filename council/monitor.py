@@ -137,26 +137,23 @@ class CouncilMonitor:
                 threshold=self.ic_threshold,
             )
 
-        rolling_ic = ic_history.rolling(window=window, min_periods=window).mean()
-        # Drop leading NaNs
-        rolling_ic_valid = rolling_ic.dropna()
-
-        if rolling_ic_valid.empty:
+        evaluation_window = ic_history.tail(window)
+        if evaluation_window.empty:
             return AlertResult(
                 is_alert=False,
                 severity=Severity.INFO,
                 model_name=model_name,
                 check_type="alpha_decay",
-                message="No valid rolling IC values to evaluate.",
+                message="No valid IC values to evaluate.",
                 recommendation="Check IC computation pipeline.",
                 metric_value=float("nan"),
                 threshold=self.ic_threshold,
             )
 
-        latest_ic = float(rolling_ic_valid.iloc[-1])
+        latest_ic = float(evaluation_window.iloc[-1])
 
-        # Count consecutive days at the tail where IC < threshold
-        below_threshold = rolling_ic_valid < self.ic_threshold
+        # Count consecutive days at the tail where daily IC < threshold.
+        below_threshold = evaluation_window < self.ic_threshold
         consecutive = _count_trailing_true(below_threshold)
 
         if consecutive >= self.ic_alert_consecutive_days:
@@ -170,7 +167,7 @@ class CouncilMonitor:
                 model_name=model_name,
                 check_type="alpha_decay",
                 message=(
-                    f"{model_name}: rolling IC ({window}d) = {latest_ic:.4f} has been below "
+                    f"{model_name}: IC = {latest_ic:.4f} has been below "
                     f"threshold {self.ic_threshold:.4f} for {consecutive} consecutive days."
                 ),
                 recommendation=(
@@ -188,7 +185,7 @@ class CouncilMonitor:
             model_name=model_name,
             check_type="alpha_decay",
             message=(
-                f"{model_name}: rolling IC ({window}d) = {latest_ic:.4f} "
+                f"{model_name}: IC = {latest_ic:.4f} "
                 f"(above threshold {self.ic_threshold:.4f})."
             ),
             recommendation="No action required.",
@@ -404,15 +401,14 @@ class CouncilMonitor:
         )
 
         overlap_count = len(top_today & top_baseline)
-        union_count = len(top_today | top_baseline)
-        jaccard = overlap_count / union_count if union_count > 0 else 1.0
+        overlap = overlap_count / n if n > 0 else 1.0
 
         logger.debug(
-            f"[{model_name}] SHAP stability: top-{n} overlap = {jaccard:.2%} "
+            f"[{model_name}] SHAP stability: top-{n} overlap = {overlap:.2%} "
             f"(min {self.shap_overlap_min:.0%})"
         )
 
-        if jaccard < self.shap_overlap_min:
+        if overlap < self.shap_overlap_min:
             new_features = sorted(top_today - top_baseline)
             dropped_features = sorted(top_baseline - top_today)
             return AlertResult(
@@ -421,7 +417,7 @@ class CouncilMonitor:
                 model_name=model_name,
                 check_type="shap_stability",
                 message=(
-                    f"{model_name}: top-{n} SHAP feature overlap = {jaccard:.0%} "
+                    f"{model_name}: top-{n} SHAP feature overlap = {overlap:.0%} "
                     f"(min {self.shap_overlap_min:.0%}). "
                     f"New features: {new_features}. "
                     f"Dropped: {dropped_features}."
@@ -431,7 +427,7 @@ class CouncilMonitor:
                     "Investigate whether new features are spurious (regime artifact) "
                     "or reflect genuine signal shift. Consider retraining."
                 ),
-                metric_value=jaccard,
+                metric_value=overlap,
                 threshold=self.shap_overlap_min,
             )
 
@@ -441,11 +437,11 @@ class CouncilMonitor:
             model_name=model_name,
             check_type="shap_stability",
             message=(
-                f"{model_name}: top-{n} SHAP overlap = {jaccard:.0%} "
+                f"{model_name}: top-{n} SHAP overlap = {overlap:.0%} "
                 f"(≥ threshold {self.shap_overlap_min:.0%})."
             ),
             recommendation="No action required.",
-            metric_value=jaccard,
+            metric_value=overlap,
             threshold=self.shap_overlap_min,
         )
 

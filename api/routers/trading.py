@@ -27,6 +27,7 @@ class ExecuteResponse(BaseModel):
     orders_submitted: int = 0
     orders_rejected: int = 0
     liquidations: int = 0
+    lineage: dict = {}
     results: list = []
     error: str | None = None
 

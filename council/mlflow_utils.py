@@ -19,7 +19,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import pandas as pd
 from runtime_env import load_runtime_env
@@ -36,6 +36,57 @@ except ImportError:
 
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 MLFLOW_EXPERIMENT_NAME = "mlcouncil"
+REQUIRED_RUN_TAGS = (
+    "model_name",
+    "pipeline_run_id",
+    "data_version",
+    "feature_version",
+    "environment",
+)
+REQUIRED_PROMOTION_METRICS = ("sharpe", "max_drawdown", "turnover")
+
+
+def build_run_tags(
+    *,
+    model_name: str,
+    pipeline_run_id: str,
+    data_version: str,
+    feature_version: str,
+    environment: str,
+    model_version: Optional[str] = None,
+    extra_tags: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    tags = {
+        "model_name": str(model_name),
+        "pipeline_run_id": str(pipeline_run_id),
+        "data_version": str(data_version),
+        "feature_version": str(feature_version),
+        "environment": str(environment),
+    }
+    if model_version:
+        tags["model_version"] = str(model_version)
+    if extra_tags:
+        tags.update({str(k): str(v) for k, v in extra_tags.items()})
+    return tags
+
+
+def build_run_name(run_kind: str, model_name: str, environment: str) -> str:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{run_kind}_{model_name}_{environment}_{stamp}"
+
+
+def validate_promotion_gate(
+    *,
+    metrics: Mapping[str, float],
+    tags: Mapping[str, str],
+) -> None:
+    missing_tags = [key for key in REQUIRED_RUN_TAGS if not tags.get(key)]
+    if missing_tags:
+        raise ValueError(f"missing required tags: {', '.join(missing_tags)}")
+
+    missing_metrics = [key for key in REQUIRED_PROMOTION_METRICS if key not in metrics]
+    if missing_metrics:
+        raise ValueError(f"missing required metrics: {', '.join(missing_metrics)}")
 
 
 class MLflowTracker:
@@ -57,6 +108,33 @@ class MLflowTracker:
     @contextmanager
     def active_run(self, run_name: Optional[str] = None, tags: Optional[dict] = None):
         with mlflow.start_run(run_name=run_name, tags=tags) as run:
+            yield run
+
+    @contextmanager
+    def managed_run(
+        self,
+        *,
+        run_kind: str,
+        model_name: str,
+        pipeline_run_id: str,
+        data_version: str,
+        feature_version: str,
+        environment: str,
+        model_version: Optional[str] = None,
+        extra_tags: Optional[dict[str, str]] = None,
+        run_name: Optional[str] = None,
+    ):
+        tags = build_run_tags(
+            model_name=model_name,
+            pipeline_run_id=pipeline_run_id,
+            data_version=data_version,
+            feature_version=feature_version,
+            environment=environment,
+            model_version=model_version,
+            extra_tags=extra_tags,
+        )
+        resolved_run_name = run_name or build_run_name(run_kind, model_name, environment)
+        with mlflow.start_run(run_name=resolved_run_name, tags=tags) as run:
             yield run
 
     def log_params(self, params: dict):
@@ -189,19 +267,43 @@ def setup_mlflow_docker() -> dict:
     }
 
 
-def log_backtest_result(result: "BacktestResult", run_name: Optional[str] = None):
+def log_backtest_result(
+    result: "BacktestResult",
+    run_name: Optional[str] = None,
+    *,
+    pipeline_run_id: str = "manual-backtest",
+    data_version: str = "unknown",
+    feature_version: str = "unknown",
+    environment: str = "paper",
+    model_name: str = "council",
+    model_version: Optional[str] = None,
+):
     if not _MLFLOW_AVAILABLE:
         return
 
-    with mlflow.start_run(run_name=run_name or f"backtest_{datetime.now().strftime('%Y%m%d')}"):
+    tags = build_run_tags(
+        model_name=model_name,
+        pipeline_run_id=pipeline_run_id,
+        data_version=data_version,
+        feature_version=feature_version,
+        environment=environment,
+        model_version=model_version,
+        extra_tags={"run_kind": "backtest"},
+    )
+    with mlflow.start_run(
+        run_name=run_name or build_run_name("backtest", model_name, environment),
+        tags=tags,
+    ):
         mlflow.log_params({
             "start_date": getattr(result, "start_date", "unknown"),
             "end_date": getattr(result, "end_date", "unknown"),
             "initial_capital": getattr(result, "initial_capital", 0),
         })
 
-        mlflow.log_metrics({
+        metrics = {
             "sharpe": result.sharpe,
             "max_drawdown": result.max_drawdown,
             "n_trades": result.n_trades,
-        })
+            "turnover": float(getattr(result, "stats", {}).get("turnover", 0.0)),
+        }
+        mlflow.log_metrics(metrics)

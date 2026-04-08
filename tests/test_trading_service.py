@@ -131,3 +131,42 @@ class TestTradingService:
         status = svc.get_status()
         assert "error" in status
         assert "paper mode only" in status["error"]
+
+    def test_execute_orders_returns_lineage_from_order_file(self):
+        from api.services.trading_service import TradingService
+
+        svc = TradingService.__new__(TradingService)
+
+        mock_node = MagicMock()
+        mock_node.get_account_info.return_value = {"portfolio_value": 100000.0}
+        mock_node.get_all_positions.return_value = MagicMock(empty=True)
+        mock_node.submit_order.return_value = {"status": "accepted"}
+        svc._node = mock_node
+
+        mock_config = MagicMock()
+        mock_config.mode.value = "paper"
+        svc._config = mock_config
+
+        svc.get_pending_orders = MagicMock(
+            return_value=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 10,
+                    "target_weight": 0.10,
+                    "pipeline_run_id": "run-004",
+                    "data_version": "data-v4",
+                    "feature_version": "feat-v4",
+                    "model_version": "model-v4",
+                }
+            ]
+        )
+
+        result = svc.execute_orders("2024-01-15")
+
+        assert result["lineage"] == {
+            "pipeline_run_id": "run-004",
+            "data_version": "data-v4",
+            "feature_version": "feat-v4",
+            "model_version": "model-v4",
+        }

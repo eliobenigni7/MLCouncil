@@ -115,6 +115,7 @@ class TradingService:
             account = self.node.get_account_info()
             positions_df = self.node.get_all_positions()
             orders = self.get_pending_orders(date)
+            lineage = self._extract_lineage(orders)
 
             if not orders:
                 return {"error": f"No orders found for {date}"}
@@ -157,6 +158,7 @@ class TradingService:
                 "orders_submitted": len([r for r in order_results if r.get("status") != "rejected"]),
                 "orders_rejected": len([r for r in order_results if r.get("status") == "rejected"]),
                 "liquidations": len(liquidate_results),
+                "lineage": lineage,
                 "results": order_results,
             }
 
@@ -197,6 +199,23 @@ class TradingService:
                     existing = []
             existing.append(data)
             path.write_text(json.dumps(existing, indent=2))
+
+    def _extract_lineage(self, orders: list[dict]) -> dict[str, str]:
+        if not orders:
+            return {}
+
+        keys = (
+            "pipeline_run_id",
+            "data_version",
+            "feature_version",
+            "model_version",
+        )
+        first = orders[0]
+        return {
+            key: str(first[key])
+            for key in keys
+            if key in first and first[key] is not None
+        }
 
 
 service = TradingService()
