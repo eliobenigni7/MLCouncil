@@ -23,3 +23,6 @@ __pycache__/
 dist/
 *.egg-info/
 .venv/
+
+# Worktrees
+.worktrees/
