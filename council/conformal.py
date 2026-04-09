@@ -143,10 +143,12 @@ class ConformalPositionSizer:
         ---------
         1. Compute conformal intervals → width = upper - lower per stock.
         2. width_norm  = width / median(width).
-        3. multiplier  = 1 / width_norm, clipped to [0.2, 2.0].
+        3. multiplier  = exp(1 - width_norm), clipped to [0.2, 2.0].
 
         Stocks with narrow intervals (high confidence) receive multipliers
         near 2.0; stocks with wide intervals receive multipliers near 0.2.
+        The exponential mapping avoids a dead zone that arose with 1/width_norm
+        where all stocks with width_norm <= 0.5 were saturated at MAX_MULT.
 
         Parameters
         ----------
@@ -168,7 +170,14 @@ class ConformalPositionSizer:
             multipliers = np.ones(len(width))
         else:
             width_norm = width / median_w
-            multipliers = np.clip(1.0 / width_norm, self._MIN_MULT, self._MAX_MULT)
+            # Use exp(1 - width_norm) instead of 1/width_norm to avoid a dead
+            # zone where all stocks with width_norm <= 0.5 were clipped to the
+            # same MAX_MULT=2.0, losing position-size differentiation.
+            # exp gives smooth monotone decay: width_norm=1 → 1.0 (neutral),
+            # width_norm<1 → >1.0 (scale up), width_norm>1 → <1.0 (scale down).
+            multipliers = np.clip(
+                np.exp(1.0 - width_norm), self._MIN_MULT, self._MAX_MULT
+            )
 
         return pd.Series(
             multipliers, index=council_signal.index, name="position_multiplier"
