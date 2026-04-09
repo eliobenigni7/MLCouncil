@@ -4,7 +4,7 @@ Architecture
 ------------
 * Base weights per market regime are loaded from ``config/regime_weights.yaml``.
 * After ``min_history_days`` of observed IC history, weights are scaled by each
-  model's rolling 60-day Information Ratio (mean IC / std IC * sqrt(252)).
+  model's rolling 100-day Information Ratio (mean IC / std IC * sqrt(252)).
 * Models with consistently negative Sharpe are down-weighted toward their floor
   (``weight_clip.min``); no model can exceed ``weight_clip.max``.
 * Orthogonality constraints: correlated models are down-weighted to maintain
@@ -40,7 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "performance": {
         "min_history_days":    30,
         "ic_rolling_window":   30,
-        "sharpe_rolling_window": 60,
+        # 60 days is too noisy for equity IC-Sharpe; 100 days is the minimum
+        # recommended window for stable Sharpe estimation in the literature.
+        "sharpe_rolling_window": 100,
     },
     "orthogonality": {
         "max_correlation": 0.70,

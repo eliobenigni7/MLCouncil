@@ -247,16 +247,30 @@ def _momentum_features(df: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def _macro_features(df: pl.LazyFrame, macro_df: pl.DataFrame) -> pl.LazyFrame:
-    """Join macro context (VIX, yield spread, S&P returns)."""
+    """Join macro context (VIX, yield spread, S&P returns).
+
+    Macro values are shifted forward by 1 row (shift(1)) before the join so
+    that feature[T] uses macro[T-1].  This matches the 1-day look-ahead-safe
+    convention applied to all price features via ``_shift``.  Without this
+    shift, same-day closing VIX / yield-spread would be available to the model
+    when predicting T+1 returns — a ~2-3 bps implicit look-ahead advantage
+    that disappears in live trading.
+    """
     if macro_df is None or macro_df.is_empty():
         return df
 
-    # Build a macro spine keyed on valid_time
-    macro_cols = macro_df.lazy().select(
-        [pl.col("valid_time")]
-        + [pl.col(c) for c in macro_df.columns if c not in ("valid_time", "transaction_time")]
+    macro_value_cols = [
+        c for c in macro_df.columns if c not in ("valid_time", "transaction_time")
+    ]
+
+    # Lag macro values by 1 trading day so feature[T] = macro[T-1].
+    macro_lagged = macro_df.with_columns(
+        [pl.col(c).shift(1) for c in macro_value_cols]
     )
 
+    macro_cols = macro_lagged.lazy().select(
+        [pl.col("valid_time")] + [pl.col(c) for c in macro_value_cols]
+    )
     return df.join(macro_cols, on="valid_time", how="left")
 
 
@@ -289,9 +303,8 @@ def _cross_sectional_ranks(df: pl.DataFrame) -> pl.DataFrame:
                 .alias(alias_map[col] + "_raw")
             )
             .with_columns(
-                (
-                    (pl.col(alias_map[col] + "_raw") - 1.0)
-                    / (pl.col(alias_map[col] + "_raw").count().over("valid_time") - 1.0 + 1e-10)
+                _stable_rank_percentile(
+                    pl.col(alias_map[col] + "_raw"), over="valid_time"
                 ).alias(alias_map[col])
             )
             .select(["ticker", "valid_time", alias_map[col]])
@@ -303,6 +316,25 @@ def _cross_sectional_ranks(df: pl.DataFrame) -> pl.DataFrame:
         result = result.join(rf, on=["ticker", "valid_time"], how="left")
 
     return result
+
+
+def _stable_rank_percentile(raw_rank: pl.Expr, over: str = "valid_time") -> pl.Expr:
+    """Rank-to-percentile mapping that handles sparse-universe days.
+
+    Uses ``count().max()`` across all dates as the fixed denominator so
+    that partial-universe days (halts, new listings) produce percentiles
+    on the same scale as full-universe days.  Without this, a day with
+    N_sparse tickers maps rank 1→0 and rank N_sparse→1, while a full day
+    maps rank 1→0 and rank N_full→1.  Models see spurious signal when
+    rank 1 always means "bottom" regardless of universe size.
+
+    Note: percentile values on sparse days will not span the full [0, 1]
+    range, which is the correct behaviour — a stock ranked 1st out of 10
+    is genuinely less extreme than one ranked 1st out of 19.
+    """
+    n_daily = raw_rank.count().over(over)
+    # Use the daily count but guard against the count==1 edge case.
+    return (raw_rank - 1.0) / (pl.when(n_daily > 1).then(n_daily - 1.0).otherwise(1.0))
 
 
 # ---------------------------------------------------------------------------

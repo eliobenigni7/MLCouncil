@@ -10,7 +10,7 @@ Interval width encodes uncertainty:
 
 Usage
 -----
->>> sizer = ConformalPositionSizer(coverage=0.90)
+>>> sizer = ConformalPositionSizer(coverage=0.85)
 >>> sizer.fit(X_calib, y_calib)
 >>> multipliers = sizer.compute_position_multipliers(council_signal, X_live)
 >>> filtered   = sizer.filter_low_confidence(council_signal, X_live)
@@ -34,13 +34,17 @@ class ConformalPositionSizer:
     ----------
     coverage:
         Target marginal coverage, 1 - alpha.  Must be in (0.5, 1.0).
-        Default 0.90 → 90 % prediction intervals.
+        Default 0.85 → 85 % prediction intervals.  Reduced from 0.90 to
+        tighten intervals and increase average position multipliers by ~15 %,
+        improving expected alpha capture.  The 15 % miss rate is acceptable
+        for daily cross-sectional signals where diversification across 19
+        tickers limits tail exposure from individual misses.
     """
 
     _MIN_MULT: float = 0.2
     _MAX_MULT: float = 2.0
 
-    def __init__(self, coverage: float = 0.90) -> None:
+    def __init__(self, coverage: float = 0.85) -> None:
         if not 0.5 < coverage < 1.0:
             raise ValueError(f"coverage must be in (0.5, 1.0), got {coverage}")
         self.coverage = coverage

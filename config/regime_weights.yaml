@@ -26,4 +26,7 @@ weight_clip:
 performance:
   min_history_days:    30   # days of IC history needed before adaptive weights kick in
   ic_rolling_window:   30   # days for IC rolling average (get_attribution)
-  sharpe_rolling_window: 60 # days for Sharpe calculation
+  # 60 days is too short for equity Sharpe estimation — noise dominates signal.
+  # 100 days provides a stable IC-Sharpe estimate while still being responsive
+  # to regime changes (≈5 trading months).
+  sharpe_rolling_window: 100
