@@ -258,12 +258,7 @@ def render_regime_tab(mode: str, start_date: date, end_date: date) -> None:
             latest = attribution[attribution["date"] == attribution["date"].max()]
             weights_dict = dict(zip(latest["model_name"], latest["weight"]))
         else:
-            _defaults = {
-                "bull":       {"lgbm": 0.50, "sentiment": 0.30, "hmm": 0.20},
-                "bear":       {"lgbm": 0.40, "sentiment": 0.20, "hmm": 0.40},
-                "transition": {"lgbm": 0.45, "sentiment": 0.25, "hmm": 0.30},
-            }
-            weights_dict = _defaults.get(regime_info.get("regime", "bull"), _defaults["bull"])
+            weights_dict = {}
 
         st.plotly_chart(
             charts.current_weights_radar(weights_dict),

@@ -3,12 +3,13 @@
 All functions use st.cache_data to avoid re-loading on every rerender.
 Public deployment: only normalized metrics are exposed (no raw capital/orders).
 
-Fallback strategy: if real data is unavailable (no backtest run, no pipeline
-outputs), synthetic demo data is returned so the dashboard stays usable.
+Real artifacts are preferred. When a dataset is unavailable, loaders return an
+empty state instead of synthetic demo values.
 """
 
 from __future__ import annotations
 
+import json
 import pickle
 import sys
 from datetime import date, datetime, timedelta
@@ -24,8 +25,22 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _ORDERS_DIR = _ROOT / "data" / "orders"
+_OPERATIONS_DIR = _ROOT / "data" / "operations"
+_PAPER_TRADES_DIR = _ROOT / "data" / "paper_trades"
 _RAW_DIR = _ROOT / "data" / "raw"
+_RISK_DIR = _ROOT / "data" / "risk"
 _RESULTS_DIR = _ROOT / "data" / "results"
+_UNKNOWN_REGIME = {"regime": "unknown", "bull": 0.0, "bear": 0.0, "transition": 0.0}
+_ATTRIBUTION_COLUMNS = [
+    "date",
+    "model_name",
+    "weight",
+    "ic_rolling_30d",
+    "sharpe_rolling_60d",
+    "pnl_contribution",
+]
+_REGIME_HISTORY_COLUMNS = ["date", "regime", "prob_bull", "prob_bear", "prob_transition"]
+_PORTFOLIO_SNAPSHOT_COLUMNS = ["ticker", "weight_target", "weight_current", "signal"]
 
 
 def _flatten_universe_tickers(universe: dict) -> list[str]:
@@ -41,6 +56,95 @@ def _flatten_universe_tickers(universe: dict) -> list[str]:
     return list(dict.fromkeys(flattened))
 
 
+def _empty_series(name: str) -> pd.Series:
+    return pd.Series(dtype=float, name=name)
+
+
+def _empty_attribution() -> pd.DataFrame:
+    return pd.DataFrame(columns=_ATTRIBUTION_COLUMNS)
+
+
+def _empty_regime_history() -> pd.DataFrame:
+    return pd.DataFrame(columns=_REGIME_HISTORY_COLUMNS)
+
+
+def _empty_portfolio_snapshot() -> pd.DataFrame:
+    return pd.DataFrame(columns=_PORTFOLIO_SNAPSHOT_COLUMNS)
+
+
+def _load_json(path: Path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _normalize_trade_snapshot(payload) -> Optional[dict]:
+    if isinstance(payload, dict):
+        if any(key in payload for key in ("account", "orders", "pretrade", "reconciliation")):
+            return payload
+        return None
+
+    if isinstance(payload, list):
+        for item in reversed(payload):
+            if isinstance(item, dict) and any(
+                key in item for key in ("account", "orders", "pretrade", "reconciliation")
+            ):
+                return item
+
+    return None
+
+
+def _load_equity_from_risk_reports() -> Optional[pd.Series]:
+    if not _RISK_DIR.exists():
+        return None
+
+    rows = []
+    for path in sorted(_RISK_DIR.glob("risk_report_*.json"))[-252:]:
+        try:
+            payload = _load_json(path)
+            portfolio_value = float(payload.get("portfolio_value", 0.0) or 0.0)
+            if portfolio_value <= 0:
+                continue
+            rows.append(
+                {
+                    "date": pd.Timestamp(path.stem.replace("risk_report_", "")),
+                    "equity": portfolio_value,
+                }
+            )
+        except Exception:
+            pass
+
+    if not rows:
+        return None
+
+    out = pd.DataFrame(rows).drop_duplicates(subset="date").sort_values("date")
+    return out.set_index("date")["equity"]
+
+
+def _load_equity_from_trade_logs() -> Optional[pd.Series]:
+    if not _PAPER_TRADES_DIR.exists():
+        return None
+
+    rows = []
+    for path in sorted(_PAPER_TRADES_DIR.glob("*.json"))[-252:]:
+        try:
+            payload = _normalize_trade_snapshot(_load_json(path))
+            if payload is None:
+                continue
+            account = payload.get("account", {})
+            portfolio_value = float(account.get("portfolio_value", 0.0) or 0.0)
+            if portfolio_value <= 0:
+                continue
+            rows.append({"date": pd.Timestamp(path.stem), "equity": portfolio_value})
+        except Exception:
+            pass
+
+    if not rows:
+        return None
+
+    out = pd.DataFrame(rows).drop_duplicates(subset="date").sort_values("date")
+    return out.set_index("date")["equity"]
+
+
 # ============================================================================
 # Equity curve
 # ============================================================================
@@ -54,7 +158,7 @@ def load_equity_curve(mode: str = "Paper Trading") -> pd.Series:
     """
     equity = _try_load_equity_from_disk(mode)
     if equity is None or equity.empty:
-        equity = _synthetic_equity_curve(mode)
+        return _empty_series("equity_normalized")
 
     # Normalize to 100 — hides actual capital from public view
     if equity.iloc[0] > 0:
@@ -109,6 +213,13 @@ def _try_load_equity_from_disk(mode: str) -> Optional[pd.Series]:
         except Exception:
             pass
 
+    if mode == "Paper Trading":
+        for loader in (_load_equity_from_risk_reports, _load_equity_from_trade_logs):
+            equity = loader()
+            if equity is not None and not equity.empty:
+                equity.index = pd.to_datetime(equity.index)
+                return equity.sort_index()
+
     return None
 
 
@@ -131,6 +242,9 @@ def _synthetic_equity_curve(mode: str) -> pd.Series:
 def load_benchmark(mode: str = "Paper Trading") -> pd.Series:
     """Load SPY benchmark matching equity curve dates."""
     equity = load_equity_curve(mode)
+    if equity.empty:
+        return _empty_series("SPY")
+
     start = equity.index[0]
     end = equity.index[-1]
 
@@ -153,11 +267,23 @@ def load_benchmark(mode: str = "Paper Trading") -> pd.Series:
         except Exception:
             pass
 
-    # Fallback: synthetic SPY (lower Sharpe than council)
-    rng = np.random.default_rng(99)
-    daily_ret = rng.normal(0.00045, 0.013, size=len(equity))
-    spy = 100.0 * np.cumprod(1 + daily_ret)
-    return pd.Series(spy, index=equity.index, name="SPY")
+    sp500_pq = _RAW_DIR / "macro" / "sp500.parquet"
+    if sp500_pq.exists():
+        try:
+            df = pd.read_parquet(sp500_pq)
+            if {"valid_time", "sp500_price"}.issubset(df.columns):
+                spy = df.set_index("valid_time")["sp500_price"].dropna()
+                spy.index = pd.to_datetime(spy.index)
+                spy = spy[(spy.index >= start) & (spy.index <= end)]
+                spy = spy.reindex(equity.index, method="ffill").dropna()
+                if not spy.empty:
+                    spy = spy / spy.iloc[0] * 100.0
+                    spy.name = "SPY"
+                    return spy
+        except Exception:
+            pass
+
+    return _empty_series("SPY")
 
 
 # ============================================================================
@@ -193,7 +319,7 @@ def load_model_attribution(
     result = _try_load_attribution_from_disk(start, end)
     if result is not None and not result.empty:
         return result
-    return _synthetic_attribution(start, end)
+    return _empty_attribution()
 
 
 def _try_load_attribution_from_disk(
@@ -347,7 +473,7 @@ def load_current_regime() -> dict:
     result = _try_load_regime_from_disk()
     if result:
         return result
-    return {"regime": "bull", "bull": 0.72, "bear": 0.15, "transition": 0.13}
+    return dict(_UNKNOWN_REGIME)
 
 
 def _try_load_regime_from_disk() -> Optional[dict]:
@@ -356,7 +482,6 @@ def _try_load_regime_from_disk() -> Optional[dict]:
     regime_json = _RESULTS_DIR / "current_regime.json"
     if regime_json.exists():
         try:
-            import json
             with open(regime_json) as f:
                 return json.load(f)
         except Exception:
@@ -402,7 +527,7 @@ def load_regime_history() -> pd.DataFrame:
         except Exception:
             pass
 
-    return _synthetic_regime_history()
+    return _empty_regime_history()
 
 
 def _synthetic_regime_history() -> pd.DataFrame:
@@ -460,12 +585,48 @@ def load_portfolio_snapshot() -> pd.DataFrame:
             snapshots = sorted(_ORDERS_DIR.glob("*.parquet"))
             if snapshots:
                 df = pd.read_parquet(snapshots[-1])
-                safe_cols = [c for c in df.columns if c not in ("qty", "notional", "capital")]
-                return df[safe_cols].head(20)
+                snapshot = pd.DataFrame(
+                    {
+                        "ticker": df.get("ticker", df.get("symbol", pd.Series(dtype=str))),
+                        "weight_target": df.get("target_weight", pd.Series(dtype=float)),
+                        "weight_current": df.get("weight_current", pd.Series(dtype=float)),
+                        "signal": df.get("signal", pd.Series(dtype=float)),
+                    }
+                )
+                return snapshot.head(20)
         except Exception:
             pass
 
-    return _synthetic_portfolio_snapshot()
+    if _PAPER_TRADES_DIR.exists():
+        try:
+            snapshots = sorted(_PAPER_TRADES_DIR.glob("*.json"))
+            if snapshots:
+                payload = _normalize_trade_snapshot(_load_json(snapshots[-1]))
+                if payload is not None:
+                    account = payload.get("account", {})
+                    portfolio_value = float(account.get("portfolio_value", 0.0) or 0.0)
+                    rows = []
+                    for order in payload.get("orders", []):
+                        requested_notional = float(order.get("requested_notional", 0.0) or 0.0)
+                        weight_target = (
+                            requested_notional / portfolio_value
+                            if portfolio_value > 0 and requested_notional > 0
+                            else None
+                        )
+                        rows.append(
+                            {
+                                "ticker": order.get("symbol", order.get("ticker")),
+                                "weight_target": weight_target,
+                                "weight_current": None,
+                                "signal": None,
+                            }
+                        )
+                    if rows:
+                        return pd.DataFrame(rows).head(20)
+        except Exception:
+            pass
+
+    return _empty_portfolio_snapshot()
 
 
 def _synthetic_portfolio_snapshot() -> pd.DataFrame:
