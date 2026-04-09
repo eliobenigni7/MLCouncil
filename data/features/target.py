@@ -85,15 +85,45 @@ def compute_targets(
                     (pl.col("rolling_var") ** 0.5 * np.sqrt(252)).alias("rolling_vol")
                 )
             )
+            # Compute raw risk-adjusted returns under temporary aliases;
+            # winsorization is applied below once the values are materialised.
             for h in horizons:
                 fwd_ret = c.shift(-h) / c - 1.0
                 exprs.append(
-                    (fwd_ret / (pl.col("rolling_vol") + 1e-8)).clip(-5, 5).alias(f"risk_adj_fwd_{h}d")
+                    (fwd_ret / (pl.col("rolling_vol") + 1e-8)).alias(f"_risk_adj_raw_{h}d")
                 )
 
         cols_to_drop = ["daily_ret", "ret_sq_rolling", "ret_rolling", "rolling_var", "rolling_vol"]
         existing_cols = [col for col in cols_to_drop if col in ticker_df.columns]
-        return ticker_df.with_columns(exprs).drop(existing_cols)
+        ticker_df = ticker_df.with_columns(exprs).drop(existing_cols)
+
+        if risk_adjusted:
+            # Winsorize using data-driven 1st / 99th percentiles instead of a
+            # fixed ±5 bound.  Hard-clipping at ±5 truncates genuine extreme
+            # events (earnings gaps, macro shocks) and trains the model to
+            # under-react to tail moves.  Per-ticker percentiles adapt to each
+            # asset's realized volatility regime without cross-ticker leakage.
+            winsorize_exprs = []
+            raw_aliases = []
+            for h in horizons:
+                raw_alias = f"_risk_adj_raw_{h}d"
+                if raw_alias not in ticker_df.columns:
+                    continue
+                col_data = ticker_df[raw_alias].drop_nulls()
+                if len(col_data) < 10:
+                    # Too few observations — fall back to fixed bounds.
+                    q01, q99 = -5.0, 5.0
+                else:
+                    q01 = float(col_data.quantile(0.01) or -5.0)
+                    q99 = float(col_data.quantile(0.99) or 5.0)
+                winsorize_exprs.append(
+                    pl.col(raw_alias).clip(q01, q99).alias(f"risk_adj_fwd_{h}d")
+                )
+                raw_aliases.append(raw_alias)
+            if winsorize_exprs:
+                ticker_df = ticker_df.with_columns(winsorize_exprs).drop(raw_aliases)
+
+        return ticker_df
 
     df = df.group_by("ticker", maintain_order=True).map_groups(_compute_returns)
 

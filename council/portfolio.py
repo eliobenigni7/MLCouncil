@@ -74,7 +74,12 @@ class PortfolioConstructor:
         self.long_only: bool = True
         self.max_vol_ann: float = 0.20
         self.sector_cap: float = 0.25
-        self.beta_neutral: bool = False
+        # Beta constraint enabled by default: the council generates pure
+        # cross-sectional alpha signals (z-scored, regime-agnostic), so the
+        # portfolio should not carry unintended systematic market exposure.
+        # The constraint caps |portfolio_beta| <= max_beta_exposure when
+        # market_returns is provided to optimize(); no-op otherwise.
+        self.beta_neutral: bool = True
         self.max_beta_exposure: float = 0.30
         self.commission_bps: float = 1.0
         self.slippage_bps: float = 3.0

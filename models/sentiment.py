@@ -346,10 +346,26 @@ class SentimentModel(BaseModel):
         agg = self._aggregate_scores(ticker_news)
 
         raw = pd.Series({t: agg.get(t, np.nan) for t in all_tickers})
-        raw = raw.fillna(0.0)
 
-        std = raw.std()
-        result = (raw - raw.mean()) / std if std > 1e-9 else (raw - raw.mean())
+        # Z-score only over tickers that have actual news scores.
+        # Including no-news tickers (filled to 0.0) in the z-score distribution
+        # biases the mean and makes those tickers look artificially bearish on
+        # days when the rest of the universe has positive sentiment.
+        has_signal = raw.notna()
+        if has_signal.any():
+            signal = raw[has_signal]
+            std = signal.std()
+            if std > 1e-9:
+                normalized = (signal - signal.mean()) / std
+            else:
+                # All scored tickers have the same sentiment — flat day.
+                normalized = pd.Series(0.0, index=signal.index)
+            # No-news tickers receive 0.0 (neutral) without distorting the distribution.
+            result = normalized.reindex(raw.index).fillna(0.0)
+        else:
+            # No news at all for this date — return neutral for every ticker.
+            result = pd.Series(0.0, index=raw.index)
+
         result.index.name = "ticker"
         return result
 
