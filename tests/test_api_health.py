@@ -33,6 +33,7 @@ def test_health_includes_components(client):
     assert "arctic_store" in body["components"]
     assert "runtime_env" in body["components"]
     assert "trading_operations" in body["components"]
+    assert "intraday_supervisor" in body["components"]
 
 
 def test_health_dagster_endpoint(client):

@@ -413,3 +413,31 @@ class TestTradingService:
         assert result["reconciliation"]["symbols_to_open"] == ["AAPL"]
         assert payload["trade_status"] == "success"
         assert payload["orders_submitted"] == 2
+
+    def test_execute_intraday_decision_converts_execution_intents_and_keeps_lineage(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        svc = _make_service()
+        decision = {
+            "decision_id": "decision-789",
+            "as_of": "2026-04-09T14:45:00+00:00",
+            "strategy_version": "intraday-v1",
+            "market_session": "regular",
+            "execution_intents": [
+                {
+                    "ticker": "AAPL",
+                    "side": "buy",
+                    "target_weight": 0.01,
+                    "quantity_notional": 1000.0,
+                    "confidence": 0.81,
+                    "rationale": "AAPL strongest intraday long",
+                }
+            ],
+        }
+
+        result = svc.execute_intraday_decision(decision)
+
+        svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
+        assert result["orders_submitted"] == 1
+        assert result["lineage"]["decision_id"] == "decision-789"
+        assert result["lineage"]["strategy_version"] == "intraday-v1"

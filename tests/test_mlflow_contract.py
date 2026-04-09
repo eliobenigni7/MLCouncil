@@ -238,3 +238,48 @@ def test_log_backtest_result_logs_gross_and_net_metrics(monkeypatch):
     assert logged["gross_sharpe"] == pytest.approx(1.12)
     assert logged["gross_max_drawdown"] == pytest.approx(-0.07)
     assert logged["estimated_costs_usd"] == pytest.approx(15.0)
+
+
+def test_log_intraday_decision_records_runtime_and_agent_metadata(monkeypatch):
+    mlflow_utils, store = _install_fake_mlflow(monkeypatch)
+
+    trace = {
+        "agent_name": "rule-based-agent",
+        "summary": "AAPL favored over MSFT.",
+        "confidence": 0.77,
+        "prompt_version": "fallback-v1",
+        "model_version": "rule-based-v1",
+        "provider": "openai",
+        "request_id": "resp_123",
+    }
+    decision = {
+        "decision_id": "decision-123",
+        "market_session": "regular",
+        "schedule_minutes": 15,
+        "market_snapshot_version": "polygon-202604091445",
+        "tickers": ["AAPL", "MSFT"],
+        "execution_intents": [
+            {"ticker": "AAPL", "side": "buy", "confidence": 0.77},
+            {"ticker": "MSFT", "side": "sell", "confidence": 0.22},
+        ],
+    }
+
+    mlflow_utils.log_intraday_decision(
+        decision=decision,
+        agent_trace=trace,
+        pipeline_run_id="intraday-runtime-001",
+        data_version="market-snapshot-v1",
+        feature_version="intraday-features-v1",
+        environment="paper",
+        model_name="intraday-council",
+    )
+
+    assert store.runs, "Expected an MLflow run for intraday decision logging"
+    logged = store.runs[-1]
+    assert logged.data.tags["run_kind"] == "intraday_runtime"
+    assert logged.data.tags["agent_name"] == "rule-based-agent"
+    assert logged.data.tags["agent_provider"] == "openai"
+    assert logged.data.tags["market_data_provider"] == "polygon-202604091445"
+    assert logged.data.tags["agent_request_id"] == "resp_123"
+    assert logged.data.metrics["agent_confidence"] == pytest.approx(0.77)
+    assert logged.data.metrics["execution_intent_count"] == pytest.approx(2)
