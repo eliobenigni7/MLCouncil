@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from api.services.dagster_client import DagsterClient
+from api.services import intraday_runtime_service
 from runtime_env import load_runtime_env, validate_runtime_profile
 
 router = APIRouter(tags=["health"])
@@ -93,6 +94,7 @@ async def health():
         "monitoring": monitoring,
         "runtime_env": runtime["status"],
         "trading_operations": operations["status"],
+        "intraday_supervisor": intraday_runtime_service.get_health()["status"],
     }
 
     overall = "ok"
@@ -111,6 +113,7 @@ async def health():
         "data_freshness": data_fresh,
         "runtime_env": runtime,
         "trading_operations": operations,
+        "intraday_supervisor": intraday_runtime_service.get_health(),
     }
 
 

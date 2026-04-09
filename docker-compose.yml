@@ -99,5 +99,31 @@ services:
       retries: 10
       start_period: 20s
 
+  intraday-supervisor:
+    build: .
+    command: python scripts/run_intraday_supervisor.py
+    environment:
+      - ARCTICDB_URI=lmdb://data/arctic/
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+      - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      - MLCOUNCIL_ENV_PROFILE=${MLCOUNCIL_ENV_PROFILE:-paper}
+      - MLCOUNCIL_INTRADAY_INTERVAL_MINUTES=${MLCOUNCIL_INTRADAY_INTERVAL_MINUTES:-15}
+      - MLCOUNCIL_INTRADAY_UNIVERSE=${MLCOUNCIL_INTRADAY_UNIVERSE:-AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA}
+      - MLCOUNCIL_AUTOMATION_PAUSED=${MLCOUNCIL_AUTOMATION_PAUSED:-false}
+    env_file:
+      - path: .env
+        required: true
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./mlruns:/app/mlruns
+      - ./mlflow.db:/app/mlflow.db
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   data:

@@ -84,7 +84,7 @@ def create_app() -> FastAPI:
                 "API endpoints will remain unauthenticated until it is set."
             )
 
-    from api.routers import health, pipeline, portfolio, config, monitoring, trading
+    from api.routers import health, pipeline, portfolio, config, monitoring, trading, intraday
 
     app.include_router(health.router, prefix=API_PREFIX)
     app.include_router(pipeline.router, prefix=API_PREFIX)
@@ -92,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(config.router, prefix=API_PREFIX)
     app.include_router(monitoring.router, prefix=API_PREFIX)
     app.include_router(trading.router, prefix=API_PREFIX)
+    app.include_router(intraday.router, prefix=API_PREFIX)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

@@ -57,6 +57,12 @@ MAX_PROMOTION_PBO = 0.50
 MIN_WALK_FORWARD_WINDOWS = 1
 MIN_OOS_SHARPE = 0.0
 
+INTRADAY_REQUIRED_TAGS = (
+    "agent_name",
+    "run_kind",
+    "market_session",
+)
+
 
 def build_run_tags(
     *,
@@ -85,6 +91,37 @@ def build_run_tags(
 def build_run_name(run_kind: str, model_name: str, environment: str) -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"{run_kind}_{model_name}_{environment}_{stamp}"
+
+
+def build_intraday_run_tags(
+    *,
+    model_name: str,
+    pipeline_run_id: str,
+    data_version: str,
+    feature_version: str,
+    environment: str,
+    agent_name: str,
+    market_session: str,
+    model_version: Optional[str] = None,
+    extra_tags: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    tags = build_run_tags(
+        model_name=model_name,
+        pipeline_run_id=pipeline_run_id,
+        data_version=data_version,
+        feature_version=feature_version,
+        environment=environment,
+        model_version=model_version,
+        extra_tags=extra_tags,
+    )
+    tags.update(
+        {
+            "agent_name": str(agent_name),
+            "market_session": str(market_session),
+            "run_kind": "intraday_runtime",
+        }
+    )
+    return tags
 
 
 def validate_promotion_gate(
@@ -268,6 +305,61 @@ def log_signal_metrics(
         f"{model_name}_signal_count": len(signals.columns),
     }
     mlflow.log_metrics(metrics)
+
+
+def log_intraday_decision(
+    *,
+    decision: Mapping[str, object],
+    agent_trace: Mapping[str, object],
+    pipeline_run_id: str,
+    data_version: str,
+    feature_version: str,
+    environment: str,
+    model_name: str,
+    model_version: Optional[str] = None,
+):
+    if not _MLFLOW_AVAILABLE:
+        return
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
+    tags = build_intraday_run_tags(
+        model_name=model_name,
+        pipeline_run_id=pipeline_run_id,
+        data_version=data_version,
+        feature_version=feature_version,
+        environment=environment,
+        model_version=model_version,
+        agent_name=str(agent_trace.get("agent_name", "unknown-agent")),
+        market_session=str(decision.get("market_session", "unknown")),
+        extra_tags={
+            "decision_id": str(decision.get("decision_id", "unknown")),
+            "prompt_version": str(agent_trace.get("prompt_version", "unknown")),
+            "agent_provider": str(agent_trace.get("provider", "unknown")),
+            "agent_request_id": str(agent_trace.get("request_id", "unknown")),
+            "market_data_provider": str(decision.get("market_snapshot_version", "unknown")),
+        },
+    )
+    with mlflow.start_run(
+        run_name=build_run_name("intraday_runtime", model_name, environment),
+        tags=tags,
+    ):
+        execution_intents = decision.get("execution_intents", [])
+        tickers = decision.get("tickers") or [
+            str(intent.get("ticker", ""))
+            for intent in execution_intents
+            if isinstance(intent, dict)
+        ]
+        metrics = {
+            "agent_confidence": float(agent_trace.get("confidence", 0.0) or 0.0),
+            "execution_intent_count": float(len(execution_intents)),
+            "ticker_count": float(len([ticker for ticker in tickers if ticker])),
+            "schedule_minutes": float(decision.get("schedule_minutes", 0) or 0),
+        }
+        mlflow.log_metrics(metrics)
+        mlflow.log_dict(dict(decision), "intraday/decision.json")
+        mlflow.log_dict(dict(agent_trace), "intraday/agent_trace.json")
 
 
 def setup_mlflow_docker() -> dict:

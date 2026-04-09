@@ -306,6 +306,21 @@ class TradingService:
         return self._sync_trade_history_with_broker(logs)
 
     def _prepare_execution_context(self, date: str) -> dict[str, Any]:
+        orders = self.get_pending_orders(date)
+        lineage = self._extract_lineage(orders)
+        return self._prepare_execution_context_from_orders(
+            execution_key=date,
+            orders=orders,
+            lineage=lineage,
+        )
+
+    def _prepare_execution_context_from_orders(
+        self,
+        *,
+        execution_key: str,
+        orders: list[dict[str, Any]],
+        lineage: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         runtime_profile = get_runtime_profile()
         paused = self._is_automation_paused()
         guard_error = self._paper_guard_error()
@@ -321,15 +336,14 @@ class TradingService:
                 connection_error = str(exc)
                 guard_error = connection_error
 
-        orders = self.get_pending_orders(date)
-        lineage = self._extract_lineage(orders)
+        extracted_lineage = lineage or self._extract_lineage(orders)
         normalized_orders = [
             self._normalize_order(order, positions_df)
             for order in orders
         ]
 
         reconciliation = self._build_reconciliation(
-            date=date,
+            date=execution_key,
             orders=orders,
             normalized_orders=normalized_orders,
             positions_df=positions_df,
@@ -377,7 +391,7 @@ class TradingService:
                     )
 
                 risk_report = self._compute_projected_risk(
-                    date=date,
+                    date=execution_key,
                     normalized_orders=normalized_orders,
                     positions_df=positions_df,
                     account=account,
@@ -401,11 +415,11 @@ class TradingService:
                         )
 
         snapshot = {
-            "date": date,
+            "date": execution_key,
             "paper": self.is_paper,
             "paused": paused,
             "runtime_profile": runtime_profile,
-            "lineage": lineage,
+            "lineage": extracted_lineage,
             "pretrade": pretrade,
             "reconciliation": reconciliation,
             "paper_guard_ok": guard_error is None,
@@ -430,6 +444,122 @@ class TradingService:
         snapshot["positions_df"] = positions_df
         snapshot["account"] = account
         return snapshot
+
+    def execute_intraday_decision(self, decision: dict[str, Any]) -> dict[str, Any]:
+        as_of = str(decision.get("as_of") or datetime.now(timezone.utc).isoformat())
+        execution_key = as_of.split("T")[0]
+        orders = self._orders_from_intraday_decision(decision)
+        lineage = {
+            "decision_id": str(decision.get("decision_id", "unknown")),
+            "strategy_version": str(decision.get("strategy_version", "intraday-v1")),
+            "market_session": str(decision.get("market_session", "unknown")),
+        }
+        context = self._prepare_execution_context_from_orders(
+            execution_key=execution_key,
+            orders=orders,
+            lineage=lineage,
+        )
+        snapshot = self._public_context(context)
+
+        if snapshot["pretrade"]["blocked"]:
+            operations_path = self._write_operations(
+                execution_key,
+                self._operation_payload(
+                    snapshot=snapshot,
+                    trade_status="blocked",
+                    orders_submitted=0,
+                    orders_rejected=0,
+                    liquidations=0,
+                    warnings=snapshot["pretrade"].get("warnings", []),
+                    errors=[snapshot["pretrade"]["reason"]],
+                ),
+            )
+            return {
+                "error": snapshot["pretrade"]["reason"],
+                "lineage": snapshot["lineage"],
+                "pretrade": snapshot["pretrade"],
+                "reconciliation": snapshot["reconciliation"],
+                "operations_path": str(operations_path),
+            }
+
+        account = context["account"]
+        positions_df = context["positions_df"]
+        normalized_orders = context["normalized_orders"]
+
+        order_results = []
+        for order in normalized_orders:
+            valid, msg = self._validate_order(order, account, positions_df)
+            if not valid:
+                order_results.append(
+                    {"symbol": order["ticker"], "status": "rejected", "reason": msg}
+                )
+                continue
+
+            result = self.node.submit_order(
+                order["ticker"],
+                int(order["share_quantity"]),
+                order["direction"],
+            )
+            order_results.append(
+                {
+                    **result,
+                    "symbol": order["ticker"],
+                    "requested_notional": float(order["requested_notional"]),
+                    "share_quantity": int(order["share_quantity"]),
+                    "estimated_price": float(order["estimated_price"]),
+                }
+            )
+
+        reconciliation = self._build_reconciliation(
+            date=execution_key,
+            orders=orders,
+            normalized_orders=normalized_orders,
+            positions_df=positions_df,
+            account=account,
+            order_results=order_results,
+        )
+        snapshot["reconciliation"] = reconciliation
+        operations_path = self._write_operations(
+            execution_key,
+            self._operation_payload(
+                snapshot=snapshot,
+                trade_status="success",
+                orders_submitted=len(
+                    [result for result in order_results if result.get("status") != "rejected"]
+                ),
+                orders_rejected=len(
+                    [result for result in order_results if result.get("status") == "rejected"]
+                ),
+                liquidations=0,
+                warnings=snapshot["pretrade"].get("warnings", []),
+                errors=[],
+            ),
+        )
+        self._log_trade(
+            execution_key,
+            {
+                "orders": order_results,
+                "account": account,
+                "lineage": snapshot["lineage"],
+                "pretrade": snapshot["pretrade"],
+                "reconciliation": reconciliation,
+            },
+        )
+        return {
+            "date": execution_key,
+            "orders_submitted": len(
+                [result for result in order_results if result.get("status") != "rejected"]
+            ),
+            "orders_rejected": len(
+                [result for result in order_results if result.get("status") == "rejected"]
+            ),
+            "liquidations": 0,
+            "lineage": snapshot["lineage"],
+            "pretrade": snapshot["pretrade"],
+            "reconciliation": reconciliation,
+            "results": order_results,
+            "operations_path": str(operations_path),
+        }
 
     def _paper_guard_error(self) -> str | None:
         if not self.is_paper:
@@ -797,6 +927,22 @@ class TradingService:
             for key in keys
             if key in first and first[key] is not None
         }
+
+    def _orders_from_intraday_decision(self, decision: dict[str, Any]) -> list[dict[str, Any]]:
+        orders: list[dict[str, Any]] = []
+        for intent in decision.get("execution_intents", []):
+            orders.append(
+                {
+                    "ticker": str(intent.get("ticker", "")),
+                    "direction": str(intent.get("side", "buy")).lower(),
+                    "quantity": float(intent.get("quantity_notional", 0.0) or 0.0),
+                    "target_weight": float(intent.get("target_weight", 0.0) or 0.0),
+                    "price": float(intent.get("estimated_price", 0.0) or 0.0),
+                    "decision_id": decision.get("decision_id"),
+                    "strategy_version": decision.get("strategy_version", "intraday-v1"),
+                }
+            )
+        return orders
 
     def _public_context(self, context: dict[str, Any]) -> dict[str, Any]:
         return {
