@@ -9,8 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
+# alpaca-trade-api requires websockets<11 but yfinance>=1.2.1 requires websockets>=13.
+# We only use alpaca REST (no streaming), so install alpaca without its deps.
 COPY requirements*.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN sed -i '/alpaca-trade-api/d' requirements_api.txt && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir --no-deps 'alpaca-trade-api>=2.3.0'
 
 # Copy application code
 COPY . .
