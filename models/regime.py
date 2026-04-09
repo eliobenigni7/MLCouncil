@@ -132,8 +132,27 @@ class RegimeModel:
             random_state=self._random_state,
         )
 
-    def _label_states(self, model: Any, states: np.ndarray) -> dict[int, str]:
-        """Create a deterministic mapping from latent state id to regime label."""
+    def _label_states(
+        self,
+        model: Any,
+        states: np.ndarray,
+        training_returns: np.ndarray,
+    ) -> dict[int, str]:
+        """Create a deterministic mapping from latent state id to regime label.
+
+        Parameters
+        ----------
+        model:
+            Fitted HMM or GaussianMixture instance.
+        states:
+            Predicted state sequence from the current fit (same length as
+            ``training_returns``).
+        training_returns:
+            First-feature column values used in the current fit.  Passed
+            explicitly to avoid relying on ``self._training_returns``, which
+            could be stale if a previous ``fit()`` call raised an exception
+            after updating the attribute but before completing state labelling.
+        """
         means = getattr(model, "means_", None)
         if means is not None and len(means) >= self.n_states:
             sorted_states = sorted(
@@ -143,7 +162,7 @@ class RegimeModel:
             )
         else:
             summary = (
-                pd.DataFrame({"state": states, "value": self._training_returns})
+                pd.DataFrame({"state": states, "value": training_returns})
                 .groupby("state")["value"]
                 .mean()
             )
@@ -180,8 +199,11 @@ class RegimeModel:
         model.fit(X_scaled)
 
         states = np.asarray(model.predict(X_scaled), dtype=int)
-        self._training_returns = df[feat_cols[0]].to_numpy(copy=True)
-        self._state_map = self._label_states(model, states)
+        training_returns = df[feat_cols[0]].to_numpy(copy=True)
+        self._training_returns = training_returns
+        # Pass training_returns explicitly so _label_states never reads a stale
+        # self._training_returns left over from a failed previous fit() call.
+        self._state_map = self._label_states(model, states, training_returns)
 
         self._model = model
         self._scaler = scaler

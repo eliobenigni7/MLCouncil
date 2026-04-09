@@ -235,16 +235,33 @@ class TechnicalModel(BaseModel):
                 if len(X_train) < 30 or len(X_test) < 5:
                     continue
 
-                model = lgb.LGBMRegressor(**self._params)
-                model.fit(
-                    X_train,
-                    y_train,
-                    eval_set=[(X_test, y_test)],
-                    callbacks=[
-                        lgb.early_stopping(50, verbose=False),
-                        lgb.log_evaluation(-1),
-                    ],
-                )
+                # Use the chronologically last 15 % of the training fold as an
+                # internal validation set for early stopping.  Using X_test here
+                # would let early stopping observe test-set behaviour and
+                # implicitly tune training duration toward the test distribution
+                # — an indirect information leak even when test predictions are
+                # not used for model selection.
+                val_size = max(5, int(0.15 * len(X_train)))
+                X_tr = X_train.iloc[:-val_size]
+                y_tr = y_train.iloc[:-val_size]
+                X_val = X_train.iloc[-val_size:]
+                y_val = y_train.iloc[-val_size:]
+
+                if len(X_tr) < 10:
+                    # Not enough data to carve out a validation split — skip ES.
+                    model = lgb.LGBMRegressor(**self._params)
+                    model.fit(X_train, y_train, callbacks=[lgb.log_evaluation(-1)])
+                else:
+                    model = lgb.LGBMRegressor(**self._params)
+                    model.fit(
+                        X_tr,
+                        y_tr,
+                        eval_set=[(X_val, y_val)],
+                        callbacks=[
+                            lgb.early_stopping(50, verbose=False),
+                            lgb.log_evaluation(-1),
+                        ],
+                    )
 
                 fold_ic = self._ic(y_test.values, model.predict(X_test))
                 fold_metrics.append({"fold": fold_idx, "ic": fold_ic})
