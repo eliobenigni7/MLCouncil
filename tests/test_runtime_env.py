@@ -141,3 +141,53 @@ def test_load_runtime_env_applies_real_file_values_over_existing_env_defaults(
     runtime_env.load_runtime_env()
 
     assert runtime_env.os.getenv("MLCOUNCIL_AUTO_EXECUTE") == "true"
+
+
+def test_load_runtime_env_uses_repo_dotenv_before_placeholder_runtime_file(
+    monkeypatch, tmp_path
+):
+    env_path = tmp_path / "runtime.paper.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ALPACA_API_KEY=replace-me",
+                "ALPACA_SECRET_KEY=replace-me",
+                "ALPACA_PAPER_KEY=replace-me",
+                "ALPACA_PAPER_SECRET=replace-me",
+                "ALPACA_BASE_URL=https://paper-api.alpaca.markets",
+                "MLCOUNCIL_MAX_DAILY_ORDERS=20",
+                "MLCOUNCIL_MAX_TURNOVER=0.30",
+                "MLCOUNCIL_MAX_POSITION_SIZE=0.10",
+                "MLCOUNCIL_AUTOMATION_PAUSED=false",
+            ]
+        )
+        + "\n"
+    )
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text(
+        "\n".join(
+            [
+                "ALPACA_API_KEY=paper-key-from-dotenv",
+                "ALPACA_SECRET_KEY=paper-secret-from-dotenv",
+            ]
+        )
+        + "\n"
+    )
+
+    monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "paper")
+    monkeypatch.setenv("MLCOUNCIL_RUNTIME_ENV_PATH", str(env_path))
+    monkeypatch.setenv("MLCOUNCIL_DOTENV_PATH", str(dotenv_path))
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_PAPER_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_PAPER_SECRET", raising=False)
+
+    import runtime_env
+
+    importlib.reload(runtime_env)
+    runtime_env.load_runtime_env(override=True)
+
+    assert runtime_env.os.getenv("ALPACA_API_KEY") == "paper-key-from-dotenv"
+    assert runtime_env.os.getenv("ALPACA_SECRET_KEY") == "paper-secret-from-dotenv"
+    assert runtime_env.os.getenv("ALPACA_PAPER_KEY") == "paper-key-from-dotenv"
+    assert runtime_env.os.getenv("ALPACA_PAPER_SECRET") == "paper-secret-from-dotenv"

@@ -57,6 +57,11 @@ _EXCLUDE_COLS   = {"ticker", "valid_time", "transaction_time"}
 _MIN_ALPHA_FEATURES = 50
 _DEFAULT_PORTFOLIO_VALUE = 100_000.0
 
+
+class LivePortfolioSnapshotError(RuntimeError):
+    """Errore pipeline per snapshot live Alpaca non disponibile o non valido."""
+
+
 # ---------------------------------------------------------------------------
 # Shared config
 # ---------------------------------------------------------------------------
@@ -183,36 +188,68 @@ def _contract_check_result(asset_name: str, payload, partition_date: str | None 
     )
 
 
-def _load_live_portfolio_snapshot(target_tickers: list[str]) -> tuple[pd.Series, float]:
-    zero_weights = pd.Series(0.0, index=target_tickers, dtype=float, name="current_weight")
+def _load_live_portfolio_snapshot(
+    target_tickers: list[str] | None = None,
+) -> tuple[pd.Series, float]:
+    zero_weights = pd.Series(dtype=float, name="current_weight")
+    if target_tickers is not None:
+        zero_weights = pd.Series(
+            0.0, index=target_tickers, dtype=float, name="current_weight"
+        )
     try:
         from execution.alpaca_adapter import AlpacaConfig, AlpacaLiveNode
 
         node = AlpacaLiveNode(AlpacaConfig.from_env())
         account = node.get_account_info()
         portfolio_value = float(account.get("portfolio_value", 0.0) or 0.0)
-        if portfolio_value <= 0:
-            return zero_weights, _DEFAULT_PORTFOLIO_VALUE
+        if not np.isfinite(portfolio_value) or portfolio_value <= 0:
+            raise LivePortfolioSnapshotError(
+                f"live portfolio snapshot: invalid portfolio value {portfolio_value!r}"
+            )
 
-        positions_df = node.get_all_positions()
-        if positions_df.empty or "symbol" not in positions_df.columns:
+        positions_df = node.get_all_positions(strict=True)
+        if positions_df.empty:
             return zero_weights, portfolio_value
 
-        position_values = positions_df.copy()
-        if "current_value" not in position_values.columns:
-            position_values["current_value"] = (
-                position_values.get("qty", 0).astype(float)
-                * position_values.get("current_price", 0).astype(float)
+        required_cols = {"symbol", "current_value"}
+        missing_cols = sorted(required_cols - set(positions_df.columns))
+        if missing_cols:
+            raise LivePortfolioSnapshotError(
+                "live portfolio snapshot: malformed positions payload "
+                f"(missing columns: {', '.join(missing_cols)})"
+            )
+
+        if positions_df["symbol"].isna().any():
+            raise LivePortfolioSnapshotError(
+                "live portfolio snapshot: malformed positions payload (null symbols)"
+            )
+
+        current_values = pd.to_numeric(
+            positions_df["current_value"], errors="coerce"
+        ).astype(float)
+        if current_values.isna().any() or not np.isfinite(current_values).all():
+            raise LivePortfolioSnapshotError(
+                "live portfolio snapshot: malformed positions payload "
+                "(invalid current_value)"
             )
 
         current_weights = (
-            position_values.assign(weight=position_values["current_value"].astype(float) / portfolio_value)
-            .set_index("symbol")["weight"]
+            positions_df
+            .assign(current_value=current_values)
+            .set_index("symbol")["current_value"]
+            .astype(float)
+            .div(portfolio_value)
             .rename("current_weight")
         )
+        if target_tickers is None:
+            return current_weights.sort_index(), portfolio_value
         return current_weights.reindex(target_tickers).fillna(0.0), portfolio_value
-    except Exception:
-        return zero_weights, _DEFAULT_PORTFOLIO_VALUE
+    except LivePortfolioSnapshotError:
+        raise
+    except Exception as exc:
+        raise LivePortfolioSnapshotError(
+            f"live portfolio snapshot unavailable: {exc}"
+        ) from exc
 
 
 # ===========================================================================
@@ -828,9 +865,7 @@ def daily_orders(
         _record_asset_metadata(context, "daily_orders", empty_orders, partition_date, lineage)
         return empty_orders
 
-    current_w, portfolio_value = _load_live_portfolio_snapshot(
-        portfolio_weights.index.tolist()
-    )
+    current_w, portfolio_value = _load_live_portfolio_snapshot()
 
     constructor = PortfolioConstructor()
     orders = constructor.compute_orders(

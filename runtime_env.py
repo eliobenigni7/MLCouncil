@@ -55,11 +55,29 @@ def get_runtime_env_path() -> Path:
     return _DEFAULT_RUNTIME_ENV_PATH
 
 
+def get_project_dotenv_path() -> Path:
+    override = os.getenv("MLCOUNCIL_DOTENV_PATH")
+    if override:
+        return Path(override)
+    return _ROOT / ".env"
+
+
 def load_runtime_env(*, override: bool = False) -> dict[str, str]:
     path = get_runtime_env_path()
     loaded: dict[str, str] = {}
+    dotenv_path = get_project_dotenv_path()
 
     _apply_legacy_aliases()
+
+    if dotenv_path.exists():
+        for key, value in dotenv_values(dotenv_path).items():
+            if value is not None and _should_set_env_value(
+                key=key,
+                value=value,
+                override=override,
+            ):
+                os.environ[key] = value
+        _apply_legacy_aliases()
 
     if path.exists():
         loaded = {

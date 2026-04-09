@@ -4,6 +4,8 @@ import importlib
 import sys
 import types
 
+import pandas as pd
+
 
 def _load_adapter(monkeypatch, tmp_path):
     class FakeREST:
@@ -122,6 +124,40 @@ def test_get_all_positions_supports_alpaca_unrealized_plpc(monkeypatch, tmp_path
     row = positions.iloc[0]
     assert row["symbol"] == "AAPL"
     assert row["unrealized_pnl_pct"] == 0.02875
+
+
+def test_get_all_positions_raises_in_strict_mode_on_broker_error(monkeypatch, tmp_path):
+    adapter = _load_adapter(monkeypatch, tmp_path)
+    node = adapter.AlpacaLiveNode(adapter.AlpacaConfig.from_env())
+
+    def boom():
+        raise RuntimeError("broker unavailable")
+
+    node._api.list_positions = boom
+
+    try:
+        node.get_all_positions(strict=True)
+    except RuntimeError as exc:
+        assert "loading Alpaca positions" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+
+def test_get_all_positions_returns_empty_dataframe_in_tolerant_mode_on_broker_error(
+    monkeypatch, tmp_path
+):
+    adapter = _load_adapter(monkeypatch, tmp_path)
+    node = adapter.AlpacaLiveNode(adapter.AlpacaConfig.from_env())
+
+    def boom():
+        raise RuntimeError("broker unavailable")
+
+    node._api.list_positions = boom
+
+    positions = node.get_all_positions()
+
+    assert isinstance(positions, pd.DataFrame)
+    assert positions.empty
 
 
 def test_list_orders_normalizes_payload(monkeypatch, tmp_path):

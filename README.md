@@ -144,7 +144,8 @@ The system exposes runtime status through:
 - Max position cap
 - Turnover control
 - Sector exposure handling
-- Feasible bootstrap behavior for an empty paper portfolio
+- Live Alpaca portfolio used as the optimization baseline
+- Fail-closed behavior if the broker snapshot is unavailable
 
 ### Paper Trading Controls
 - Automatic order execution after successful Dagster runs
@@ -185,6 +186,30 @@ Runtime profiles and examples live under `config/`:
 - `config/runtime.env`
 - `config/runtime.local.env.example`
 - `config/runtime.paper.env.example`
+
+Environment loading works like this:
+- `.env` in the project root is the source of truth for local secrets such as Alpaca credentials.
+- `config/runtime*.env` provides non-secret runtime defaults and safety limits.
+- Placeholder values in `config/runtime*.env` do not override real values from `.env`.
+- Set `MLCOUNCIL_ENV_PROFILE=paper` if you want the stricter paper-runtime validation path.
+
+Recommended paper-trading values:
+
+```env
+MLCOUNCIL_ENV_PROFILE=paper
+MLCOUNCIL_MAX_DAILY_ORDERS=20
+MLCOUNCIL_MAX_TURNOVER=0.30
+MLCOUNCIL_MAX_POSITION_SIZE=0.10
+MLCOUNCIL_AUTOMATION_PAUSED=false
+```
+
+Important Alpaca runtime behavior:
+- The optimizer reads the current Alpaca paper portfolio and uses it as the rebalance baseline.
+- If Alpaca account or positions cannot be read, order generation fails closed instead of assuming an empty portfolio.
+- Existing live positions outside the new target universe are included in reconciliation so the system can generate closing sells.
+
+Python dependency note:
+- Keep `yfinance` on `0.2.x`. The repository pins `yfinance>=0.2.40,<1.0` to stay compatible with `alpaca-trade-api`.
 
 ## Run the System
 
