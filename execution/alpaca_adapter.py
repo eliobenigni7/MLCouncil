@@ -138,7 +138,7 @@ class AlpacaLiveNode:
         except Exception:
             return None
 
-    def get_all_positions(self) -> pd.DataFrame:
+    def get_all_positions(self, strict: bool = False) -> pd.DataFrame:
         try:
             positions = self._api.list_positions()
             if not positions:
@@ -167,7 +167,9 @@ class AlpacaLiveNode:
                 }
                 for p in positions
             ])
-        except Exception:
+        except Exception as e:
+            if strict:
+                raise RuntimeError(f"Error loading Alpaca positions: {e}") from e
             return pd.DataFrame()
 
     def get_account_info(self) -> dict:

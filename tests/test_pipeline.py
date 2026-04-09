@@ -11,6 +11,7 @@ Copertura
 from __future__ import annotations
 
 import sys
+import types
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -357,7 +358,12 @@ class TestQualityChecks:
             }
         )
 
-        orders = _call_asset(_pipeline.daily_orders, ctx, weights)
+        with patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            return_value=(pd.Series(0.0, index=["AAPL", "MSFT"]), 100000.0),
+        ):
+            orders = _call_asset(_pipeline.daily_orders, ctx, weights)
 
         expected_cols = {
             "pipeline_run_id",
@@ -625,7 +631,11 @@ class TestFullPipelineSynthetic:
         cov_mat = pd.DataFrame(
             np.eye(n) * 0.0001, index=self.TICKERS, columns=self.TICKERS
         )
-        with patch.object(_pipeline, "_compute_covariance", return_value=cov_mat):
+        with patch.object(_pipeline, "_compute_covariance", return_value=cov_mat), patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
+        ):
             result = _call_asset(_pipeline.portfolio_weights, ctx, council)
 
         assert isinstance(result, pd.Series)
@@ -648,7 +658,11 @@ class TestFullPipelineSynthetic:
                 raise ModuleNotFoundError("No module named 'cvxpy'")
             return real_import(name, globals, locals, fromlist, level)
 
-        with patch("builtins.__import__", side_effect=guarded_import):
+        with patch("builtins.__import__", side_effect=guarded_import), patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
+        ):
             result = _call_asset(_pipeline.portfolio_weights, ctx, council)
 
         assert isinstance(result, pd.Series)
@@ -704,7 +718,280 @@ class TestFullPipelineSynthetic:
 
 
 # ===========================================================================
-# 4. test_schedule_cron
+# 4. test_live_portfolio_snapshot
+# ===========================================================================
+
+class TestLivePortfolioSnapshot:
+    """Verifica il comportamento del live snapshot Alpaca usato dalla pipeline."""
+
+    TICKERS = ["AAPL", "MSFT", "NVDA"]
+
+    @staticmethod
+    def _install_fake_alpaca_module(node_obj) -> types.ModuleType:
+        module = types.ModuleType("execution.alpaca_adapter")
+
+        class FakeConfig:
+            @classmethod
+            def from_env(cls):
+                return cls()
+
+        module.AlpacaConfig = FakeConfig
+        module.AlpacaLiveNode = lambda _config: node_obj
+        return module
+
+    def test_load_live_portfolio_snapshot_success_path_returns_live_weights_and_value(self):
+        """Il snapshot live deve derivare pesi e valore dalla risposta broker."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": 250000.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame(
+                    [
+                        {
+                            "symbol": "AAPL",
+                            "qty": 10,
+                            "current_price": 50.0,
+                            "current_value": 500.0,
+                        }
+                    ]
+                )
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            weights, portfolio_value = _pipeline._load_live_portfolio_snapshot(
+                self.TICKERS
+            )
+
+        assert portfolio_value == 250000.0
+        assert isinstance(weights, pd.Series)
+        assert list(weights.index) == self.TICKERS
+        assert weights.loc["AAPL"] == pytest.approx(500.0 / 250000.0)
+        assert weights.loc["MSFT"] == 0.0
+        assert weights.loc["NVDA"] == 0.0
+
+    def test_load_live_portfolio_snapshot_raises_when_broker_dependency_missing(self):
+        """Se il broker adapter manca, il snapshot live deve fallire esplicitamente."""
+        class FakeConfig:
+            @classmethod
+            def from_env(cls):
+                raise ModuleNotFoundError("No module named 'alpaca_trade_api'")
+
+        fake_module = types.ModuleType("execution.alpaca_adapter")
+        fake_module.AlpacaConfig = FakeConfig
+        fake_module.AlpacaLiveNode = object
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="live portfolio snapshot"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_raises_on_broker_positions_fetch_failure(self):
+        """Un errore del broker nel fetch delle posizioni deve propagare come errore live."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": 100000.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                raise ConnectionError("positions unavailable")
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="live portfolio snapshot"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_success_on_cash_only_account(self):
+        """Un account cash-only con valore positivo deve restituire pesi zero e il valore reale."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": 250000.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame()
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            weights, portfolio_value = _pipeline._load_live_portfolio_snapshot(
+                self.TICKERS
+            )
+
+        assert isinstance(weights, pd.Series)
+        assert list(weights.index) == self.TICKERS
+        assert (weights == 0.0).all()
+        assert portfolio_value == 250000.0
+
+    def test_load_live_portfolio_snapshot_raises_on_account_fetch_or_auth_failure(self):
+        """Un fallimento di auth o fetch account deve interrompere il snapshot live."""
+        class FakeNode:
+            def get_account_info(self):
+                raise PermissionError("authentication failed")
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame()
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="live portfolio snapshot"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_raises_on_non_positive_portfolio_value(self):
+        """Un portfolio value non positivo deve essere rifiutato, non sostituito."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": -1.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame()
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="portfolio value"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_raises_on_nan_portfolio_value(self):
+        """Un portfolio value NaN deve essere rifiutato esplicitamente."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": float("nan")}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame()
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="portfolio value"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_raises_on_malformed_positions_payload(self):
+        """Un payload posizioni senza symbol deve fallire invece di tornare ai pesi zero."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": 100000.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame([{"qty": 12, "current_value": 1200.0}])
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="malformed positions"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_raises_on_invalid_current_value(self):
+        """Un current_value nullo o NaN deve fallire esplicitamente."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": 100000.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame(
+                    [{"symbol": "AAPL", "qty": 12, "current_value": None}]
+                )
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            with pytest.raises(RuntimeError, match="invalid current_value"):
+                _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_portfolio_weights_uses_live_snapshot_as_optimizer_baseline(self):
+        """portfolio_weights deve passare il snapshot live al baseline dell'ottimizzatore."""
+        ctx = _make_context("2024-01-15")
+        council = pd.Series([1.2, -0.4, 0.8], index=self.TICKERS)
+        snapshot_weights = pd.Series([0.10, 0.20, 0.30], index=self.TICKERS)
+        snapshot_index = snapshot_weights.index
+
+        captured: dict[str, object] = {}
+
+        class FakeConstructor:
+            def optimize(self, **kwargs):
+                captured.update(kwargs)
+                return pd.Series([0.5, 0.3, 0.2], index=snapshot_index)
+
+        with patch.object(
+            _pipeline,
+            "_compute_covariance",
+            return_value=pd.DataFrame(
+                np.eye(len(self.TICKERS)) * 0.0001,
+                index=self.TICKERS,
+                columns=self.TICKERS,
+            ),
+        ), patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            return_value=(snapshot_weights, 123456.0),
+        ), patch(
+            "council.portfolio.PortfolioConstructor",
+            return_value=FakeConstructor(),
+        ):
+            _call_asset(_pipeline.portfolio_weights, ctx, council)
+
+        assert captured["current_weights"].equals(snapshot_weights)
+        assert captured["current_weights"].name == snapshot_weights.name
+        assert captured["current_weights"].index.tolist() == self.TICKERS
+
+    def test_daily_orders_raises_when_live_snapshot_unavailable(self):
+        """daily_orders deve fallire se il live snapshot non è disponibile."""
+        ctx = _make_context("2024-01-15")
+        weights = pd.Series([0.5, 0.3, 0.2], index=self.TICKERS)
+
+        import tempfile
+        import builtins
+
+        real_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "alpaca_trade_api":
+                raise ModuleNotFoundError("No module named 'alpaca_trade_api'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(_pipeline, "_ORDERS_DIR", Path(tmpdir)), patch(
+                "pandas.DataFrame.to_parquet", return_value=None
+            ) as mocked_save, patch("builtins.__import__", side_effect=guarded_import):
+                with pytest.raises(RuntimeError, match="live portfolio snapshot"):
+                    _call_asset(_pipeline.daily_orders, ctx, weights)
+                mocked_save.assert_not_called()
+
+    def test_daily_orders_include_sells_for_live_positions_outside_target(self):
+        """Le posizioni live fuori target devono produrre ordini sell di chiusura."""
+        ctx = _make_context("2024-01-15")
+        weights = pd.Series({"AAPL": 0.60, "MSFT": 0.40}, name="target_weight")
+        current_weights = pd.Series(
+            {"AAPL": 0.30, "MSFT": 0.30, "NVDA": 0.40},
+            name="current_weight",
+        )
+
+        with patch("pandas.DataFrame.to_parquet", return_value=None), patch.object(
+            _pipeline,
+            "_load_live_portfolio_snapshot",
+            side_effect=lambda target_tickers=None: (
+                current_weights,
+                100000.0,
+            ),
+        ):
+            result = _call_asset(_pipeline.daily_orders, ctx, weights)
+
+        assert "NVDA" in result["ticker"].tolist()
+        nvda_order = result.loc[result["ticker"] == "NVDA"].iloc[0]
+        assert nvda_order["direction"] == "sell"
+
+
+# ===========================================================================
+# 5. test_schedule_cron
 # ===========================================================================
 
 class TestScheduleCron:
