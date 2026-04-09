@@ -276,8 +276,13 @@ class CouncilAggregator:
             )
             for m in weights:
                 weights[m] *= penalties.get(m, 1.0)
-            total = sum(weights.values()) or 1.0
-            weights = {m: v / total for m, v in weights.items()}
+            # Do NOT re-normalise here: doing so negates the penalty entirely
+            # (penalised models' share is redistributed back to the others).
+            # The combined signal is z-scored downstream, so the absolute sum
+            # does not affect scale. We only cap at max_weight to prevent a
+            # single un-penalised model from dominating.
+            for m in weights:
+                weights[m] = min(weights[m], self._max_weight)
 
         all_tickers: set[str] = set()
         for m in active_models:
@@ -325,12 +330,22 @@ class CouncilAggregator:
             if model_name not in self._ic_by_date:
                 self._ic_by_date[model_name] = {}
 
-            common_dates = signals_df.index.intersection(returns_history.index)
-            for d in common_dates:
+            # Signals generated at T are meant to predict returns from T to T+1.
+            # IC must therefore be computed between signals[T-1] and returns[T],
+            # not signals[T] vs returns[T] (same-day, not predictive).
+            signal_dates = signals_df.index
+            common_return_dates = returns_history.index.intersection(signal_dates)
+            for d in common_return_dates:
                 if d in self._ic_by_date[model_name]:
                     continue
 
-                sig = signals_df.loc[d].dropna()
+                # Find the signal date immediately preceding d.
+                pos = signal_dates.searchsorted(d)
+                if pos == 0:
+                    continue  # No prior signal date available for this return date.
+                prev_date = signal_dates[pos - 1]
+
+                sig = signals_df.loc[prev_date].dropna()
                 ret = returns_history.loc[d].dropna()
                 common_tickers = sig.index.intersection(ret.index)
                 if len(common_tickers) < 3:

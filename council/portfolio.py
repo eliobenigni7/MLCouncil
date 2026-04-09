@@ -233,6 +233,16 @@ class PortfolioConstructor:
         else:
             weights /= total
 
+        # Re-normalising after zeroing small positions can push surviving
+        # weights above max_position, violating the CVXPY constraint.
+        # Example: 10 positions at 10% each; zero one → re-norm gives 11.1%.
+        # Fix: clip again and re-normalise a second time.
+        if weights.max() > self.max_position + 1e-9:
+            weights = np.clip(weights, 0.0, self.max_position)
+            total = weights.sum()
+            if total > 1e-9:
+                weights /= total
+
         return pd.Series(weights, index=tickers, name="target_weight")
 
     def _feasible_fallback_weights(
