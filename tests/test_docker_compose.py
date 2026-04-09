@@ -24,4 +24,10 @@ def test_dagster_service_has_mlflow_tracking_uri():
 def test_mlflow_service_allows_internal_service_host_header():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert '--allowed-hosts localhost,localhost:5000,localhost:15000,127.0.0.1,127.0.0.1:5000,127.0.0.1:15000,mlflow,mlflow:5000' in compose
+    assert '--allowed-hosts localhost,localhost:5000,localhost:${MLFLOW_PORT:-5000},127.0.0.1,127.0.0.1:5000,127.0.0.1:${MLFLOW_PORT:-5000},mlflow,mlflow:5000' in compose
+
+
+def test_mlflow_service_runs_single_worker():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "python -m mlflow server --workers 1" in compose

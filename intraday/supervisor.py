@@ -144,12 +144,10 @@ class IntradaySupervisor:
         decisions_dir = self.storage_dir / "decisions"
         if not decisions_dir.exists():
             return []
-        payloads: list[dict[str, Any]] = []
-        for payload in sorted(decisions_dir.rglob("*.json"), reverse=True)[:limit]:
-            try:
-                payloads.append(json.loads(payload.read_text()))
-            except (OSError, json.JSONDecodeError):
-                continue
+        payloads = self._load_recent_decision_payloads(decisions_dir, limit=limit)
+        payloads.sort(key=lambda item: str(item.get("as_of", "")), reverse=True)
+        if len(payloads) > limit:
+            return payloads[:limit]
         return payloads
 
     def get_latest_decision(self) -> dict[str, Any] | None:
@@ -286,6 +284,40 @@ class IntradaySupervisor:
         payload["market_snapshot"] = market_snapshot.to_dict()
         path = decision_dir / f"{decision.decision_id}.json"
         path.write_text(json.dumps(payload, indent=2))
+
+    def _load_recent_decision_payloads(
+        self,
+        decisions_dir: Path,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        try:
+            dated_dirs = sorted(
+                (path for path in decisions_dir.iterdir() if path.is_dir()),
+                key=lambda path: path.name,
+                reverse=True,
+            )
+        except OSError:
+            return payloads
+
+        for dated_dir in dated_dirs:
+            try:
+                files = sorted(
+                    (path for path in dated_dir.iterdir() if path.is_file() and path.suffix == ".json"),
+                    key=lambda path: path.name,
+                    reverse=True,
+                )
+            except OSError:
+                continue
+            for file_path in files:
+                try:
+                    payloads.append(json.loads(file_path.read_text()))
+                except (OSError, json.JSONDecodeError):
+                    continue
+            if len(payloads) >= limit:
+                return payloads
+        return payloads
 
     def _load_decision_by_slot(self, slot_key: str) -> dict[str, Any] | None:
         for payload in self.list_decisions(limit=500):
