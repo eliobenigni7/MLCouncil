@@ -1,0 +1,155 @@
+{
+  "decision_id": "407e3192c4c059f0",
+  "as_of": "2026-04-09T09:45:00-04:00",
+  "market_session": "regular",
+  "schedule_minutes": 15,
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "TSLA"
+  ],
+  "market_snapshot_version": "alpaca-fallback-202604090945",
+  "feature_snapshot": {
+    "as_of": "2026-04-09T09:45:00-04:00",
+    "features": {
+      "AAPL": {
+        "close": 258.22,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      },
+      "MSFT": {
+        "close": 369.73,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      },
+      "NVDA": {
+        "close": 181.81,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      },
+      "AMZN": {
+        "close": 225.69,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      },
+      "META": {
+        "close": 629.14,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      },
+      "GOOGL": {
+        "close": 313.2,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      },
+      "TSLA": {
+        "close": 342.52,
+        "return_15m": 0.0,
+        "momentum_15m": 0.0,
+        "sentiment_score": 0.0,
+        "headline_count": 0.0
+      }
+    },
+    "source": "alpaca-fallback",
+    "version": "intraday-features-202604090945"
+  },
+  "agent_trace": {
+    "agent_name": "fallback-intraday-agent",
+    "summary": "Fallback agent synthesized intraday momentum and sentiment signals.",
+    "confidence": 0.45,
+    "sentiment": {
+      "AAPL": 0.0,
+      "MSFT": 0.0,
+      "NVDA": 0.0,
+      "AMZN": 0.0,
+      "META": 0.0,
+      "GOOGL": 0.0,
+      "TSLA": 0.0
+    },
+    "rationale": [
+      "AAPL: momentum_15m=0.0000, sentiment=0.0000",
+      "MSFT: momentum_15m=0.0000, sentiment=0.0000",
+      "NVDA: momentum_15m=0.0000, sentiment=0.0000",
+      "AMZN: momentum_15m=0.0000, sentiment=0.0000",
+      "META: momentum_15m=0.0000, sentiment=0.0000",
+      "GOOGL: momentum_15m=0.0000, sentiment=0.0000",
+      "TSLA: momentum_15m=0.0000, sentiment=0.0000"
+    ],
+    "prompt_version": "fallback-v1",
+    "model_version": "rule-based-v1",
+    "ticker_scores": {
+      "AAPL": 0.0,
+      "MSFT": 0.0,
+      "NVDA": 0.0,
+      "AMZN": 0.0,
+      "META": 0.0,
+      "GOOGL": 0.0,
+      "TSLA": 0.0
+    },
+    "provider": "fallback",
+    "request_id": null
+  },
+  "execution_intents": [],
+  "data_snapshot_version": "alpaca-fallback-202604090945",
+  "strategy_version": "intraday-v1",
+  "market_snapshot": {
+    "as_of": "2026-04-09T09:45:00-04:00",
+    "universe": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "AMZN",
+      "META",
+      "GOOGL",
+      "TSLA"
+    ],
+    "bars": {
+      "AAPL": {
+        "close": 258.22,
+        "return_15m": 0.0
+      },
+      "MSFT": {
+        "close": 369.73,
+        "return_15m": 0.0
+      },
+      "NVDA": {
+        "close": 181.81,
+        "return_15m": 0.0
+      },
+      "AMZN": {
+        "close": 225.69,
+        "return_15m": 0.0
+      },
+      "META": {
+        "close": 629.14,
+        "return_15m": 0.0
+      },
+      "GOOGL": {
+        "close": 313.2,
+        "return_15m": 0.0
+      },
+      "TSLA": {
+        "close": 342.52,
+        "return_15m": 0.0
+      }
+    },
+    "source": "alpaca-fallback",
+    "session": "regular"
+  }
+}

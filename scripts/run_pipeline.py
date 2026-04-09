@@ -384,7 +384,6 @@ def step_portfolio(
 
     # ── Save orders to parquet ───────────────────────────────────────────────
     if not orders.empty:
-        import pandas as pd
         orders_df = pd.DataFrame({
             "ticker": orders.index,
             "direction": orders["direction"],
