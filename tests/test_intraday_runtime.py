@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from intraday.contracts import AgentDecisionTrace, ExecutionIntent, FeatureSnapshot
 
 
@@ -196,3 +198,127 @@ def test_intraday_supervisor_uses_agent_ticker_scores_to_rank_execution_intents(
     )
 
     assert decision.execution_intents[0].ticker == "MSFT"
+
+
+def test_intraday_supervisor_list_decisions_orders_by_as_of(tmp_path: Path):
+    from intraday.market_data import MarketSnapshot
+    from intraday.supervisor import IntradaySupervisor
+
+    class FakeAdapter:
+        def get_market_snapshot(self, *, as_of: datetime, universe: list[str]):
+            return MarketSnapshot(
+                as_of=as_of,
+                universe=universe,
+                bars={"AAPL": {"close": 201.0, "return_15m": 0.02}},
+                source="fake-feed",
+                session="regular",
+            )
+
+        def get_news_snapshot(self, *, as_of: datetime, universe: list[str]):
+            return []
+
+    class FakeAgent:
+        def synthesize(self, *, market_snapshot, feature_snapshot, news_items):
+            del market_snapshot, feature_snapshot, news_items
+            return AgentDecisionTrace(
+                agent_name="rule-based-agent",
+                summary="Buy AAPL.",
+                confidence=0.82,
+                sentiment={"AAPL": 0.5},
+                rationale=["AAPL stronger than baseline."],
+                prompt_version="fallback-v1",
+                model_version="rule-based-v1",
+            )
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=FakeAdapter(),
+        agent_orchestrator=FakeAgent(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL"],
+    )
+
+    later = supervisor.run_cycle(
+        now=datetime(2026, 4, 9, 11, 45, tzinfo=ZoneInfo("America/New_York"))
+    )
+    earlier = supervisor.run_cycle(
+        now=datetime(2026, 4, 9, 11, 30, tzinfo=ZoneInfo("America/New_York"))
+    )
+
+    decisions = supervisor.list_decisions(limit=2)
+
+    assert decisions[0]["as_of"] == later.as_of
+    assert decisions[1]["as_of"] == earlier.as_of
+
+
+def test_intraday_supervisor_list_decisions_skips_unreadable_day_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from intraday.supervisor import IntradaySupervisor
+
+    decisions_dir = tmp_path / "intraday" / "decisions"
+    unreadable_day = decisions_dir / "2026-04-09"
+    readable_day = decisions_dir / "2026-04-08"
+    unreadable_day.mkdir(parents=True)
+    readable_day.mkdir(parents=True)
+    (readable_day / "decision.json").write_text(
+        '{"decision_id": "stable", "as_of": "2026-04-08T15:30:00-04:00"}'
+    )
+
+    original_iterdir = Path.iterdir
+
+    def patched_iterdir(self: Path):
+        if self == unreadable_day:
+            raise OSError(12, "Cannot allocate memory", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", patched_iterdir)
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=object(),
+        storage_dir=tmp_path / "intraday",
+    )
+
+    assert supervisor.list_decisions(limit=10) == [
+        {"decision_id": "stable", "as_of": "2026-04-08T15:30:00-04:00"}
+    ]
+
+
+def test_intraday_supervisor_list_decisions_skips_unreadable_directory(tmp_path: Path, monkeypatch):
+    from intraday.supervisor import IntradaySupervisor
+
+    class FakeAdapter:
+        def get_market_snapshot(self, *, as_of: datetime, universe: list[str]):
+            raise AssertionError("market snapshot should not be requested")
+
+        def get_news_snapshot(self, *, as_of: datetime, universe: list[str]):
+            raise AssertionError("news snapshot should not be requested")
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=FakeAdapter(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL"],
+    )
+
+    decisions_dir = supervisor.storage_dir / "decisions"
+    healthy_dir = decisions_dir / "2026-04-09"
+    healthy_dir.mkdir(parents=True, exist_ok=True)
+    (healthy_dir / "good.json").write_text(
+        '{"decision_id": "good", "as_of": "2026-04-09T10:30:00-04:00"}'
+    )
+
+    broken_dir = decisions_dir / "2026-04-10"
+    broken_dir.mkdir(parents=True, exist_ok=True)
+
+    original_iterdir = Path.iterdir
+
+    def flaky_iterdir(self: Path):
+        if self == decisions_dir:
+            raise OSError("Cannot allocate memory")
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", flaky_iterdir)
+
+    payloads = supervisor.list_decisions(limit=5)
+
+    assert payloads == []
