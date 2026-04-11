@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt requirements_api.txt ./
 RUN pip install --no-cache-dir --timeout 120 -r requirements.txt
 
+ENV PYTHONPATH=/app
+
 COPY . .
 
 RUN mkdir -p data/raw data/arctic data/orders data/results data/monitoring data/alerts data/cache data/paper_trades
