@@ -127,3 +127,33 @@ def test_risk_engine_accepts_constructor_sector_map_and_warns_on_unknown_ticker(
     assert report.sector_exposure["Custom Tech"] == 550.0
     assert report.sector_exposure["Other"] == 100.0
     assert "Unknown sector mapping for ticker UNMAPPED" in caplog.text
+
+
+def test_create_positions_from_broker_uses_sector_map_json(monkeypatch, tmp_path):
+    from council import risk_engine as risk_mod
+
+    sector_map_path = tmp_path / "sector_map.json"
+    sector_map_path.write_text('{"AAPL": "Custom Tech"}\n')
+    monkeypatch.setattr(risk_mod, "_DEFAULT_SECTOR_MAP_PATH", sector_map_path)
+
+    positions = risk_mod.create_positions_from_broker(
+        pd.DataFrame(
+            [
+                {
+                    "symbol": "AAPL",
+                    "qty": 3,
+                    "avg_price": 100.0,
+                    "current_price": 105.0,
+                },
+                {
+                    "symbol": "UNMAPPED",
+                    "qty": 1,
+                    "avg_price": 50.0,
+                    "current_price": 55.0,
+                },
+            ]
+        )
+    )
+
+    assert positions[0].sector == "Custom Tech"
+    assert positions[1].sector == "Other"
