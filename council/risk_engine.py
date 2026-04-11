@@ -179,9 +179,11 @@ class RiskEngine:
         self,
         limits: Optional[RiskLimits] = None,
         sector_map: Optional[dict[str, str]] = None,
+        seed: int | None = None,
     ):
         self.limits = limits or RiskLimits()
         self.sector_map = sector_map or load_sector_map()
+        self.seed = seed
         self._returns_history: Optional[pd.DataFrame] = None
         self._equity_curve: Optional[pd.Series] = None
         self._peak_equity: float = 0
@@ -256,6 +258,7 @@ class RiskEngine:
         n_simulations: int = 10000,
         confidence: float = 0.99,
         horizon: int = 1,
+        seed: int | None = None,
     ) -> tuple[float, float]:
         tickers = list(weights.keys())
         available_tickers = [t for t in tickers if t in returns.columns]
@@ -270,7 +273,8 @@ class RiskEngine:
         mu = mean_returns.values @ w
         sigma = np.sqrt(w @ cov_matrix.values @ w)
 
-        simulated_returns = np.random.normal(mu * horizon, sigma * np.sqrt(horizon), n_simulations)
+        rng = np.random.default_rng(self.seed if seed is None else seed)
+        simulated_returns = rng.normal(mu * horizon, sigma * np.sqrt(horizon), n_simulations)
         simulated_pnl = simulated_returns * portfolio_value
 
         var_pct = np.percentile(simulated_pnl, (1 - confidence) * 100)
@@ -285,6 +289,7 @@ class RiskEngine:
         portfolio_value: float,
         method: str = "historical",
         confidence: float = 0.99,
+        seed: int | None = None,
     ) -> VaRReport:
         weights = {p.symbol: p.market_value / portfolio_value for p in positions}
 
@@ -299,9 +304,33 @@ class RiskEngine:
             var_5d, cvar_5d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 5)
             var_10d, cvar_10d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 10)
         else:
-            var_1d, cvar_1d = self.compute_var_monte_carlo(returns, weights, portfolio_value, 10000, confidence, 1)
-            var_5d, cvar_5d = self.compute_var_monte_carlo(returns, weights, portfolio_value, 10000, confidence, 5)
-            var_10d, cvar_10d = self.compute_var_monte_carlo(returns, weights, portfolio_value, 10000, confidence, 10)
+            var_1d, cvar_1d = self.compute_var_monte_carlo(
+                returns,
+                weights,
+                portfolio_value,
+                10000,
+                confidence,
+                1,
+                seed=seed,
+            )
+            var_5d, cvar_5d = self.compute_var_monte_carlo(
+                returns,
+                weights,
+                portfolio_value,
+                10000,
+                confidence,
+                5,
+                seed=seed,
+            )
+            var_10d, cvar_10d = self.compute_var_monte_carlo(
+                returns,
+                weights,
+                portfolio_value,
+                10000,
+                confidence,
+                10,
+                seed=seed,
+            )
 
         return VaRReport(
             var_1d=var_1d,
@@ -454,10 +483,17 @@ class RiskEngine:
         portfolio_value: float,
         equity_curve: Optional[pd.Series] = None,
         var_method: str = "historical",
+        seed: int | None = None,
     ) -> RiskReport:
         portfolio_value = portfolio_value or sum(p.market_value for p in positions)
 
-        var_report = self.compute_var(returns, positions, portfolio_value, method=var_method)
+        var_report = self.compute_var(
+            returns,
+            positions,
+            portfolio_value,
+            method=var_method,
+            seed=seed,
+        )
         exposure_report = self.compute_exposure(positions, portfolio_value)
 
         today_return = 0.0

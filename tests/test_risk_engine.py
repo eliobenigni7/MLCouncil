@@ -92,6 +92,73 @@ def test_risk_engine_save_and_load_roundtrip(tmp_path):
     assert loaded.portfolio_value == 1100.0
 
 
+def test_monte_carlo_var_is_reproducible_with_seed():
+    from council.risk_engine import Position, RiskEngine
+
+    returns = pd.DataFrame(
+        {
+            "AAPL": [0.01, -0.02, 0.015, -0.01] * 10,
+            "MSFT": [0.008, -0.01, 0.012, -0.009] * 10,
+        }
+    )
+    positions = [
+        Position(symbol="AAPL", quantity=10, avg_price=100.0, current_price=110.0),
+        Position(symbol="MSFT", quantity=8, avg_price=200.0, current_price=210.0),
+    ]
+
+    engine = RiskEngine(seed=17)
+
+    report_a = engine.compute_var(
+        returns=returns,
+        positions=positions,
+        portfolio_value=2780.0,
+        method="monte_carlo",
+    )
+    report_b = engine.compute_var(
+        returns=returns,
+        positions=positions,
+        portfolio_value=2780.0,
+        method="monte_carlo",
+    )
+
+    assert report_a.var_1d == report_b.var_1d
+    assert report_a.cvar_1d == report_b.cvar_1d
+
+
+def test_monte_carlo_var_allows_seed_override():
+    from council.risk_engine import Position, RiskEngine
+
+    returns = pd.DataFrame(
+        {
+            "AAPL": [0.01, -0.02, 0.015, -0.01] * 10,
+            "MSFT": [0.008, -0.01, 0.012, -0.009] * 10,
+        }
+    )
+    positions = [
+        Position(symbol="AAPL", quantity=10, avg_price=100.0, current_price=110.0),
+        Position(symbol="MSFT", quantity=8, avg_price=200.0, current_price=210.0),
+    ]
+
+    engine = RiskEngine(seed=17)
+
+    report_a = engine.compute_var(
+        returns=returns,
+        positions=positions,
+        portfolio_value=2780.0,
+        method="monte_carlo",
+        seed=17,
+    )
+    report_b = engine.compute_var(
+        returns=returns,
+        positions=positions,
+        portfolio_value=2780.0,
+        method="monte_carlo",
+        seed=23,
+    )
+
+    assert (report_a.var_1d, report_a.cvar_1d) != (report_b.var_1d, report_b.cvar_1d)
+
+
 def test_risk_engine_loads_sector_map_from_json(monkeypatch, tmp_path):
     from council import risk_engine as risk_mod
     from council.risk_engine import Position, RiskEngine
