@@ -428,8 +428,11 @@ class CouncilAggregator:
         base_weights: dict[str, float],
         sharpe_rolling: dict[str, float],
     ) -> dict[str, float]:
+        # Use a soft floor (0.1) instead of hard-zero for negative-Sharpe models.
+        # This preserves a minimum contribution from temporarily underperforming
+        # models, allowing them to recover without restarting from 0.
         adjusted = {
-            m: w * max(0.0, sharpe_rolling.get(m, 0.0))
+            m: w * max(0.1, sharpe_rolling.get(m, 0.0))
             for m, w in base_weights.items()
         }
         total = sum(adjusted.values())
@@ -439,13 +442,53 @@ class CouncilAggregator:
             return {m: v / total_base for m, v in base_weights.items()}
 
         normalized = {m: v / total for m, v in adjusted.items()}
-        clipped = {
-            m: max(self._min_weight, min(self._max_weight, v))
-            for m, v in normalized.items()
-        }
 
-        total_clipped = sum(clipped.values()) or 1.0
-        return {m: v / total_clipped for m, v in clipped.items()}
+        # Project onto the [min_weight, max_weight] constrained simplex.
+        # Simple clip-renorm diverges for extreme Sharpe ratios because renorm
+        # can push a just-clipped weight back above max_weight.
+        # Correct approach: at each step, separate "fixed" models (at bounds)
+        # from "free" models and redistribute the remaining budget proportionally
+        # among the free models.  Converges in O(n) iterations for n models.
+        w = dict(normalized)
+        for _ in range(len(w) + 2):
+            total = sum(w.values()) or 1.0
+            w = {m: v / total for m, v in w.items()}
+
+            if all(
+                self._min_weight - 1e-8 <= v <= self._max_weight + 1e-8
+                for v in w.values()
+            ):
+                break
+
+            fixed: dict[str, float] = {}
+            free: dict[str, float] = {}
+            for m, v in w.items():
+                if v <= self._min_weight:
+                    fixed[m] = self._min_weight
+                elif v >= self._max_weight:
+                    fixed[m] = self._max_weight
+                else:
+                    free[m] = v
+
+            remaining = 1.0 - sum(fixed.values())
+            if free and remaining > 1e-9:
+                free_total = sum(free.values())
+                if free_total > 1e-9:
+                    w = {**fixed, **{m: remaining * v / free_total for m, v in free.items()}}
+                else:
+                    w = {**fixed, **{m: remaining / len(free) for m in free}}
+            else:
+                # All models are at bounds; absorb remainder into min-bound ones.
+                w = fixed
+                if remaining > 1e-9:
+                    min_models = [m for m, v in fixed.items() if v <= self._min_weight + 1e-9]
+                    if min_models:
+                        add = min(remaining / len(min_models), self._max_weight - self._min_weight)
+                        for m in min_models:
+                            w[m] = w[m] + add
+
+        total_final = sum(w.values()) or 1.0
+        return {m: v / total_final for m, v in w.items()}
 
     def _has_sufficient_history(self, models: list[str]) -> bool:
         return all(
@@ -454,16 +497,23 @@ class CouncilAggregator:
         )
 
     def _compute_rolling_sharpe(self, models: list[str]) -> dict[str, float]:
+        """Compute IC-Sharpe using exponentially weighted IC observations.
+
+        EWM with halflife=20 days gives ~4× more weight to the most recent
+        month vs. observations from 60 days ago, enabling faster adaptation
+        to regime changes compared to a simple rolling mean.
+        """
         result: dict[str, float] = {}
         for m in models:
             entries = sorted(self._ic_by_date.get(m, {}).items())
             recent = [v for _, v in entries[-self._sharpe_window:]]
             if len(recent) >= 2:
-                result[m] = (
-                    float(np.mean(recent))
-                    / (float(np.std(recent)) + 1e-9)
-                    * np.sqrt(252)
-                )
+                ic_series = pd.Series(recent, dtype=float)
+                halflife = min(20, len(recent) // 2)
+                ewm = ic_series.ewm(halflife=halflife, adjust=True)
+                ewm_mean = float(ewm.mean().iloc[-1])
+                ewm_std = float(ewm.std().iloc[-1])
+                result[m] = ewm_mean / (ewm_std + 1e-9) * np.sqrt(252)
             else:
                 result[m] = 0.0
         return result

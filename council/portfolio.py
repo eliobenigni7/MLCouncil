@@ -82,9 +82,14 @@ class PortfolioConstructor:
         # market_returns is provided to optimize(); no-op otherwise.
         self.beta_neutral: bool = True
         self.max_beta_exposure: float = 0.30
-        self.commission_bps: float = 1.0
+        # Alpaca charges 0 commission on equities; only slippage applies.
+        self.commission_bps: float = 0.0
         self.slippage_bps: float = 3.0
         self.tc_lambda: float = 1.0
+        # Minimum absolute z-score to enter a position (filters noise).
+        self.min_signal_strength: float = float(os.getenv("MLCOUNCIL_MIN_SIGNAL_STRENGTH", "0.20"))
+        # Drawdown circuit breaker: scale exposure when portfolio loses too much.
+        self.max_drawdown_threshold: float = float(os.getenv("MLCOUNCIL_MAX_DRAWDOWN_PCT", "0.07"))
         # Crypto settings
         self.crypto_enabled: bool = os.getenv("MLCOUNCIL_CRYPTO_ENABLED", "false").lower() == "true"
         self.max_crypto_position: float = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20"))
@@ -93,6 +98,91 @@ class PortfolioConstructor:
             commission_bps=self.commission_bps,
             slippage_bps=self.slippage_bps,
         )
+
+    def _get_portfolio_tier(self, portfolio_value: float) -> dict:
+        """Return size-adaptive constraints based on portfolio value.
+
+        Small portfolios concentrate into the top signals to reduce execution
+        friction and improve signal-to-noise ratio.  Large portfolios use the
+        full universe with standard constraints.
+
+        Returns dict with keys:
+            n_positions   – number of tickers to include (None = full universe)
+            max_position  – maximum weight per ticker
+            min_position  – minimum weight floor (post-processing)
+            max_turnover  – one-way daily turnover cap
+            min_trade_usd – minimum USD value per order
+        """
+        if portfolio_value < 5_000:
+            return {
+                "n_positions": 3,
+                "max_position": 0.45,
+                "min_position": 0.05,
+                "max_turnover": 0.50,
+                "min_trade_usd": 50.0,
+            }
+        elif portfolio_value < 25_000:
+            return {
+                "n_positions": 5,
+                "max_position": 0.25,
+                "min_position": 0.03,
+                "max_turnover": 0.40,
+                "min_trade_usd": 25.0,
+            }
+        elif portfolio_value < 100_000:
+            return {
+                "n_positions": 10,
+                "max_position": 0.15,
+                "min_position": 0.02,
+                "max_turnover": 0.35,
+                "min_trade_usd": 10.0,
+            }
+        else:
+            return {
+                "n_positions": None,
+                "max_position": self.max_position,
+                "min_position": self.min_position,
+                "max_turnover": self.max_turnover,
+                "min_trade_usd": max(1.0, portfolio_value * 0.0005),
+            }
+
+    def apply_drawdown_scale(
+        self,
+        target_weights: pd.Series,
+        portfolio_return_5d: float,
+    ) -> pd.Series:
+        """Scale down positions when recent drawdown exceeds threshold.
+
+        If the 5-day portfolio return is worse than -max_drawdown_threshold,
+        exposure is scaled proportionally so that a portfolio at twice the
+        threshold receives half the normal position sizes.
+
+        Parameters
+        ----------
+        target_weights:
+            Optimised target weights before circuit-breaker adjustment.
+        portfolio_return_5d:
+            Realised 5-day portfolio return (negative = loss).
+
+        Returns
+        -------
+        Scaled weights, re-normalised to sum to 1.
+        """
+        if portfolio_return_5d >= -self.max_drawdown_threshold:
+            return target_weights
+
+        # Linear scale: at threshold → scale=1; at 2× threshold → scale=0.5.
+        excess = abs(portfolio_return_5d) - self.max_drawdown_threshold
+        scale = max(0.25, 1.0 - excess / self.max_drawdown_threshold)
+        logger.warning(
+            f"Drawdown circuit breaker: 5d return={portfolio_return_5d:.2%}, "
+            f"scaling exposure to {scale:.0%}"
+        )
+        scaled = target_weights * scale
+        total = scaled.sum()
+        if total > 1e-9:
+            return (scaled / total).rename("target_weight")
+        return target_weights
 
     def compute_transaction_cost(
         self,
@@ -118,6 +208,8 @@ class PortfolioConstructor:
         returns_covariance: pd.DataFrame,
         market_returns: pd.Series = None,
         prices: pd.Series = None,
+        portfolio_value: float = 100_000,
+        days_since_last_rebalance: int = 999,
     ) -> pd.Series:
         """Solve the constrained mean-variance optimisation.
 
@@ -135,11 +227,45 @@ class PortfolioConstructor:
             Series of market returns for beta calculation (optional).
         prices:
             Current prices for TC estimation (optional).
+        portfolio_value:
+            Total portfolio value in USD.  Used to select the sizing tier.
+        days_since_last_rebalance:
+            Trading days elapsed since the last rebalance.  Small portfolios
+            require a minimum cool-down to avoid excessive turnover costs.
 
         Returns
         -------
         pd.Series(index=ticker, values=target_weight) summing to 1.0.
         """
+        tier = self._get_portfolio_tier(portfolio_value)
+
+        # Small-portfolio rebalance cool-down: skip if we rebalanced recently
+        # and the expected turnover wouldn't justify the slippage cost.
+        min_rebalance_days = 1 if tier["n_positions"] is None else (
+            5 if portfolio_value < 25_000 else 3
+        )
+        if days_since_last_rebalance < min_rebalance_days and current_weights.abs().sum() > 1e-9:
+            logger.debug(
+                f"Skipping rebalance: only {days_since_last_rebalance}d since last "
+                f"(min={min_rebalance_days}d for portfolio_value=${portfolio_value:,.0f})"
+            )
+            return current_weights.reindex(alpha_signals.index).fillna(0.0).rename("target_weight")
+
+        # Gate: drop signals below minimum z-score strength (noise filter).
+        alpha_signals = alpha_signals.copy()
+        alpha_signals[alpha_signals.abs() < self.min_signal_strength] = 0.0
+
+        # Tier: pre-filter to top-N tickers by |z-score| for small portfolios.
+        if tier["n_positions"] is not None:
+            top_n = min(tier["n_positions"], (alpha_signals != 0.0).sum())
+            top_n = max(top_n, 1)
+            top_tickers = alpha_signals.abs().nlargest(top_n).index
+            alpha_signals = alpha_signals.reindex(top_tickers).fillna(0.0)
+
+        effective_max_position = tier["max_position"]
+        effective_min_position = tier["min_position"]
+        effective_max_turnover = tier["max_turnover"]
+
         tickers = alpha_signals.index.tolist()
         n = len(tickers)
 
@@ -168,7 +294,7 @@ class PortfolioConstructor:
         effective_sector_cap = compute_effective_sector_cap(
             tickers,
             base_sector_cap=self.sector_cap,
-            max_position=self.max_position,
+            max_position=effective_max_position,
         )
 
         w = cp.Variable(n, name="weights")
@@ -185,11 +311,11 @@ class PortfolioConstructor:
 
         constraints: list = [
             cp.sum(w) == 1.0,
-            w <= self.max_position,
+            w <= effective_max_position,
             cp.quad_form(w, cov) <= max_vol_daily ** 2,
         ]
         if np.abs(w_curr).sum() > 1e-9:
-            constraints.append(cp.norm1(w - w_curr) <= self.max_turnover)
+            constraints.append(cp.norm1(w - w_curr) <= effective_max_turnover)
         if self.long_only:
             constraints.append(w >= 0.0)
 
@@ -236,7 +362,7 @@ class PortfolioConstructor:
 
         weights = np.clip(w.value, 0.0, None)
 
-        weights[weights < self.min_position] = 0.0
+        weights[weights < effective_min_position] = 0.0
         total = weights.sum()
         if total < 1e-9:
             weights = np.ones(n) / n
@@ -244,11 +370,11 @@ class PortfolioConstructor:
             weights /= total
 
         # Re-normalising after zeroing small positions can push surviving
-        # weights above max_position, violating the CVXPY constraint.
+        # weights above effective_max_position, violating the CVXPY constraint.
         # Example: 10 positions at 10% each; zero one → re-norm gives 11.1%.
         # Fix: clip again and re-normalise a second time.
-        if weights.max() > self.max_position + 1e-9:
-            weights = np.clip(weights, 0.0, self.max_position)
+        if weights.max() > effective_max_position + 1e-9:
+            weights = np.clip(weights, 0.0, effective_max_position)
             total = weights.sum()
             if total > 1e-9:
                 weights /= total
@@ -399,11 +525,14 @@ class PortfolioConstructor:
         current = current_weights.reindex(all_tickers).fillna(0.0)
         delta = target - current
 
+        tier = self._get_portfolio_tier(portfolio_value)
+        min_trade_usd = tier["min_trade_usd"]
+
         rows = []
         for ticker in all_tickers:
             dw = float(delta[ticker])
             usd = abs(dw) * portfolio_value
-            if usd < 1.0:
+            if usd < min_trade_usd:
                 continue
             rows.append(
                 {
