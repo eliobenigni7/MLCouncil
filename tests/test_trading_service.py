@@ -414,6 +414,83 @@ class TestTradingService:
         assert payload["trade_status"] == "success"
         assert payload["orders_submitted"] == 2
 
+    def test_execute_orders_is_idempotent_when_execution_record_exists(self, monkeypatch):
+        from api.services import trading_service as ts
+
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        svc = _make_service()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ops_dir = Path(tmpdir) / "operations"
+            ops_dir.mkdir(parents=True, exist_ok=True)
+            execution_path = ops_dir / "2024-01-15_execution.json"
+            execution_path.write_text(
+                json.dumps(
+                    {
+                        "date": "2024-01-15",
+                        "pretrade": {"blocked": False},
+                        "reconciliation": {"symbols_to_open": ["AAPL"]},
+                        "lineage": {"pipeline_run_id": "run-005"},
+                    }
+                )
+            )
+
+            original_ops_dir = ts.OPERATIONS_DIR
+            ts.OPERATIONS_DIR = ops_dir
+            try:
+                result = svc.execute_orders("2024-01-15")
+            finally:
+                ts.OPERATIONS_DIR = original_ops_dir
+
+        assert result["error"] == "Orders for 2024-01-15 have already been executed"
+        svc._node.submit_order.assert_not_called()
+
+    def test_execute_orders_writes_execution_record_after_success(self, monkeypatch):
+        from api.services import trading_service as ts
+        from council import risk_engine as risk_mod
+
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        svc = _make_service()
+        svc.get_pending_orders = MagicMock(
+            return_value=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 1000.0,
+                    "target_weight": 0.01,
+                    "pipeline_run_id": "run-006",
+                    "data_version": "data-v6",
+                    "feature_version": "feat-v6",
+                    "model_version": "model-v6",
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_trade_dir = ts.TRADE_LOG_DIR
+            original_ops_dir = ts.OPERATIONS_DIR
+            original_risk_dir = risk_mod.RISK_DIR
+            ts.TRADE_LOG_DIR = tmp_path / "paper_trades"
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            risk_mod.RISK_DIR = tmp_path / "risk"
+            try:
+                result = svc.execute_orders("2024-01-15")
+            finally:
+                ts.TRADE_LOG_DIR = original_trade_dir
+                ts.OPERATIONS_DIR = original_ops_dir
+                risk_mod.RISK_DIR = original_risk_dir
+
+            execution_path = tmp_path / "operations" / "2024-01-15_execution.json"
+            assert execution_path.exists()
+            payload = json.loads(execution_path.read_text())
+
+        assert result["orders_submitted"] == 1
+        assert payload["trade_status"] == "success"
+        assert payload["lineage"]["pipeline_run_id"] == "run-006"
+
     def test_execute_intraday_decision_converts_execution_intents_and_keeps_lineage(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
 

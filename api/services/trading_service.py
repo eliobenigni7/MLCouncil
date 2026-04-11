@@ -165,6 +165,17 @@ class TradingService:
 
     def execute_orders(self, date: str) -> dict:
         """Execute pending orders for date to Alpaca Paper."""
+        existing_execution = self._load_execution_record(date)
+        if existing_execution is not None:
+            return {
+                "error": f"Orders for {date} have already been executed",
+                "date": date,
+                "pretrade": existing_execution.get("pretrade", {}),
+                "reconciliation": existing_execution.get("reconciliation", {}),
+                "lineage": existing_execution.get("lineage", {}),
+                "operations_path": str(self._execution_record_path(date)),
+            }
+
         context = self._prepare_execution_context(date)
         snapshot = self._public_context(context)
 
@@ -272,6 +283,16 @@ class TradingService:
                 errors=[],
             ),
         )
+        self._write_execution_record(date, self._operation_payload(
+            snapshot=snapshot,
+            trade_status="degraded" if rejected else "success",
+            orders_submitted=len([r for r in order_results if r.get("status") != "rejected"])
+            + len(liquidate_results),
+            orders_rejected=len(rejected),
+            liquidations=len(liquidate_results),
+            warnings=snapshot["pretrade"].get("warnings", []),
+            errors=[],
+        ))
 
         return {
             "date": date,
@@ -864,6 +885,25 @@ class TradingService:
     def _write_operations(self, date: str, data: dict[str, Any]) -> Path:
         OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = OPERATIONS_DIR / f"{date}.json"
+        path.write_text(json.dumps(data, indent=2, default=str))
+        return path
+
+    def _execution_record_path(self, date: str) -> Path:
+        return OPERATIONS_DIR / f"{date}_execution.json"
+
+    def _load_execution_record(self, date: str) -> dict[str, Any] | None:
+        path = self._execution_record_path(date)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:  # noqa: BLE001
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_execution_record(self, date: str, data: dict[str, Any]) -> Path:
+        OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._execution_record_path(date)
         path.write_text(json.dumps(data, indent=2, default=str))
         return path
 
