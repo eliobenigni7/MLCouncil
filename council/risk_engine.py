@@ -119,6 +119,7 @@ class RiskLimits:
     max_cvar_pct: float = 0.035
     max_sector_exposure: float = 0.25
     max_single_position: float = 0.10
+    max_crypto_position: float = 0.20
     max_net_exposure: float = 1.0
     max_gross_exposure: float = 2.0
     max_beta_exposure: float = 0.5
@@ -182,6 +183,12 @@ class RiskEngine:
         seed: int | None = None,
     ):
         self.limits = limits or RiskLimits()
+        # Override with runtime env values if set
+        import os
+        if os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE"):
+            self.limits.max_crypto_position = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE"))
+        if os.getenv("MLCOUNCIL_MAX_POSITION_SIZE"):
+            self.limits.max_single_position = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE"))
         self.sector_map = sector_map or load_sector_map()
         self.seed = seed
         self._returns_history: Optional[pd.DataFrame] = None
@@ -438,13 +445,15 @@ class RiskEngine:
                 ))
 
         for symbol, exposure in report.exposure.concentration.items():
-            if exposure > self.limits.max_single_position:
+            from execution.alpaca_adapter import AlpacaLiveNode
+            limit = self.limits.max_crypto_position if AlpacaLiveNode._is_crypto(symbol) else self.limits.max_single_position
+            if exposure > limit:
                 breaches.append(RiskBreach(
                     limit_name="Position Limit",
                     current_value=exposure,
-                    limit_value=self.limits.max_single_position,
+                    limit_value=limit,
                     severity="HIGH",
-                    message=f"Position {symbol} ({exposure:.2%}) exceeds limit ({self.limits.max_single_position:.2%})",
+                    message=f"Position {symbol} ({exposure:.2%}) exceeds limit ({limit:.2%})",
                 ))
 
         if abs(report.exposure.net_exposure) > self.limits.max_net_exposure:
