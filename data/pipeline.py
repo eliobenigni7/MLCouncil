@@ -921,7 +921,7 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
         if ticker_dir.exists():
             for pq in sorted(ticker_dir.glob("*.parquet")):
                 try:
-                    frames.append(pl.read_parquet(pq))
+                    frames.append(_normalize_df(pl.read_parquet(pq)))
                 except Exception:
                     pass
 
