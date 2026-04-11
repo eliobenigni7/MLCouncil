@@ -141,15 +141,17 @@ def _load_universe(include_crypto: bool = True) -> list[str]:
 
 
 def _normalize_df(df: pl.DataFrame) -> pl.DataFrame:
-    """Normalize datetime columns to UTC timezone for Polars 1.x strict concat."""
+    """Normalize datetime columns to UTC timezone for Polars 1.x strict concat.
+    Also cast Datetime to Date for compatibility with existing parquet files."""
     if df.is_empty():
         return df
-    tz_cols = [c for c in df.columns if df[c].dtype == pl.Datetime]
-    if not tz_cols:
-        return df
-    return df.with_columns(
-        pl.col(c).dt.replace_time_zone("UTC").dt.replace_time_zone(None) for c in tz_cols
-    )
+    # Cast Datetime -> Date (UTC midnight) for compatibility
+    for c in df.columns:
+        if df[c].dtype == pl.Datetime:
+            df = df.with_columns(
+                pl.col(c).dt.replace_time_zone("UTC").dt.convert_time_zone("UTC").cast(pl.Date)
+            )
+    return df
 
 
 def _load_all_ohlcv(extra: pl.DataFrame | None = None) -> pl.DataFrame:
