@@ -66,10 +66,16 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+    env_file:
+      - path: .env
+        required: true
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
       - DAGSTER_HOME=/app/data/dagster
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+      - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
