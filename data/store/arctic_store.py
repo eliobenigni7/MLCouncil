@@ -9,6 +9,11 @@ when supplied, so you can reconstruct what the store looked like at any
 past point in time.
 
 LMDB is used for local PoC work; no S3 configuration required.
+
+ARM64 Compatibility
+-------------------
+On platforms where ArcticDB wheels are unavailable (ARM64),
+automatically falls back to Parquet-based storage with same interface.
 """
 
 from __future__ import annotations
@@ -18,22 +23,25 @@ from typing import Optional
 
 import polars as pl
 
+# Try ArcticDB first, fall back to Parquet backend for ARM64 compatibility
+_arcticdb_available = False
 try:
     import arcticdb as adb
-except ImportError as exc:
-    raise ImportError("arcticdb is required: pip install arcticdb") from exc
+    _arcticdb_available = True
+except ImportError:
+    pass
 
 
 class FeatureStore:
-    """Versioned feature store backed by ArcticDB (LMDB).
+    """Versioned feature store backed by ArcticDB (LMDB) or Parquet fallback.
 
     Parameters
     ----------
     uri:
-        ArcticDB connection string.  Default: ``"lmdb://data/arctic/"``
-        (relative to the working directory).
+        ArcticDB connection string or Parquet directory.
+        Default: ``"lmdb://data/arctic/"`` (relative to working directory).
     library:
-        Name of the ArcticDB library to use.
+        Name of the ArcticDB library or Parquet subdirectory.
     """
 
     _TICKER_PREFIX = "features/"
@@ -43,8 +51,25 @@ class FeatureStore:
         uri: str = "lmdb://data/arctic/",
         library: str = "mlcouncil",
     ) -> None:
-        self._ac = adb.Arctic(uri)
-        self._lib = self._ac.get_library(library, create_if_missing=True)
+        if _arcticdb_available:
+            self._backend = "arcticdb"
+            self._ac = adb.Arctic(uri)
+            self._lib = self._ac.get_library(library, create_if_missing=True)
+        else:
+            # Parquet fallback for ARM64
+            self._backend = "parquet"
+            from pathlib import Path
+            if uri.startswith("lmdb://"):
+                uri = uri[7:]  # Strip lmdb:// prefix
+            self._base_path = Path(uri) / library
+            self._base_path.mkdir(parents=True, exist_ok=True)
+
+    def _symbol_path(self, ticker: str):
+        """Get parquet file path for ticker (parquet backend only)."""
+        from pathlib import Path
+        symbol = self._TICKER_PREFIX + ticker
+        safe_symbol = symbol.replace("/", "_")
+        return self._base_path / f"{safe_symbol}.parquet"
 
     # ------------------------------------------------------------------
     # Write
@@ -58,10 +83,6 @@ class FeatureStore:
     ) -> None:
         """Write or append features for a ticker.
 
-        Each call creates a new ArcticDB version (automatic versioning).
-        A ``transaction_time`` column is added if not already present,
-        stamped with UTC now.
-
         Parameters
         ----------
         ticker:
@@ -69,7 +90,7 @@ class FeatureStore:
         df:
             Polars DataFrame with at least ``valid_time`` column.
         metadata:
-            Optional dict stored alongside the version in ArcticDB.
+            Optional dict stored alongside the version (ArcticDB only).
         """
         if "transaction_time" not in df.columns:
             tx = datetime.now(timezone.utc)
@@ -77,16 +98,21 @@ class FeatureStore:
                 pl.lit(tx).cast(pl.Datetime("us", "UTC")).alias("transaction_time")
             )
 
-        symbol = self._TICKER_PREFIX + ticker
-        pd_df = df.to_pandas()
-
-        # ArcticDB requires a DatetimeIndex for timeseries data
-        if "valid_time" in pd_df.columns:
-            import pandas as pd
-            pd_df["valid_time"] = pd.to_datetime(pd_df["valid_time"])
-            pd_df = pd_df.set_index("valid_time")
-
-        self._lib.write(symbol, pd_df, metadata=metadata or {})
+        if self._backend == "arcticdb":
+            symbol = self._TICKER_PREFIX + ticker
+            pd_df = df.to_pandas()
+            if "valid_time" in pd_df.columns:
+                import pandas as pd
+                pd_df["valid_time"] = pd.to_datetime(pd_df["valid_time"])
+                pd_df = pd_df.set_index("valid_time")
+            self._lib.write(symbol, pd_df, metadata=metadata or {})
+        else:
+            # Parquet backend
+            path = self._symbol_path(ticker)
+            if path.exists():
+                existing = pl.read_parquet(path)
+                df = pl.concat([existing, df], how="diagonal_relaxed")
+            df.write_parquet(path)
 
     # ------------------------------------------------------------------
     # Read
@@ -108,38 +134,55 @@ class FeatureStore:
         start, end:
             Inclusive valid_time range filter.
         as_of_transaction_time:
-            Point-in-time filter.  Only rows with
+            Point-in-time filter. Only rows with
             ``transaction_time <= as_of_transaction_time`` are returned.
-            Pass ``None`` to return the latest snapshot.
 
         Returns
         -------
         pl.DataFrame
             Features with valid_time as a column (not index).
         """
-        import pandas as pd
+        if self._backend == "arcticdb":
+            import pandas as pd
+            symbol = self._TICKER_PREFIX + ticker
+            if not self._lib.has_symbol(symbol):
+                return pl.DataFrame()
 
-        symbol = self._TICKER_PREFIX + ticker
-        if not self._lib.has_symbol(symbol):
-            return pl.DataFrame()
+            date_range = None
+            if start is not None or end is not None:
+                ts_start = pd.Timestamp(start) if start is not None else None
+                ts_end = pd.Timestamp(end) if end is not None else None
+                date_range = (ts_start, ts_end)
 
-        date_range = None
-        if start is not None or end is not None:
-            ts_start = pd.Timestamp(start) if start is not None else None
-            ts_end = pd.Timestamp(end) if end is not None else None
-            date_range = (ts_start, ts_end)
+            vitem = self._lib.read(symbol, date_range=date_range)
+            pd_df = vitem.data.reset_index()
+            df = pl.from_pandas(pd_df)
 
-        vitem = self._lib.read(symbol, date_range=date_range)
-        pd_df = vitem.data.reset_index()
+            if as_of_transaction_time is not None and "transaction_time" in df.columns:
+                cutoff = pl.lit(as_of_transaction_time).cast(pl.Datetime("us", "UTC"))
+                df = df.filter(pl.col("transaction_time") <= cutoff)
 
-        df = pl.from_pandas(pd_df)
+            return df
+        else:
+            # Parquet backend
+            path = self._symbol_path(ticker)
+            if not path.exists():
+                return pl.DataFrame()
 
-        # Point-in-time filter
-        if as_of_transaction_time is not None and "transaction_time" in df.columns:
-            cutoff = pl.lit(as_of_transaction_time).cast(pl.Datetime("us", "UTC"))
-            df = df.filter(pl.col("transaction_time") <= cutoff)
+            df = pl.read_parquet(path)
 
-        return df
+            if start is not None or end is not None:
+                if "valid_time" in df.columns:
+                    if start is not None:
+                        df = df.filter(pl.col("valid_time") >= pl.date(start.year, start.month, start.day))
+                    if end is not None:
+                        df = df.filter(pl.col("valid_time") <= pl.date(end.year, end.month, end.day))
+
+            if as_of_transaction_time is not None and "transaction_time" in df.columns:
+                cutoff = pl.lit(as_of_transaction_time).cast(pl.Datetime("us", "UTC"))
+                df = df.filter(pl.col("transaction_time") <= cutoff)
+
+            return df
 
     # ------------------------------------------------------------------
     # Read universe
@@ -189,16 +232,36 @@ class FeatureStore:
 
     def list_symbols(self) -> list[str]:
         """Return all stored ticker symbols (without prefix)."""
-        prefix = self._TICKER_PREFIX
-        return [
-            s[len(prefix):]
-            for s in self._lib.list_symbols()
-            if s.startswith(prefix)
-        ]
+        if self._backend == "arcticdb":
+            prefix = self._TICKER_PREFIX
+            return [
+                s[len(prefix):]
+                for s in self._lib.list_symbols()
+                if s.startswith(prefix)
+            ]
+        else:
+            prefix = self._TICKER_PREFIX.replace("/", "_")
+            symbols = []
+            for f in self._base_path.glob("*.parquet"):
+                name = f.stem
+                if name.startswith(prefix):
+                    symbols.append(name[len(prefix):])
+            return symbols
 
     def list_versions(self, ticker: str) -> list[dict]:
         """Return version history for a ticker."""
-        symbol = self._TICKER_PREFIX + ticker
-        if not self._lib.has_symbol(symbol):
-            return []
-        return list(self._lib.list_versions(symbol))
+        if self._backend == "arcticdb":
+            symbol = self._TICKER_PREFIX + ticker
+            if not self._lib.has_symbol(symbol):
+                return []
+            return list(self._lib.list_versions(symbol))
+        else:
+            path = self._symbol_path(ticker)
+            if not path.exists():
+                return []
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            return [{"version": 1, "timestamp": mtime.isoformat()}]
+
+
+# Export for convenience
+__all__ = ["FeatureStore"]

@@ -405,40 +405,75 @@ class BrokerAdapter:
 
 
 class AlpacaBrokerAdapter(BrokerAdapter):
-    def __init__(self, api_key: str, api_secret: str, base_url: str = "https://paper-api.alpaca.markets"):
+    def __init__(self, api_key: str, api_secret: str, paper: bool = True):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = base_url
-        self._api = None  # Lazily initialised; cached for connection-pool reuse.
+        self.paper = paper
+        self._trading_client = None  # Lazily initialised; cached for connection-pool reuse.
 
-    def _get_api(self):
-        if self._api is None:
-            import alpaca_trade_api as ata
-            self._api = ata.REST(self.api_key, self.api_secret, self.base_url)
-        return self._api
+    def _get_client(self):
+        if self._trading_client is None:
+            from alpaca.trading.client import TradingClient
+            self._trading_client = TradingClient(self.api_key, self.api_secret, paper=self.paper)
+        return self._trading_client
 
     def submit_order(self, **kwargs) -> dict:
         try:
-            order = self._get_api().submit_order(**kwargs)
-            return {"order_id": order.id, "status": order.status}
+            from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+            from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
+
+            client = self._get_client()
+
+            symbol = kwargs.get("symbol")
+            quantity = kwargs.get("quantity") or kwargs.get("qty")
+            side = OrderSide.BUY if str(kwargs.get("side", "buy")).lower() == "buy" else OrderSide.SELL
+            order_type = str(kwargs.get("order_type", "market")).lower()
+            time_in_force = TimeInForce.DAY if str(kwargs.get("time_in_force", "day")).lower() == "day" else TimeInForce.GTC
+
+            if order_type == "limit" and kwargs.get("limit_price"):
+                order_request = LimitOrderRequest(
+                    symbol=symbol,
+                    qty=quantity,
+                    side=side,
+                    time_in_force=time_in_force,
+                    limit_price=kwargs.get("limit_price"),
+                )
+            else:
+                order_request = MarketOrderRequest(
+                    symbol=symbol,
+                    qty=quantity,
+                    side=side,
+                    time_in_force=time_in_force,
+                )
+
+            order = client.submit_order(order_request)
+            status_value = order.status.value if hasattr(order.status, 'value') else str(order.status)
+            return {"order_id": str(order.id), "status": status_value}
         except Exception as e:
             return {"error": str(e)}
 
     def cancel_order(self, broker_order_id: str) -> bool:
         try:
-            self._get_api().cancel_order(broker_order_id)
+            from alpaca.trading.requests import CancelOrderRequest
+            client = self._get_client()
+            request = CancelOrderRequest(order_id=broker_order_id)
+            client.cancel_order_by_id(request)
             return True
         except Exception:
             return False
 
     def get_order_status(self, broker_order_id: str) -> dict:
         try:
-            order = self._get_api().get_order(broker_order_id)
+            from alpaca.trading.requests import GetOrderRequest
+            client = self._get_client()
+            request = GetOrderRequest(order_id=broker_order_id)
+            order = client.get_order_by_id(request)
+            status_value = order.status.value if hasattr(order.status, 'value') else str(order.status)
             return {
-                "order_id": order.id,
-                "status": order.status.lower(),
-                "filled_qty": order.filled_qty,
-                "filled_avg_price": order.filled_avg_price,
+                "order_id": str(order.id),
+                "status": status_value.lower(),
+                "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
+                "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
             }
         except Exception as e:
             return {"error": str(e)}

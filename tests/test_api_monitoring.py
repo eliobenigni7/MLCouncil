@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture(scope="module")
 def client():
     from api.main import create_app
+
     app = create_app()
     with TestClient(app) as c:
         yield c
@@ -25,6 +26,7 @@ def test_get_alert_history(client):
 
 
 def test_get_runtime_settings(client, tmp_path, monkeypatch):
+    import runtime_env as runtime_env_module
     from api.services import monitoring_service
 
     runtime_env = tmp_path / "runtime.env"
@@ -35,10 +37,15 @@ def test_get_runtime_settings(client, tmp_path, monkeypatch):
         "POLYGON_API_KEY=polygon-test\n"
     )
     monkeypatch.setattr(monitoring_service, "RUNTIME_ENV_PATH", runtime_env)
+    monkeypatch.setattr(
+        runtime_env_module, "get_project_dotenv_path", lambda: tmp_path / ".env.missing"
+    )
     monkeypatch.delenv("ALPACA_PAPER_KEY", raising=False)
     monkeypatch.delenv("ALPACA_PAPER_SECRET", raising=False)
     monkeypatch.delenv("ALPACA_API_KEY", raising=False)
     monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
 
     resp = client.get("/api/monitoring/settings")
     assert resp.status_code == 200

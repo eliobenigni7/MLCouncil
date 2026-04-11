@@ -355,6 +355,12 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
+    st.divider()
+    st.subheader("Quick Links")
+    st.markdown("[MLflow Tracking](/mlflow/)", unsafe_allow_html=False)
+    st.markdown("[Dagster Pipelines](https://mlcouncil.duckdns.org:8443/)", unsafe_allow_html=False)
+    st.markdown("[Admin API](/api/)", unsafe_allow_html=False)
+
 
 # ============================================================================
 # Main tabs
