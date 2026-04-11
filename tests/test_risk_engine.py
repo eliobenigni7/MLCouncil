@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -91,3 +90,40 @@ def test_risk_engine_save_and_load_roundtrip(tmp_path):
     assert path.exists()
     assert loaded is not None
     assert loaded.portfolio_value == 1100.0
+
+
+def test_risk_engine_loads_sector_map_from_json(monkeypatch, tmp_path):
+    from council import risk_engine as risk_mod
+    from council.risk_engine import Position, RiskEngine
+
+    sector_map_path = tmp_path / "sector_map.json"
+    sector_map_path.write_text('{"AAPL": "Custom Tech"}\n')
+    monkeypatch.setattr(risk_mod, "_DEFAULT_SECTOR_MAP_PATH", sector_map_path)
+
+    engine = RiskEngine()
+    report = engine.compute_exposure(
+        positions=[
+            Position(symbol="AAPL", quantity=10, avg_price=100.0, current_price=110.0)
+        ],
+        portfolio_value=1100.0,
+    )
+
+    assert report.sector_exposure == {"Custom Tech": 1100.0}
+    assert report.sector_weights == {"Custom Tech": 1.0}
+
+
+def test_risk_engine_accepts_constructor_sector_map_and_warns_on_unknown_ticker(caplog):
+    from council.risk_engine import Position, RiskEngine
+
+    engine = RiskEngine(sector_map={"AAPL": "Custom Tech"})
+    positions = [
+        Position(symbol="AAPL", quantity=5, avg_price=100.0, current_price=110.0),
+        Position(symbol="UNMAPPED", quantity=2, avg_price=50.0, current_price=50.0),
+    ]
+
+    with caplog.at_level("WARNING"):
+        report = engine.compute_exposure(positions=positions, portfolio_value=650.0)
+
+    assert report.sector_exposure["Custom Tech"] == 550.0
+    assert report.sector_exposure["Other"] == 100.0
+    assert "Unknown sector mapping for ticker UNMAPPED" in caplog.text
