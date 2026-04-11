@@ -55,8 +55,8 @@ class AlpacaConfig:
     def from_env(cls) -> "AlpacaConfig":
         mode = TradingMode(os.getenv("TRADING_MODE", "paper"))
         return cls(
-            paper_key=os.getenv("ALPACA_PAPER_KEY", ""),
-            paper_secret=os.getenv("ALPACA_PAPER_SECRET", ""),
+            paper_key=os.getenv("ALPACA_PAPER_KEY", "") or os.getenv("ALPACA_API_KEY", ""),
+            paper_secret=os.getenv("ALPACA_PAPER_SECRET", "") or os.getenv("ALPACA_SECRET_KEY", ""),
             live_key=os.getenv("ALPACA_LIVE_KEY"),
             live_secret=os.getenv("ALPACA_LIVE_SECRET"),
             mode=mode,
@@ -82,7 +82,8 @@ class AlpacaLiveNode:
         self.config = config
         self.config.validate()
 
-        self._api = None
+        self._trading_client = None
+        self._data_client = None
         self._trade_log_dir = _ROOT / "data" / "paper_trades"
         self._trade_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,23 +91,25 @@ class AlpacaLiveNode:
 
     def _initialize_api(self) -> None:
         try:
-            import alpaca_trade_api as ata
+            from alpaca.trading.client import TradingClient
+            from alpaca.data.historical.stock import StockHistoricalDataClient
         except ImportError:
             raise ImportError(
-                "alpaca_trade_api is required for live trading. "
-                "Install with: pip install alpaca-trade-api"
+                "alpaca-py is required for live trading. "
+                "Install with: pip install alpaca"
             )
 
         if self.config.mode == TradingMode.PAPER:
-            base_url = "https://paper-api.alpaca.markets"
             key = self.config.paper_key
             secret = self.config.paper_secret
+            paper = True
         else:
-            base_url = "https://api.alpaca.markets"
             key = self.config.live_key
             secret = self.config.live_secret
+            paper = False
 
-        self._api = ata.REST(key, secret, base_url)
+        self._trading_client = TradingClient(key, secret, paper=paper)
+        self._data_client = StockHistoricalDataClient(key, secret)
 
     @property
     def is_paper(self) -> bool:
@@ -114,33 +117,46 @@ class AlpacaLiveNode:
 
     def is_tradeable(self, symbol: str) -> bool:
         try:
-            asset = self._api.get_asset(symbol)
+            from alpaca.trading.requests import GetAssetRequest
+            from alpaca.trading.enums import AssetClass
+
+            request = GetAssetRequest(symbol=symbol)
+            asset = self._trading_client.get_asset(request)
             return asset.tradable and asset.fractionable
         except Exception:
             return False
 
     def get_position(self, symbol: str) -> Optional[dict]:
         try:
-            pos = self._api.get_position(symbol)
+            from alpaca.trading.requests import GetPositionRequest
+
+            request = GetPositionRequest(symbol=symbol)
+            pos = self._trading_client.get_open_position(request)
             return {
                 "symbol": symbol,
-                "qty": int(pos.qty),
+                "qty": int(float(pos.qty)),
                 "avg_price": float(pos.avg_entry_price),
                 "current_value": float(pos.market_value),
+                "current_price": float(pos.current_price) if pos.current_price else float(pos.avg_entry_price),
             }
         except Exception:
             return None
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
         try:
-            latest = self._api.get_latest_trade(symbol)
-            return float(latest.price)
+            from alpaca.data.requests import StockLatestTradeRequest
+
+            request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+            trades = self._data_client.get_stock_latest_trade(request)
+            if symbol in trades:
+                return float(trades[symbol].price)
+            return None
         except Exception:
             return None
 
     def get_all_positions(self, strict: bool = False) -> pd.DataFrame:
         try:
-            positions = self._api.list_positions()
+            positions = self._trading_client.get_all_positions()
             if not positions:
                 return pd.DataFrame()
 
@@ -154,16 +170,12 @@ class AlpacaLiveNode:
             return pd.DataFrame([
                 {
                     "symbol": p.symbol,
-                    "qty": int(p.qty),
+                    "qty": int(float(p.qty)),
                     "avg_price": _position_float(p, "avg_entry_price"),
                     "current_price": _position_float(p, "current_price"),
                     "current_value": _position_float(p, "market_value"),
                     "unrealized_pnl": _position_float(p, "unrealized_pl"),
-                    "unrealized_pnl_pct": _position_float(
-                        p,
-                        "unrealized_plpc",
-                        "unrealized_pl_pc",
-                    ),
+                    "unrealized_pnl_pct": _position_float(p, "unrealized_plpc"),
                 }
                 for p in positions
             ])
@@ -173,7 +185,7 @@ class AlpacaLiveNode:
             return pd.DataFrame()
 
     def get_account_info(self) -> dict:
-        account = self._api.get_account()
+        account = self._trading_client.get_account()
         return {
             "buying_power": float(account.buying_power),
             "cash": float(account.cash),
@@ -191,25 +203,37 @@ class AlpacaLiveNode:
         time_in_force: str = "day",
         limit_price: Optional[float] = None,
     ) -> dict:
-        order_params = {
-            "symbol": symbol,
-            "qty": qty,
-            "side": side,
-            "type": order_type,
-            "time_in_force": time_in_force,
-        }
-        if limit_price:
-            order_params["limit_price"] = str(limit_price)
+        from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+        from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 
-        order = self._api.submit_order(**order_params)
+        order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        tif = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.GTC
+
+        if order_type.lower() == "limit" and limit_price:
+            order_request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=order_side,
+                time_in_force=tif,
+                limit_price=limit_price,
+            )
+        else:
+            order_request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=order_side,
+                time_in_force=tif,
+            )
+
+        order = self._trading_client.submit_order(order_request)
 
         trade_record = {
-            "order_id": order.id,
+            "order_id": str(order.id),
             "symbol": symbol,
             "qty": qty,
             "side": side,
             "order_type": order_type,
-            "status": order.status,
+            "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
             "submitted_at": datetime.now(timezone.utc).isoformat(),
             "mode": self.config.mode.value,
         }
@@ -219,20 +243,36 @@ class AlpacaLiveNode:
 
     def get_order_status(self, order_id: str) -> dict:
         try:
-            order = self._api.get_order(order_id)
+            from alpaca.trading.requests import GetOrderRequest
+
+            request = GetOrderRequest(order_id=order_id)
+            order = self._trading_client.get_order_by_id(request)
             return {
-                "order_id": order.id,
-                "status": order.status,
-                "filled_qty": int(order.filled_qty) if order.filled_qty else 0,
+                "order_id": str(order.id),
+                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
                 "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
-                "filled_at": order.filled_at,
+                "filled_at": order.filled_at.isoformat() if order.filled_at else None,
             }
         except Exception as e:
             return {"order_id": order_id, "error": str(e)}
 
     def list_orders(self, status: str = "all", limit: int = 100) -> list[dict]:
         try:
-            orders = self._api.list_orders(status=status, limit=limit)
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+
+            if status.lower() == "all":
+                query_status = None
+            elif status.lower() == "open":
+                query_status = QueryOrderStatus.OPEN
+            elif status.lower() == "closed":
+                query_status = QueryOrderStatus.CLOSED
+            else:
+                query_status = None
+
+            request = GetOrdersRequest(status=query_status, limit=limit)
+            orders = self._trading_client.get_orders(request)
         except Exception:
             return []
 
@@ -240,22 +280,16 @@ class AlpacaLiveNode:
         for order in orders:
             payload.append(
                 {
-                    "order_id": order.id,
+                    "order_id": str(order.id),
                     "symbol": order.symbol,
-                    "qty": int(order.qty) if getattr(order, "qty", None) else 0,
-                    "filled_qty": (
-                        int(order.filled_qty) if getattr(order, "filled_qty", None) else 0
-                    ),
-                    "side": order.side,
-                    "order_type": order.order_type,
-                    "status": order.status,
-                    "submitted_at": getattr(order, "submitted_at", None),
-                    "filled_at": getattr(order, "filled_at", None),
-                    "filled_avg_price": (
-                        float(order.filled_avg_price)
-                        if getattr(order, "filled_avg_price", None)
-                        else None
-                    ),
+                    "qty": int(float(order.qty)) if order.qty else 0,
+                    "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
+                    "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+                    "order_type": order.order_type.value if hasattr(order.order_type, 'value') else str(order.order_type),
+                    "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                    "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+                    "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+                    "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
                     "mode": self.config.mode.value,
                 }
             )
@@ -263,7 +297,10 @@ class AlpacaLiveNode:
 
     def cancel_order(self, order_id: str) -> bool:
         try:
-            self._api.cancel_order(order_id)
+            from alpaca.trading.requests import CancelOrderRequest
+
+            request = CancelOrderRequest(order_id=order_id)
+            self._trading_client.cancel_order_by_id(request)
             return True
         except Exception:
             return False
@@ -277,15 +314,25 @@ class AlpacaLiveNode:
         lookback_days: int = 20,
     ) -> bool:
         try:
-            bars = self._api.get_bars(
-                symbol,
-                "15Min",
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame
+            from datetime import timedelta
+
+            request = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Minute_15,
                 limit=min(320, lookback_days * 16),
             )
+            bars_response = self._data_client.get_stock_bars(request)
+
+            if symbol not in bars_response:
+                return True
+
+            bars = bars_response[symbol]
             if not bars:
                 return True
 
-            total_volume = sum(b.v for b in bars)
+            total_volume = sum(b.volume for b in bars)
             avg_volume = total_volume / len(bars) if bars else 0
             adv = avg_volume * price * lookback_days
 
@@ -305,19 +352,14 @@ class AlpacaLiveNode:
         position = self.get_position(symbol)
         if position is None:
             current_value = 0.0
-            # For a new position we need the current price to estimate order value.
-            # Query the latest trade; if unavailable, reject conservatively.
-            try:
-                latest = self._api.get_latest_trade(symbol)
-                estimated_price = float(latest.price)
-            except Exception:
+            estimated_price = self.get_latest_price(symbol)
+            if estimated_price is None:
                 return False, f"Cannot verify position size for {symbol}: price unavailable"
             new_value = proposed_qty * estimated_price
         else:
             current_price = position.get("current_price", position.get("avg_price", 0))
             current_value = position["qty"] * current_price
-            estimated_price = current_value / max(position["qty"], 1)
-            new_value = current_value + proposed_qty * estimated_price
+            new_value = current_value + proposed_qty * current_price
 
         if new_value > max_position_value:
             return False, f"Would exceed max position size of ${max_position_value}"

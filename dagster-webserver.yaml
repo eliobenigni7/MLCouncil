@@ -1,0 +1,4 @@
+# Dagster webserver config for reverse proxy
+ui:
+  enabled: true
+  rootPath: /dagster

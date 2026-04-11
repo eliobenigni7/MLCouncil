@@ -29,5 +29,16 @@ dist/
 *.egg-info/
 .venv/
 
+# Runtime databases
+*.db
+mlflow.db
+
+# Generated decisions
+data/intraday/decisions/*/
+data/ohlcv/
+
+# Stray directories
+E:/
+
 # Worktrees
 .worktrees/
