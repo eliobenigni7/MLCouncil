@@ -270,7 +270,7 @@ class AlpacaLiveNode:
     def _submit_crypto_order(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         side: str,
         order_type: str = "market",
         time_in_force: str = "day",
@@ -326,7 +326,7 @@ class AlpacaLiveNode:
     def _submit_equity_order(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         side: str,
         order_type: str = "market",
         time_in_force: str = "day",
@@ -374,7 +374,7 @@ class AlpacaLiveNode:
     def submit_order(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         side: str,
         order_type: str = "market",
         time_in_force: str = "day",

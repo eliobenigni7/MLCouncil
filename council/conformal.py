@@ -195,7 +195,7 @@ class ConformalPositionSizer:
         self,
         council_signal: pd.Series,
         X: np.ndarray,
-        threshold_percentile: float = 80,
+        threshold_percentile: float = 90,
     ) -> pd.Series:
         """Zero out signals whose conformal interval width is in the top percentile.
 
@@ -209,7 +209,9 @@ class ConformalPositionSizer:
             Feature array aligned row-by-row with council_signal.
         threshold_percentile:
             Signals with width >= np.percentile(widths, threshold_percentile)
-            are set to 0.  Default 80 → drop the widest-interval 20 %.
+            are set to 0.  Default 90 → drop the widest-interval 10 %.
+            Raised from 80 to preserve more of the investable universe,
+            especially for small portfolios targeting top-5 positions.
 
         Returns
         -------
