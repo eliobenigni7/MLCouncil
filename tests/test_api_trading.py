@@ -74,3 +74,26 @@ def test_execute_orders_returns_conflict_for_blocked_pretrade(client):
     detail = resp.json()["detail"]
     assert detail["error"] == "Trading paused by kill switch"
     assert detail["pretrade"]["blocked"] is True
+
+
+def test_trading_endpoints_require_api_key_when_configured(client):
+    with patch.dict("os.environ", {"MLCOUNCIL_API_KEY": "secret-key"}, clear=True):
+        resp = client.get("/api/trading/status")
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Missing X-API-Key header"
+
+
+def test_trading_endpoints_accept_valid_api_key(client):
+    with patch.dict("os.environ", {"MLCOUNCIL_API_KEY": "secret-key"}, clear=True):
+        with patch(
+            "api.routers.trading.trading_service.service.get_status",
+            return_value={"connected": True, "paper": True},
+        ):
+            resp = client.get(
+                "/api/trading/status",
+                headers={"X-API-Key": "secret-key"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["connected"] is True
