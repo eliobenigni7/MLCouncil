@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -36,6 +37,7 @@ load_runtime_env()
 
 _ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(_ROOT))
+logger = logging.getLogger(__name__)
 
 
 class TradingMode(Enum):
@@ -303,6 +305,7 @@ class AlpacaLiveNode:
             self._trading_client.cancel_order_by_id(request)
             return True
         except Exception:
+            logger.exception("Failed to cancel Alpaca order %s", order_id)
             return False
 
     def check_adv_limit(
@@ -338,6 +341,12 @@ class AlpacaLiveNode:
 
             return (qty * price) <= (fraction * adv)
         except Exception:
+            logger.exception(
+                "Failed to check ADV limit for %s qty=%s price=%s",
+                symbol,
+                qty,
+                price,
+            )
             return True
 
     def check_position_limits(
