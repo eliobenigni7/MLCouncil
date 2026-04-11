@@ -43,7 +43,7 @@ macro:
     treasury_10y: DGS10
     treasury_2y: DGS2
     sp500: SP500
-  sp500_rolling_windows:
+    sp500_rolling_windows:
     - 21
     - 63
     - 252
