@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,7 +32,9 @@ from scipy.stats import norm as _norm
 
 _ROOT = Path(__file__).parents[1]
 RISK_DIR = _ROOT / "data" / "risk"
+_DEFAULT_SECTOR_MAP_PATH = _ROOT / "config" / "sector_map.json"
 RISK_DIR.mkdir(parents=True, exist_ok=True)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -172,24 +175,34 @@ class RiskReport:
 
 
 class RiskEngine:
-    SECTOR_MAP = {
-        "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Technology",
-        "AMZN": "Consumer Discretionary", "META": "Technology", "NVDA": "Technology",
-        "TSLA": "Consumer Discretionary", "JPM": "Financials", "V": "Financials",
-        "MA": "Financials", "JNJ": "Healthcare", "UNH": "Healthcare",
-        "XOM": "Energy", "WMT": "Consumer Staples", "PG": "Consumer Staples",
-        "ETSY": "Consumer Discretionary", "DOCU": "Technology", "UBER": "Consumer Discretionary",
-        "ABNB": "Consumer Discretionary", "PLTR": "Technology", "SNOW": "Technology",
-        "CRWD": "Technology", "NET": "Technology", "SQ": "Financials",
-        "SHOP": "Technology", "FVRR": "Technology", "ROKU": "Communication Services",
-        "DDOG": "Technology",
-    }
-
-    def __init__(self, limits: Optional[RiskLimits] = None):
+    def __init__(
+        self,
+        limits: Optional[RiskLimits] = None,
+        sector_map: Optional[dict[str, str]] = None,
+    ):
         self.limits = limits or RiskLimits()
+        self.sector_map = sector_map or load_sector_map()
         self._returns_history: Optional[pd.DataFrame] = None
         self._equity_curve: Optional[pd.Series] = None
         self._peak_equity: float = 0
+        self._warned_unknown_tickers: set[str] = set()
+
+    def _resolve_sector(self, position: Position) -> str:
+        explicit_sector = (position.sector or "").strip()
+        if explicit_sector and explicit_sector not in {"Unknown", "Other"}:
+            return explicit_sector
+
+        sector = self.sector_map.get(position.symbol)
+        if sector:
+            return sector
+
+        if position.symbol not in self._warned_unknown_tickers:
+            logger.warning(
+                "Unknown sector mapping for ticker %s; defaulting to Other",
+                position.symbol,
+            )
+            self._warned_unknown_tickers.add(position.symbol)
+        return "Other"
 
     def compute_var_historical(
         self,
@@ -328,7 +341,7 @@ class RiskEngine:
         total_short = 0.0
 
         for pos in positions:
-            sector = self.SECTOR_MAP.get(pos.symbol, "Other")
+            sector = self._resolve_sector(pos)
             if sector not in sector_values:
                 sector_values[sector] = 0.0
             sector_values[sector] += pos.market_value
@@ -514,8 +527,7 @@ class RiskEngine:
 
 
 def create_positions_from_broker(positions_df: pd.DataFrame) -> list[Position]:
-    from data.features.sector_exposure import SECTOR_MAP
-
+    sector_map = load_sector_map()
     positions = []
     for _, row in positions_df.iterrows():
         symbol = row["symbol"]
@@ -524,7 +536,19 @@ def create_positions_from_broker(positions_df: pd.DataFrame) -> list[Position]:
             quantity=int(row["qty"]),
             avg_price=float(row["avg_price"]),
             current_price=float(row.get("current_price", row["avg_price"])),
-            sector=SECTOR_MAP.get(symbol, "Other"),
+            sector=sector_map.get(symbol, "Other"),
             beta=1.0,
         ))
     return positions
+
+
+def load_sector_map(path: Path | None = None) -> dict[str, str]:
+    sector_map_path = path or _DEFAULT_SECTOR_MAP_PATH
+    if sector_map_path.exists():
+        with sector_map_path.open() as handle:
+            data = json.load(handle)
+        return {str(symbol): str(sector) for symbol, sector in data.items()}
+
+    from data.features.sector_exposure import SECTOR_MAP
+
+    return dict(SECTOR_MAP)
