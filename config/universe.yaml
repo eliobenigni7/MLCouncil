@@ -33,8 +33,12 @@ universe:
     transaction_time_minute: 30
     forward_fill_max_days: 2
 
+crypto_universe:
+  large_cap:
+    - BTCUSD
+    - ETHUSD
+
 macro:
-  fred_series:
     vix: VIXCLS
     treasury_10y: DGS10
     treasury_2y: DGS2

@@ -50,6 +50,26 @@ def _config_tickers(cfg: dict) -> list[str]:
     return tickers
 
 
+def _config_crypto_tickers(cfg: dict) -> list[str]:
+    """Return list of crypto tickers from universe.yaml crypto_universe section."""
+    crypto_cfg = cfg.get("crypto_universe", {})
+    tickers: list[str] = []
+    for bucket_name, bucket_values in crypto_cfg.items():
+        if not isinstance(bucket_values, list):
+            continue
+        tickers.extend(bucket_values)
+    return tickers
+
+
+# Map internal ticker (BTCUSD) -> yfinance ticker (BTC-USD)
+def _to_yfinance_ticker(ticker: str) -> str:
+    if ticker.upper() in ("BTCUSD", "BTC-USD", "BTC/USD"):
+        return "BTC-USD"
+    if ticker.upper() in ("ETHUSD", "ETH-USD", "ETH/USD"):
+        return "ETH-USD"
+    return ticker
+
+
 def _transaction_time(cfg: dict) -> datetime:
     """Return today at the configured post-market time in UTC."""
     settings = _config_settings(cfg)
@@ -71,9 +91,11 @@ def _download_ticker(
     forward_fill_limit: int,
 ) -> Optional[pl.DataFrame]:
     """Download OHLCV for a single ticker and return a Polars DataFrame."""
+    # Use yfinance-compatible ticker (e.g. BTC-USD instead of BTCUSD)
+    yf_ticker = _to_yfinance_ticker(ticker)
     try:
         raw = yf.download(
-            ticker,
+            yf_ticker,
             start=start,
             end=end,
             auto_adjust=False,
@@ -253,6 +275,65 @@ def download_daily(
 
     if not frames:
         logger.warning(f"No data returned for {date} (market closed?)")
+        return pl.DataFrame(schema=_OHLCV_SCHEMA)
+
+    return pl.concat(frames)
+
+
+def download_crypto_daily(
+    date: Optional[str] = None,
+    data_dir: Optional[Path] = None,
+) -> pl.DataFrame:
+    """Download OHLCV for crypto assets (BTC-USD, ETH-USD) for a single day.
+
+    Downloads to data_dir/crypto/ rather than the equity ohlcv path,
+    so crypto and equity data are stored separately.
+    """
+    import pandas as pd
+
+    cfg = _load_config()
+    settings = _config_settings(cfg)
+    tickers = _config_crypto_tickers(cfg)
+
+    if not tickers:
+        logger.info("No crypto tickers configured in universe.yaml")
+        return pl.DataFrame(schema=_OHLCV_SCHEMA)
+
+    date = date or datetime.today().strftime("%Y-%m-%d")
+    data_dir = data_dir or (_ROOT / settings.get("data_dir", "data/raw"))
+    tx_time = _transaction_time(cfg)
+    ff_limit = settings["forward_fill_max_days"]
+
+    end = (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+    logger.info(f"Downloading crypto daily for {date}: {tickers}")
+    frames: list[pl.DataFrame] = []
+
+    for ticker in tickers:
+        df = _download_ticker(ticker, date, end, tx_time, ff_limit)
+        if df is not None:
+            # Save to crypto subdirectory
+            ticker_df = df.with_columns(pl.col("ticker"))
+            ticker_df = ticker_df.with_columns(
+                pl.lit("crypto").alias("_asset_class")
+            )
+            out_dir = data_dir / "crypto" / ticker
+            out_dir.mkdir(parents=True, exist_ok=True)
+            year = pd.Timestamp(date).year
+            out_path = out_dir / f"{year}.parquet"
+            if out_path.exists():
+                existing = pl.read_parquet(out_path)
+                ticker_df = (
+                    pl.concat([existing, ticker_df], how="vertical_relaxed")
+                    .sort(["ticker", "valid_time", "transaction_time"])
+                    .unique(["ticker", "valid_time"], keep="last")
+                )
+            ticker_df.drop(["_asset_class"]).write_parquet(out_path)
+            logger.info(f"[{ticker}] saved {len(ticker_df)} rows -> {out_path}")
+            frames.append(df)
+
+    if not frames:
+        logger.warning(f"No crypto data returned for {date}")
         return pl.DataFrame(schema=_OHLCV_SCHEMA)
 
     return pl.concat(frames)

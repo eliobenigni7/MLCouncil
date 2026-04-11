@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -37,6 +38,16 @@ PLACEHOLDER_ENV_VALUES = {
     "your-api-key",
     "your-secret",
 }
+
+
+@dataclass(frozen=True)
+class TradingSettings:
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+    automation_paused: bool = False
+    max_daily_orders: int = 20
+    max_turnover: float = 0.30
+    max_position_size: float = 0.10
+    max_sector_exposure: float = 0.25
 
 
 def get_runtime_profile() -> str:
@@ -142,6 +153,18 @@ def validate_runtime_profile(profile: str | None = None) -> dict[str, object]:
     }
 
 
+def get_trading_settings() -> TradingSettings:
+    load_runtime_env()
+    return TradingSettings(
+        alpaca_base_url=(os.getenv("ALPACA_BASE_URL") or "https://paper-api.alpaca.markets").strip(),
+        automation_paused=_parse_bool_env("MLCOUNCIL_AUTOMATION_PAUSED", default=False),
+        max_daily_orders=_parse_int_env("MLCOUNCIL_MAX_DAILY_ORDERS", default=20),
+        max_turnover=_parse_float_env("MLCOUNCIL_MAX_TURNOVER", default=0.30),
+        max_position_size=_parse_float_env("MLCOUNCIL_MAX_POSITION_SIZE", default=0.10),
+        max_sector_exposure=_parse_float_env("MLCOUNCIL_MAX_SECTOR_EXPOSURE", default=0.25),
+    )
+
+
 def _apply_legacy_aliases() -> None:
     for canonical_key, legacy_key in LEGACY_ENV_ALIASES.items():
         canonical_value = os.getenv(canonical_key)
@@ -174,3 +197,24 @@ def _should_set_env_value(*, key: str, value: str, override: bool) -> bool:
         return True
 
     return current_value is None or current_is_placeholder
+
+
+def _parse_bool_env(key: str, *, default: bool) -> bool:
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int_env(key: str, *, default: int) -> int:
+    value = os.getenv(key)
+    if value is None or not value.strip():
+        return default
+    return int(value)
+
+
+def _parse_float_env(key: str, *, default: float) -> float:
+    value = os.getenv(key)
+    if value is None or not value.strip():
+        return default
+    return float(value)

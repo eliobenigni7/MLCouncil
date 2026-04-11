@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,7 +32,9 @@ from scipy.stats import norm as _norm
 
 _ROOT = Path(__file__).parents[1]
 RISK_DIR = _ROOT / "data" / "risk"
+_DEFAULT_SECTOR_MAP_PATH = _ROOT / "config" / "sector_map.json"
 RISK_DIR.mkdir(parents=True, exist_ok=True)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -116,6 +119,7 @@ class RiskLimits:
     max_cvar_pct: float = 0.035
     max_sector_exposure: float = 0.25
     max_single_position: float = 0.10
+    max_crypto_position: float = 0.20
     max_net_exposure: float = 1.0
     max_gross_exposure: float = 2.0
     max_beta_exposure: float = 0.5
@@ -172,24 +176,42 @@ class RiskReport:
 
 
 class RiskEngine:
-    SECTOR_MAP = {
-        "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Technology",
-        "AMZN": "Consumer Discretionary", "META": "Technology", "NVDA": "Technology",
-        "TSLA": "Consumer Discretionary", "JPM": "Financials", "V": "Financials",
-        "MA": "Financials", "JNJ": "Healthcare", "UNH": "Healthcare",
-        "XOM": "Energy", "WMT": "Consumer Staples", "PG": "Consumer Staples",
-        "ETSY": "Consumer Discretionary", "DOCU": "Technology", "UBER": "Consumer Discretionary",
-        "ABNB": "Consumer Discretionary", "PLTR": "Technology", "SNOW": "Technology",
-        "CRWD": "Technology", "NET": "Technology", "SQ": "Financials",
-        "SHOP": "Technology", "FVRR": "Technology", "ROKU": "Communication Services",
-        "DDOG": "Technology",
-    }
-
-    def __init__(self, limits: Optional[RiskLimits] = None):
+    def __init__(
+        self,
+        limits: Optional[RiskLimits] = None,
+        sector_map: Optional[dict[str, str]] = None,
+        seed: int | None = None,
+    ):
         self.limits = limits or RiskLimits()
+        # Override with runtime env values if set
+        import os
+        if os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE"):
+            self.limits.max_crypto_position = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE"))
+        if os.getenv("MLCOUNCIL_MAX_POSITION_SIZE"):
+            self.limits.max_single_position = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE"))
+        self.sector_map = sector_map or load_sector_map()
+        self.seed = seed
         self._returns_history: Optional[pd.DataFrame] = None
         self._equity_curve: Optional[pd.Series] = None
         self._peak_equity: float = 0
+        self._warned_unknown_tickers: set[str] = set()
+
+    def _resolve_sector(self, position: Position) -> str:
+        explicit_sector = (position.sector or "").strip()
+        if explicit_sector and explicit_sector not in {"Unknown", "Other"}:
+            return explicit_sector
+
+        sector = self.sector_map.get(position.symbol)
+        if sector:
+            return sector
+
+        if position.symbol not in self._warned_unknown_tickers:
+            logger.warning(
+                "Unknown sector mapping for ticker %s; defaulting to Other",
+                position.symbol,
+            )
+            self._warned_unknown_tickers.add(position.symbol)
+        return "Other"
 
     def compute_var_historical(
         self,
@@ -243,6 +265,7 @@ class RiskEngine:
         n_simulations: int = 10000,
         confidence: float = 0.99,
         horizon: int = 1,
+        seed: int | None = None,
     ) -> tuple[float, float]:
         tickers = list(weights.keys())
         available_tickers = [t for t in tickers if t in returns.columns]
@@ -257,7 +280,8 @@ class RiskEngine:
         mu = mean_returns.values @ w
         sigma = np.sqrt(w @ cov_matrix.values @ w)
 
-        simulated_returns = np.random.normal(mu * horizon, sigma * np.sqrt(horizon), n_simulations)
+        rng = np.random.default_rng(self.seed if seed is None else seed)
+        simulated_returns = rng.normal(mu * horizon, sigma * np.sqrt(horizon), n_simulations)
         simulated_pnl = simulated_returns * portfolio_value
 
         var_pct = np.percentile(simulated_pnl, (1 - confidence) * 100)
@@ -272,6 +296,7 @@ class RiskEngine:
         portfolio_value: float,
         method: str = "historical",
         confidence: float = 0.99,
+        seed: int | None = None,
     ) -> VaRReport:
         weights = {p.symbol: p.market_value / portfolio_value for p in positions}
 
@@ -286,9 +311,33 @@ class RiskEngine:
             var_5d, cvar_5d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 5)
             var_10d, cvar_10d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 10)
         else:
-            var_1d, cvar_1d = self.compute_var_monte_carlo(returns, weights, portfolio_value, 10000, confidence, 1)
-            var_5d, cvar_5d = self.compute_var_monte_carlo(returns, weights, portfolio_value, 10000, confidence, 5)
-            var_10d, cvar_10d = self.compute_var_monte_carlo(returns, weights, portfolio_value, 10000, confidence, 10)
+            var_1d, cvar_1d = self.compute_var_monte_carlo(
+                returns,
+                weights,
+                portfolio_value,
+                10000,
+                confidence,
+                1,
+                seed=seed,
+            )
+            var_5d, cvar_5d = self.compute_var_monte_carlo(
+                returns,
+                weights,
+                portfolio_value,
+                10000,
+                confidence,
+                5,
+                seed=seed,
+            )
+            var_10d, cvar_10d = self.compute_var_monte_carlo(
+                returns,
+                weights,
+                portfolio_value,
+                10000,
+                confidence,
+                10,
+                seed=seed,
+            )
 
         return VaRReport(
             var_1d=var_1d,
@@ -328,7 +377,7 @@ class RiskEngine:
         total_short = 0.0
 
         for pos in positions:
-            sector = self.SECTOR_MAP.get(pos.symbol, "Other")
+            sector = self._resolve_sector(pos)
             if sector not in sector_values:
                 sector_values[sector] = 0.0
             sector_values[sector] += pos.market_value
@@ -396,13 +445,15 @@ class RiskEngine:
                 ))
 
         for symbol, exposure in report.exposure.concentration.items():
-            if exposure > self.limits.max_single_position:
+            from execution.alpaca_adapter import AlpacaLiveNode
+            limit = self.limits.max_crypto_position if AlpacaLiveNode._is_crypto(symbol) else self.limits.max_single_position
+            if exposure > limit:
                 breaches.append(RiskBreach(
                     limit_name="Position Limit",
                     current_value=exposure,
-                    limit_value=self.limits.max_single_position,
+                    limit_value=limit,
                     severity="HIGH",
-                    message=f"Position {symbol} ({exposure:.2%}) exceeds limit ({self.limits.max_single_position:.2%})",
+                    message=f"Position {symbol} ({exposure:.2%}) exceeds limit ({limit:.2%})",
                 ))
 
         if abs(report.exposure.net_exposure) > self.limits.max_net_exposure:
@@ -441,10 +492,17 @@ class RiskEngine:
         portfolio_value: float,
         equity_curve: Optional[pd.Series] = None,
         var_method: str = "historical",
+        seed: int | None = None,
     ) -> RiskReport:
         portfolio_value = portfolio_value or sum(p.market_value for p in positions)
 
-        var_report = self.compute_var(returns, positions, portfolio_value, method=var_method)
+        var_report = self.compute_var(
+            returns,
+            positions,
+            portfolio_value,
+            method=var_method,
+            seed=seed,
+        )
         exposure_report = self.compute_exposure(positions, portfolio_value)
 
         today_return = 0.0
@@ -514,8 +572,7 @@ class RiskEngine:
 
 
 def create_positions_from_broker(positions_df: pd.DataFrame) -> list[Position]:
-    from data.features.sector_exposure import SECTOR_MAP
-
+    sector_map = load_sector_map()
     positions = []
     for _, row in positions_df.iterrows():
         symbol = row["symbol"]
@@ -524,7 +581,19 @@ def create_positions_from_broker(positions_df: pd.DataFrame) -> list[Position]:
             quantity=int(row["qty"]),
             avg_price=float(row["avg_price"]),
             current_price=float(row.get("current_price", row["avg_price"])),
-            sector=SECTOR_MAP.get(symbol, "Other"),
+            sector=sector_map.get(symbol, "Other"),
             beta=1.0,
         ))
     return positions
+
+
+def load_sector_map(path: Path | None = None) -> dict[str, str]:
+    sector_map_path = path or _DEFAULT_SECTOR_MAP_PATH
+    if sector_map_path.exists():
+        with sector_map_path.open() as handle:
+            data = json.load(handle)
+        return {str(symbol): str(sector) for symbol, sector in data.items()}
+
+    from data.features.sector_exposure import SECTOR_MAP
+
+    return dict(SECTOR_MAP)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import secrets
+import warnings
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -9,17 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.extension import _rate_limit_exceeded_handler
 from runtime_env import load_runtime_env
+
+from api.auth import ensure_request_api_key, is_public_api_path
+from api.rate_limit import limiter
 
 API_PREFIX = "/api"
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 load_runtime_env()
-
-limiter = Limiter(key_func=get_remote_address)
 
 
 def get_allowed_origins() -> list[str]:
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     )
 
     app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     app.add_middleware(
         CORSMiddleware,
@@ -55,30 +57,22 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def validate_api_key(request: Request, call_next):
         if request.url.path.startswith("/api/"):
-            if request.url.path in ["/api/health", "/api/docs", "/api/openapi.json"]:
+            if is_public_api_path(request.url.path):
                 return await call_next(request)
-            valid_key = os.getenv("MLCOUNCIL_API_KEY", "")
-            if not valid_key:
-                return await call_next(request)
-            api_key = request.headers.get("X-API-Key")
-            if not api_key:
+            try:
+                ensure_request_api_key(request)
+            except Exception as exc:  # noqa: BLE001
                 from fastapi.responses import JSONResponse
+
                 return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Missing X-API-Key header"}
-                )
-            if not secrets.compare_digest(api_key, valid_key):
-                from fastapi.responses import JSONResponse
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Invalid API key"}
+                    status_code=getattr(exc, "status_code", 500),
+                    content={"detail": getattr(exc, "detail", str(exc))},
                 )
         return await call_next(request)
 
     @app.on_event("startup")
     async def validate_environment():
         if is_api_key_required() and not os.getenv("MLCOUNCIL_API_KEY"):
-            import warnings
             warnings.warn(
                 "MLCOUNCIL_API_KEY is required for this runtime profile but is not configured. "
                 "API endpoints will remain unauthenticated until it is set."
@@ -109,4 +103,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

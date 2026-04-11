@@ -191,3 +191,34 @@ def test_load_runtime_env_uses_repo_dotenv_before_placeholder_runtime_file(
     assert runtime_env.os.getenv("ALPACA_SECRET_KEY") == "paper-secret-from-dotenv"
     assert runtime_env.os.getenv("ALPACA_PAPER_KEY") == "paper-key-from-dotenv"
     assert runtime_env.os.getenv("ALPACA_PAPER_SECRET") == "paper-secret-from-dotenv"
+
+
+def test_get_trading_settings_reads_typed_values(monkeypatch, tmp_path):
+    env_path = tmp_path / "runtime.paper.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ALPACA_BASE_URL=https://paper-api.alpaca.markets",
+                "MLCOUNCIL_AUTOMATION_PAUSED=yes",
+                "MLCOUNCIL_MAX_DAILY_ORDERS=12",
+                "MLCOUNCIL_MAX_TURNOVER=0.42",
+                "MLCOUNCIL_MAX_POSITION_SIZE=0.07",
+                "MLCOUNCIL_MAX_SECTOR_EXPOSURE=0.33",
+            ]
+        )
+        + "\n"
+    )
+
+    monkeypatch.setenv("MLCOUNCIL_RUNTIME_ENV_PATH", str(env_path))
+
+    import runtime_env
+
+    importlib.reload(runtime_env)
+    settings = runtime_env.get_trading_settings()
+
+    assert settings.alpaca_base_url == "https://paper-api.alpaca.markets"
+    assert settings.automation_paused is True
+    assert settings.max_daily_orders == 12
+    assert settings.max_turnover == 0.42
+    assert settings.max_position_size == 0.07
+    assert settings.max_sector_exposure == 0.33

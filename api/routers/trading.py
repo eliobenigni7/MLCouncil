@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api.auth import require_trading_api_key
+from api.rate_limit import limiter
 from api.services import trading_service
 
-router = APIRouter(prefix="/trading", tags=["trading"])
+router = APIRouter(
+    prefix="/trading",
+    tags=["trading"],
+    dependencies=[Depends(require_trading_api_key)],
+)
 
 
 class ExecuteRequest(BaseModel):
@@ -54,7 +60,9 @@ class ExecuteResponse(BaseModel):
 
 
 @router.get("/status", response_model=StatusResponse)
-async def trading_status():
+@limiter.limit("30/minute")
+async def trading_status(request: Request):
+    del request
     status = trading_service.service.get_status()
     return StatusResponse(
         connected=status.get("connected", False),
@@ -70,7 +78,9 @@ async def trading_status():
 
 
 @router.get("/orders/latest")
-async def latest_order_date():
+@limiter.limit("30/minute")
+async def latest_order_date(request: Request):
+    del request
     date = trading_service.service.get_latest_order_date()
     if date is None:
         raise HTTPException(status_code=404, detail="No order files found")
@@ -78,23 +88,31 @@ async def latest_order_date():
 
 
 @router.get("/orders/pending/{date}")
-async def pending_orders(date: str):
+@limiter.limit("30/minute")
+async def pending_orders(request: Request, date: str):
+    del request
     orders = trading_service.service.get_pending_orders(date)
     return {"date": date, "orders": orders}
 
 
 @router.get("/preflight/{date}", response_model=PretradeResponse)
-async def trading_preflight(date: str):
+@limiter.limit("20/minute")
+async def trading_preflight(request: Request, date: str):
+    del request
     return PretradeResponse(**trading_service.service.build_pretrade_snapshot(date))
 
 
 @router.get("/reconcile/{date}")
-async def trading_reconcile(date: str):
+@limiter.limit("20/minute")
+async def trading_reconcile(request: Request, date: str):
+    del request
     return trading_service.service.get_reconciliation(date)
 
 
 @router.post("/execute", response_model=ExecuteResponse)
-async def execute_orders(req: ExecuteRequest):
+@limiter.limit("5/minute")
+async def execute_orders(request: Request, req: ExecuteRequest):
+    del request
     result = trading_service.service.execute_orders(req.date)
     if "error" in result:
         status_code = 409 if result.get("pretrade", {}).get("blocked") else 400
@@ -104,7 +122,9 @@ async def execute_orders(req: ExecuteRequest):
 
 
 @router.post("/liquidate")
-async def liquidate_all():
+@limiter.limit("5/minute")
+async def liquidate_all(request: Request):
+    del request
     result = trading_service.service.liquidate_all()
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -112,5 +132,7 @@ async def liquidate_all():
 
 
 @router.get("/history")
-async def trade_history(days: int = 7):
+@limiter.limit("20/minute")
+async def trade_history(request: Request, days: int = 7):
+    del request
     return {"trades": trading_service.service.get_trade_history(days)}
