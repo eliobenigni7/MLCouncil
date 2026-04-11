@@ -37,17 +37,32 @@ def _config_settings(cfg: dict) -> dict:
     return cfg.get("settings") or cfg.get("universe", {}).get("settings", {})
 
 
-def _config_tickers(cfg: dict) -> list[str]:
+def _config_tickers(cfg: dict, include_crypto: bool = True) -> list[str]:
+    """Return equity tickers from universe.yaml, optionally including crypto_universe."""
     universe_cfg = cfg.get("universe", {})
     if isinstance(universe_cfg.get("tickers"), list):
-        return universe_cfg["tickers"]
+        equity_tickers = universe_cfg["tickers"]
+    else:
+        equity_tickers = []
+        for bucket_name, bucket_values in universe_cfg.items():
+            if bucket_name == "settings" or not isinstance(bucket_values, list):
+                continue
+            equity_tickers.extend(bucket_values)
 
-    tickers: list[str] = []
-    for bucket_name, bucket_values in universe_cfg.items():
-        if bucket_name == "settings" or not isinstance(bucket_values, list):
+    if not include_crypto:
+        return equity_tickers
+
+    # Add crypto tickers
+    crypto_cfg = cfg.get("crypto_universe", {})
+    seen = set(equity_tickers)
+    for bucket_values in crypto_cfg.values():
+        if not isinstance(bucket_values, list):
             continue
-        tickers.extend(bucket_values)
-    return tickers
+        for t in bucket_values:
+            if t not in seen:
+                seen.add(t)
+                equity_tickers.append(t)
+    return equity_tickers
 
 
 def _config_crypto_tickers(cfg: dict) -> list[str]:

@@ -90,33 +90,54 @@ def _safe_pickle_load(path: Path):
         return pickle.load(fh)
 
 
-def _load_universe() -> list[str]:
+def _load_universe(include_crypto: bool = True) -> list[str]:
     """Carica la lista dei ticker da config/universe.yaml.
 
     Supporta sia il formato legacy con `universe.tickers` sia il formato
     bucketed corrente (`large_cap`, `mid_cap`, ...), ignorando la sezione
-    `settings`.
+    `settings`. Include anche `crypto_universe` se presente e include_crypto=True.
     """
     with open(_ROOT / "config" / "universe.yaml") as f:
         cfg = yaml.safe_load(f)
-    universe_cfg = cfg.get("universe", {})
 
+    tickers: list[str] = []
+    seen: set[str] = set()
+
+    # Equity universe
+    universe_cfg = cfg.get("universe", {})
     if isinstance(universe_cfg.get("tickers"), list):
-        tickers = universe_cfg["tickers"]
+        equity_tickers = universe_cfg["tickers"]
     else:
-        tickers = []
+        equity_tickers = []
         for bucket_name, bucket_values in universe_cfg.items():
             if bucket_name == "settings" or not isinstance(bucket_values, list):
                 continue
-            tickers.extend(bucket_values)
+            equity_tickers.extend(bucket_values)
 
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for ticker in tickers:
+    for ticker in equity_tickers:
         if ticker not in seen:
             seen.add(ticker)
-            deduped.append(ticker)
-    return deduped
+            tickers.append(ticker)
+
+    # Crypto universe
+    if include_crypto:
+        crypto_cfg = cfg.get("crypto_universe", {})
+        if isinstance(crypto_cfg, dict):
+            for bucket_values in crypto_cfg.values():
+                if not isinstance(bucket_values, list):
+                    continue
+                for ticker in bucket_values:
+                    if ticker not in seen:
+                        seen.add(ticker)
+                        tickers.append(ticker)
+        elif isinstance(crypto_cfg, list):
+            # Flat list format
+            for ticker in crypto_cfg:
+                if ticker not in seen:
+                    seen.add(ticker)
+                    tickers.append(ticker)
+
+    return tickers
 
 
 def _normalize_df(df: pl.DataFrame) -> pl.DataFrame:
@@ -823,7 +844,7 @@ def portfolio_weights(
     current_w, _ = _load_live_portfolio_snapshot(cov_tickers)
 
     constructor = PortfolioConstructor()
-    weights = constructor.optimize(
+    weights = constructor.optimize_with_crypto(
         alpha_signals=signal_aligned,
         position_multipliers=multipliers,
         current_weights=current_w,
