@@ -162,7 +162,7 @@ class AlpacaLiveNode:
 
         api_key = self.config.paper_key or self.config.live_key
         api_secret = self.config.paper_secret or self.config.live_secret
-        base_url = os.getenv("ALPACA_CRYPTO_URL", "https://paper-api.alpaca.markets")
+        base_url = "https://paper-api.alpaca.markets" if self.config.mode == TradingMode.PAPER else "https://api.alpaca.markets"
 
         headers = {
             "APCA-API-KEY-ID": api_key,
@@ -281,7 +281,7 @@ class AlpacaLiveNode:
 
         api_key = self.config.paper_key or self.config.live_key
         api_secret = self.config.paper_secret or self.config.live_secret
-        base_url = os.getenv("ALPACA_CRYPTO_URL", "https://paper-api.alpaca.markets")
+        base_url = "https://paper-api.alpaca.markets" if self.config.mode == TradingMode.PAPER else "https://api.alpaca.markets"
 
         headers = {
             "APCA-API-KEY-ID": api_key,
