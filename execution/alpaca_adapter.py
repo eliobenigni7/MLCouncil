@@ -136,7 +136,7 @@ class AlpacaLiveNode:
             pos = self._trading_client.get_open_position(request)
             return {
                 "symbol": symbol,
-                "qty": int(float(pos.qty)),
+                "qty": round(float(pos.qty), 2),
                 "avg_price": float(pos.avg_entry_price),
                 "current_value": float(pos.market_value),
                 "current_price": float(pos.current_price) if pos.current_price else float(pos.avg_entry_price),
@@ -188,7 +188,7 @@ class AlpacaLiveNode:
             return pd.DataFrame([
                 {
                     "symbol": p.get("symbol", ""),
-                    "qty": int(float(p.get("qty", 0))),
+                    "qty": round(float(p.get("qty", 0)), 2),
                     "avg_price": _float(p.get("avg_entry_price")),
                     "current_price": _float(p.get("current_price")),
                     "current_value": _float(p.get("market_value")),
@@ -217,7 +217,7 @@ class AlpacaLiveNode:
                 equity_df = pd.DataFrame([
                     {
                         "symbol": p.symbol,
-                        "qty": int(float(p.qty)),
+                        "qty": round(float(p.qty), 2),
                         "avg_price": _position_float(p, "avg_entry_price"),
                         "current_price": _position_float(p, "current_price"),
                         "current_value": _position_float(p, "market_value"),
