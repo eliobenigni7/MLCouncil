@@ -68,9 +68,10 @@ class PortfolioConstructor:
     """
 
     def __init__(self) -> None:
-        self.max_position: float = 0.10
+        import os
+        self.max_position: float = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.10"))
         self.min_position: float = 0.01
-        self.max_turnover: float = 0.30
+        self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.30"))
         self.long_only: bool = True
         self.max_vol_ann: float = 0.20
         self.sector_cap: float = 0.25
@@ -84,6 +85,10 @@ class PortfolioConstructor:
         self.commission_bps: float = 1.0
         self.slippage_bps: float = 3.0
         self.tc_lambda: float = 1.0
+        # Crypto settings
+        self.crypto_enabled: bool = os.getenv("MLCOUNCIL_CRYPTO_ENABLED", "false").lower() == "true"
+        self.max_crypto_position: float = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20"))
+        self.max_crypto_turnover: float = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_TURNOVER", "0.40"))
         self.cost_model = TransactionCostModel(
             commission_bps=self.commission_bps,
             slippage_bps=self.slippage_bps,
@@ -249,6 +254,73 @@ class PortfolioConstructor:
                 weights /= total
 
         return pd.Series(weights, index=tickers, name="target_weight")
+
+    def optimize_with_crypto(
+        self,
+        alpha_signals: pd.Series,
+        position_multipliers: pd.Series,
+        current_weights: pd.Series,
+        returns_covariance: pd.DataFrame,
+        market_returns: pd.Series = None,
+        prices: pd.Series = None,
+    ) -> pd.Series:
+        """Optimize portfolio handling equity and crypto separately.
+
+        Crypto is optimized with its own limit settings (max_crypto_position,
+        max_crypto_turnover) if MLCOUNCIL_CRYPTO_ENABLED=true. Otherwise crypto
+        tickers are included in the standard optimization.
+        """
+        from execution.alpaca_adapter import AlpacaLiveNode
+
+        crypto_tickers = [t for t in alpha_signals.index if AlpacaLiveNode._is_crypto(t)]
+        equity_tickers = [t for t in alpha_signals.index if t not in crypto_tickers]
+
+        results = {}
+
+        # Equity optimization
+        if equity_tickers:
+            eq_signals = alpha_signals[equity_tickers]
+            eq_mults = position_multipliers.reindex(eq_signals.index)
+            eq_curr = current_weights.reindex(eq_signals.index)
+            eq_cov = returns_covariance.reindex(index=equity_tickers, columns=equity_tickers)
+            eq_market = market_returns if market_returns is not None else None
+            eq_prices = prices.reindex(eq_signals.index) if prices is not None else None
+            results = self.optimize(
+                eq_signals, eq_mults, eq_curr, eq_cov, eq_market, eq_prices
+            ).to_dict()
+
+        # Crypto optimization
+        if crypto_tickers and self.crypto_enabled:
+            saved_max_pos = self.max_position
+            saved_max_turn = self.max_turnover
+            self.max_position = self.max_crypto_position
+            self.max_turnover = self.max_crypto_turnover
+
+            cr_signals = alpha_signals[crypto_tickers]
+            cr_mults = position_multipliers.reindex(cr_signals.index)
+            cr_curr = current_weights.reindex(cr_signals.index)
+            cr_cov = returns_covariance.reindex(index=crypto_tickers, columns=crypto_tickers)
+            cr_market = market_returns
+            cr_prices = prices.reindex(cr_signals.index) if prices is not None else None
+            cr_result = self.optimize(
+                cr_signals, cr_mults, cr_curr, cr_cov, cr_market, cr_prices
+            ).to_dict()
+
+            self.max_position = saved_max_pos
+            self.max_turnover = saved_max_turn
+            results.update(cr_result)
+        elif crypto_tickers:
+            # Crypto disabled — include in equity optimization with standard limits
+            cr_signals = alpha_signals[crypto_tickers]
+            cr_mults = position_multipliers.reindex(cr_signals.index)
+            cr_curr = current_weights.reindex(cr_signals.index)
+            cr_cov = returns_covariance.reindex(index=crypto_tickers, columns=crypto_tickers)
+            cr_result = self.optimize(
+                cr_signals, cr_mults, cr_curr, cr_cov
+            ).to_dict()
+            results.update(cr_result)
+
+        return pd.Series(results, name="target_weight")
 
     def _feasible_fallback_weights(
         self,

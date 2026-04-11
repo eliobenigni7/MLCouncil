@@ -156,35 +156,94 @@ class AlpacaLiveNode:
         except Exception:
             return None
 
-    def get_all_positions(self, strict: bool = False) -> pd.DataFrame:
+    def get_crypto_positions(self) -> pd.DataFrame:
+        """Get crypto positions via direct HTTP API."""
+        import requests
+
+        api_key = self.config.paper_key or self.config.live_key
+        api_secret = self.config.paper_secret or self.config.live_secret
+        base_url = os.getenv("ALPACA_CRYPTO_URL", "https://api.alpaca.markets")
+
+        headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+        }
+
         try:
-            positions = self._trading_client.get_all_positions()
+            resp = requests.get(f"{base_url}/v2/positions?asset_class=crypto", headers=headers, timeout=30)
+            if not resp.ok:
+                logger.warning(f"Failed to fetch crypto positions: {resp.status_code}")
+                return pd.DataFrame()
+
+            positions = resp.json()
             if not positions:
                 return pd.DataFrame()
 
-            def _position_float(position, *names: str, default: float = 0.0) -> float:
-                for name in names:
-                    value = getattr(position, name, None)
-                    if value is not None:
-                        return float(value)
-                return default
+            def _float(val, default=0.0):
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return default
 
             return pd.DataFrame([
                 {
-                    "symbol": p.symbol,
-                    "qty": int(float(p.qty)),
-                    "avg_price": _position_float(p, "avg_entry_price"),
-                    "current_price": _position_float(p, "current_price"),
-                    "current_value": _position_float(p, "market_value"),
-                    "unrealized_pnl": _position_float(p, "unrealized_pl"),
-                    "unrealized_pnl_pct": _position_float(p, "unrealized_plpc"),
+                    "symbol": p.get("symbol", ""),
+                    "qty": int(float(p.get("qty", 0))),
+                    "avg_price": _float(p.get("avg_entry_price")),
+                    "current_price": _float(p.get("current_price")),
+                    "current_value": _float(p.get("market_value")),
+                    "unrealized_pnl": _float(p.get("unrealized_pl")),
+                    "unrealized_pnl_pct": _float(p.get("unrealized_plpc")),
+                    "asset_class": "crypto",
                 }
                 for p in positions
             ])
         except Exception as e:
-            if strict:
-                raise RuntimeError(f"Error loading Alpaca positions: {e}") from e
+            logger.warning(f"Error fetching crypto positions: {e}")
             return pd.DataFrame()
+
+    def get_all_positions(self, strict: bool = False) -> pd.DataFrame:
+        equity_df = pd.DataFrame()
+        try:
+            positions = self._trading_client.get_all_positions()
+            if positions:
+                def _position_float(position, *names: str, default: float = 0.0) -> float:
+                    for name in names:
+                        value = getattr(position, name, None)
+                        if value is not None:
+                            return float(value)
+                    return default
+
+                equity_df = pd.DataFrame([
+                    {
+                        "symbol": p.symbol,
+                        "qty": int(float(p.qty)),
+                        "avg_price": _position_float(p, "avg_entry_price"),
+                        "current_price": _position_float(p, "current_price"),
+                        "current_value": _position_float(p, "market_value"),
+                        "unrealized_pnl": _position_float(p, "unrealized_pl"),
+                        "unrealized_pnl_pct": _position_float(p, "unrealized_plpc"),
+                        "asset_class": "equity",
+                    }
+                    for p in positions
+                ])
+        except Exception as e:
+            if strict:
+                raise RuntimeError(f"Error loading Alpaca equity positions: {e}") from e
+
+        crypto_df = pd.DataFrame()
+        try:
+            crypto_df = self.get_crypto_positions()
+        except Exception:
+            pass
+
+        if equity_df.empty and crypto_df.empty:
+            return pd.DataFrame()
+        elif equity_df.empty:
+            return crypto_df
+        elif crypto_df.empty:
+            return equity_df
+        return pd.concat([equity_df, crypto_df], ignore_index=True)
 
     def get_account_info(self) -> dict:
         account = self._trading_client.get_account()
@@ -196,7 +255,19 @@ class AlpacaLiveNode:
             "mode": self.config.mode.value,
         }
 
-    def submit_order(
+    @staticmethod
+    def _is_crypto(symbol: str) -> bool:
+        """Return True if symbol represents a crypto asset."""
+        upper = symbol.upper()
+        return (
+            "/" in symbol
+            or upper in ("BTCUSD", "ETHUSD", "BTC/USD", "ETH/USD")
+            or upper.endswith("USD")
+            and upper not in ("AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA")
+            and not upper.isalpha()
+        )
+
+    def _submit_crypto_order(
         self,
         symbol: str,
         qty: int,
@@ -205,7 +276,64 @@ class AlpacaLiveNode:
         time_in_force: str = "day",
         limit_price: Optional[float] = None,
     ) -> dict:
-        from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+        """Submit a crypto order via direct HTTP (alpaca-py doesn't support crypto orders)."""
+        import requests
+
+        api_key = self.config.paper_key or self.config.live_key
+        api_secret = self.config.paper_secret or self.config.live_secret
+        base_url = os.getenv("ALPACA_CRYPTO_URL", "https://api.alpaca.markets")
+
+        headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+            "Content-Type": "application/json",
+        }
+
+        # Normalize symbol: BTCUSD not BTC-USD or BTC/USD
+        normalized = symbol.upper().replace("/", "").replace("-", "")
+        if not normalized.endswith("USD"):
+            normalized = normalized + "USD"
+
+        payload = {
+            "symbol": normalized,
+            "qty": str(qty),
+            "side": side.lower(),
+            "type": order_type.lower(),
+            "time_in_force": time_in_force.lower(),
+        }
+        if limit_price is not None:
+            payload["limit_price"] = str(limit_price)
+
+        resp = requests.post(f"{base_url}/v2/orders", json=payload, headers=headers, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(f"Crypto order failed: {resp.status_code} {resp.text}")
+
+        order = resp.json()
+        trade_record = {
+            "order_id": order.get("id", ""),
+            "symbol": normalized,
+            "qty": qty,
+            "side": side,
+            "order_type": order_type,
+            "status": order.get("status", "unknown"),
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "mode": self.config.mode.value,
+            "asset_class": "crypto",
+        }
+        self._log_trade(trade_record)
+        return trade_record
+
+    def _submit_equity_order(
+        self,
+        symbol: str,
+        qty: int,
+        side: str,
+        order_type: str = "market",
+        time_in_force: str = "day",
+        limit_price: Optional[float] = None,
+    ) -> dict:
+        """Submit an equity order via alpaca-py SDK."""
+        from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 
         order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
@@ -238,10 +366,23 @@ class AlpacaLiveNode:
             "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
             "submitted_at": datetime.now(timezone.utc).isoformat(),
             "mode": self.config.mode.value,
+            "asset_class": "equity",
         }
-
         self._log_trade(trade_record)
         return trade_record
+
+    def submit_order(
+        self,
+        symbol: str,
+        qty: int,
+        side: str,
+        order_type: str = "market",
+        time_in_force: str = "day",
+        limit_price: Optional[float] = None,
+    ) -> dict:
+        if self._is_crypto(symbol):
+            return self._submit_crypto_order(symbol, qty, side, order_type, time_in_force, limit_price)
+        return self._submit_equity_order(symbol, qty, side, order_type, time_in_force, limit_price)
 
     def get_order_status(self, order_id: str) -> dict:
         try:
