@@ -119,6 +119,18 @@ def _load_universe() -> list[str]:
     return deduped
 
 
+def _normalize_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalize datetime columns to UTC timezone for Polars 1.x strict concat."""
+    if df.is_empty():
+        return df
+    tz_cols = [c for c in df.columns if df[c].dtype == pl.Datetime]
+    if not tz_cols:
+        return df
+    return df.with_columns(
+        pl.col(c).dt.replace_time_zone("UTC").dt.replace_time_zone(None) for c in tz_cols
+    )
+
+
 def _load_all_ohlcv(extra: pl.DataFrame | None = None) -> pl.DataFrame:
     """Legge tutti i parquet OHLCV storici, con eventuale append di `extra`."""
     ohlcv_dir = _DATA_DIR / "ohlcv"
@@ -129,11 +141,11 @@ def _load_all_ohlcv(extra: pl.DataFrame | None = None) -> pl.DataFrame:
                 continue
             for pq in sorted(ticker_dir.glob("*.parquet")):
                 try:
-                    frames.append(pl.read_parquet(pq))
+                    frames.append(_normalize_df(pl.read_parquet(pq)))
                 except Exception:
                     pass
     if extra is not None and not extra.is_empty():
-        frames.append(extra)
+        frames.append(_normalize_df(extra))
     if not frames:
         return pl.DataFrame()
     return (
