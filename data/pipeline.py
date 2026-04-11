@@ -946,6 +946,7 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
 daily_job = dg.define_asset_job(
     name="daily_pipeline",
     selection=dg.AssetSelection.all(),
+    partitions_def=_DAILY_PARTITIONS,
     description=(
         "Pipeline giornaliera MLCouncil: ingest → features → signals "
         "→ council → orders"
