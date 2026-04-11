@@ -177,3 +177,49 @@ def test_feature_store_parquet_backend_preserves_original_when_replace_fails(
     restored = pl.read_parquet(path)
     assert restored.to_dicts() == original.to_dicts()
     assert not path.with_name(f"{path.name}.tmp").exists()
+
+
+def test_feature_store_parquet_backend_read_universe_and_list_versions(
+    monkeypatch, tmp_path
+):
+    import data.store.arctic_store as store_module
+
+    store_module = importlib.reload(store_module)
+    monkeypatch.setattr(store_module, "_arcticdb_available", False)
+
+    store = store_module.FeatureStore(uri=str(tmp_path), library="features")
+    old_ts = datetime(2026, 4, 7, 9, 0, tzinfo=timezone.utc)
+    new_ts = datetime(2026, 4, 8, 9, 0, tzinfo=timezone.utc)
+
+    store.write(
+        "AAPL",
+        pl.DataFrame(
+            {
+                "valid_time": [date(2026, 4, 7)],
+                "feature": [1.0],
+                "transaction_time": [old_ts],
+            }
+        ),
+    )
+    store.write(
+        "MSFT",
+        pl.DataFrame(
+            {
+                "valid_time": [date(2026, 4, 7)],
+                "feature": [2.0],
+                "transaction_time": [new_ts],
+            }
+        ),
+    )
+
+    universe = store.read_universe(
+        ["AAPL", "MSFT"],
+        as_of_date=date(2026, 4, 7),
+        as_of_transaction_time=old_ts,
+    )
+    versions = store.list_versions("AAPL")
+
+    assert sorted(universe["feature"].to_list()) == [1.0]
+    assert len(versions) == 1
+    assert versions[0]["version"] == 1
+    assert "timestamp" in versions[0]
