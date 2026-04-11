@@ -354,11 +354,7 @@ class TestTradingService:
         assert any("bootstrap" in warning.lower() for warning in snapshot["pretrade"]["warnings"])
 
     def test_execute_orders_converts_notional_to_share_quantity(self, monkeypatch):
-        from api.services import trading_service as ts
-        from council import risk_engine as risk_mod
-
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
-
         svc = _make_service()
         svc.get_pending_orders = MagicMock(
             return_value=[
@@ -374,21 +370,11 @@ class TestTradingService:
                 }
             ]
         )
+        # Isolate from stale repo-state execution records
+        svc._load_execution_record = MagicMock(return_value=None)
+        svc._execution_record_path = MagicMock(return_value=Path("/tmp/nonexistent"))
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            original_trade_dir = ts.TRADE_LOG_DIR
-            original_ops_dir = ts.OPERATIONS_DIR
-            original_risk_dir = risk_mod.RISK_DIR
-            ts.TRADE_LOG_DIR = tmp_path / "paper_trades"
-            ts.OPERATIONS_DIR = tmp_path / "operations"
-            risk_mod.RISK_DIR = tmp_path / "risk"
-            try:
-                result = svc.execute_orders("2024-01-15")
-            finally:
-                ts.TRADE_LOG_DIR = original_trade_dir
-                ts.OPERATIONS_DIR = original_ops_dir
-                risk_mod.RISK_DIR = original_risk_dir
+        result = svc.execute_orders("2024-01-99")
 
         svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
         assert result["orders_submitted"] == 1
