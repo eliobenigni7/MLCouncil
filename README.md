@@ -1,199 +1,368 @@
 # MLCouncil
 
-MLCouncil is an end-to-end paper trading platform for US equities.
-It ingests market, news, and macro data, builds features, trains and evaluates multiple alpha models, aggregates them with regime-aware weights, optimizes a target portfolio, and can automatically submit paper orders to Alpaca after a successful pipeline run.
+MLCouncil is an end-to-end **multi-model ensemble paper trading system** for US equities and crypto. Three independent alpha models produce daily signals that a regime-aware council aggregator combines into portfolio weights, which a CVXPY optimizer converts into daily trading orders submitted to Alpaca Paper Trading.
+
+---
+
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Alpha Models](#alpha-models)
+- [Council Aggregation](#council-aggregation)
+- [Portfolio Construction](#portfolio-construction)
+- [Conformal Position Sizing](#conformal-position-sizing)
+- [Monitoring and Alerts](#monitoring-and-alerts)
+- [Asset Universe](#asset-universe)
+- [Expected Results and Performance Criteria](#expected-results-and-performance-criteria)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+- [Run the System](#run-the-system)
+- [Daily Operational Flow](#daily-operational-flow)
+- [Key API Endpoints](#key-api-endpoints)
+- [Project Structure](#project-structure)
+- [Documentation](#documentation)
+- [Testing](#testing)
+
+---
 
 ## How It Works
 
-At a high level, the system runs this loop:
+The system runs a daily pipeline with eight stages, orchestrated by Dagster and scheduled at 21:30 ET on weekdays:
 
-1. Ingest daily OHLCV, news, and macro data.
-2. Build point-in-time features with lookahead protection.
-3. Train or refresh the alpha models and log runs to MLflow.
-4. Generate model signals and combine them in the council.
-5. Optimize target weights under trading and risk constraints.
-6. Write dated orders with lineage metadata.
-7. Run pre-trade checks, reconciliation, and risk validation.
-8. Submit paper orders to Alpaca automatically or manually.
-9. Expose status, positions, fills, monitoring, and diagnostics in the Admin UI, Dashboard, Dagster, and MLflow.
+```
+Stage 1 — Ingest
+  yfinance / FRED / RSS → raw OHLCV, macro series, news headlines
 
-In production-style local usage, Dagster orchestrates the pipeline, the FastAPI admin service exposes operations and controls, Streamlit exposes the read-only dashboard, and MLflow tracks experiments and backtests.
+Stage 2 — Feature Engineering
+  Alpha158 (158+ technical indicators, 1-day lookahead shift)
+  FinBERT headline sentiment scores (SQLite-cached)
+  Macro features: VIX, 10Y/2Y spread, S&P 500 rolling windows (21/63/252 days)
+
+Stage 3 — Model Training / Refresh
+  LightGBM technical model (CPCV cross-validation, SHAP logged to MLflow)
+  FinBERT sentiment model (ProsusAI/finbert)
+  3-state HMM regime detector (bull / bear / transition)
+
+Stage 4 — Signal Generation
+  Each model produces cross-sectional z-scores per ticker per day
+
+Stage 5 — Council Aggregation
+  Regime-conditional base weights scaled by each model's rolling 100-day IC-Sharpe
+  Orthogonality enforcement: correlated models are automatically down-weighted
+  Weight bounds: minimum 5%, maximum 70% per model
+
+Stage 6 — Conformal Position Sizing
+  MAPIE Jackknife+ prediction intervals (85% coverage)
+  Multiplier range: [0.2 × signal, 2.0 × signal] based on model uncertainty
+  Signals below confidence threshold are filtered before portfolio construction
+
+Stage 7 — Portfolio Construction
+  CVXPY mean-variance optimization with hard constraints (see below)
+  Reads current Alpaca paper positions as rebalance baseline
+  Output: data/orders/{date}.parquet with full lineage metadata
+
+Stage 8 — Execution
+  Pre-trade checks, kill switch, risk validation
+  Notional-to-share conversion at current market price
+  Submission to Alpaca Paper Trading API
+  Artifacts: data/operations/, data/paper_trades/, data/risk/
+```
+
+All feature writes are versioned with `transaction_time` in ArcticDB (LMDB backend) to guarantee point-in-time correctness and prevent lookahead bias during backtesting.
+
+---
+
+## Alpha Models
+
+### Technical Model — LightGBM + Alpha158
+
+**File:** `models/technical.py`
+
+The technical model uses over 158 point-in-time features derived from OHLCV data (inspired by the Qlib Alpha158 factor library), computed via Polars and deliberately shifted 1 day to eliminate lookahead bias.
+
+**Training protocol:**
+- Combinatorial Purged Cross-Validation (CPCV): dates split into 6 folds, all C(6,2) = 15 (train, test) combinations generated
+- Embargo of 5 calendar days before each test fold to prevent leakage from overlapping forward returns
+- One LightGBM per fold; best model (highest mean OOF IC) is selected for production
+- SHAP feature importances logged to MLflow after each training run
+
+**Key hyperparameters (from `config/models.yaml`):**
+- Objective: regression on 5-day forward cross-sectional returns
+- SHAP stability monitored: top-10 feature Jaccard overlap must stay ≥ 70% vs 30-day baseline
+
+**References:** Marcos Lopez de Prado, *Advances in Financial Machine Learning* (CPCV purging/embargo); Qlib Alpha158 factor set.
+
+---
+
+### Sentiment Model — FinBERT
+
+**File:** `models/sentiment.py`
+
+Uses [ProsusAI/finbert](https://huggingface.co/ProsusAI/finbert), a BERT model fine-tuned on financial news, to score daily headlines per ticker. Scores are aggregated to a single daily sentiment z-score. Repeated headlines are cached in SQLite to avoid redundant inference.
+
+**Signal:** Cross-sectional z-score of net positive sentiment per ticker.
+
+---
+
+### Regime Model — 3-State HMM
+
+**File:** `models/regime.py`
+
+A Gaussian Hidden Markov Model with 3 states trained on macro features (VIX, yield curve spread, S&P 500 rolling returns). The detected state — **bull**, **bear**, or **transition** — drives which base weights the council uses.
+
+A regime change alert fires when the HMM emits a new state with transition probability > 0.70.
+
+**References:** Hamilton (1989), *A New Approach to the Economic Analysis of Nonstationary Time Series*.
+
+---
+
+## Council Aggregation
+
+**File:** `council/aggregator.py`
+
+The council combines the three model signals in two stages:
+
+### 1. Regime-Conditional Base Weights
+
+| Regime     | LightGBM | Sentiment | HMM  |
+|------------|----------|-----------|------|
+| Bull       | 50%      | 30%       | 20%  |
+| Bear       | 40%      | 20%       | 40%  |
+| Transition | 45%      | 25%       | 30%  |
+
+In bear regimes, HMM weight increases because the regime detector carries more information about market structure than the technical factor.
+
+### 2. Adaptive Reweighting (after 30 days of history)
+
+After 30 days of observed IC history, base weights are scaled by each model's **rolling 100-day Information Coefficient Sharpe** (mean IC / std IC × √252). Models with consistently negative IC-Sharpe are down-weighted toward their floor. Weight bounds are enforced after renormalization:
+
+- **Floor:** 5% per active model
+- **Ceiling:** 70% per model
+
+**Orthogonality enforcement:** Pairwise rolling 60-day signal correlations are monitored. If any pair exceeds 0.70, the junior model is down-weighted by a factor of 0.5 to maintain portfolio diversification across alpha sources.
+
+Every `aggregate()` call logs per-model weights and contributions to MLflow for attribution analysis.
+
+---
+
+## Portfolio Construction
+
+**File:** `council/portfolio.py`
+
+CVXPY solves a mean-variance optimization problem each day:
+
+```
+maximize   (α ⊙ conformal_multipliers)' w − tc_penalty × turnover
+subject to
+    Σ w_i    = 1          (fully invested)
+    w_i     ≥ 0           (long-only)
+    w_i     ≤ 10%         (per-position cap; 8% large-cap, 5% mid-cap)
+    Σ |w_i − w_curr_i|   ≤ 30%   (one-way turnover cap)
+    w' Σ w  ≤ (20%/√252)²        (daily volatility cap)
+    sector[w] ≤ 25%              (sector exposure cap)
+```
+
+**Transaction cost model:** 3 bps slippage + 1 bps commission = 4 bps total, estimated on one-way turnover. Both gross and net equity curves are reported.
+
+Post-processing: positions below 1% weight are zeroed and the remainder renormalized to satisfy the budget constraint.
+
+The optimizer reads the current Alpaca paper portfolio as the rebalancing baseline. If the broker snapshot is unavailable, order generation fails closed — it does not assume an empty portfolio.
+
+---
+
+## Conformal Position Sizing
+
+**File:** `council/conformal.py`
+
+Before portfolio construction, each signal is scaled by a **conformal multiplier** derived from MAPIE Jackknife+ prediction intervals (85% coverage). The idea: when the model's uncertainty interval is wide, the position is reduced; when the interval is tight, it is expanded.
+
+| Interval width | Confidence | Multiplier |
+|----------------|------------|------------|
+| Narrow         | High       | up to 2.0× |
+| Wide           | Low        | down to 0.2× |
+
+Coverage of 85% (rather than 90%) was chosen to tighten intervals and increase average multipliers by ~15%, improving expected alpha capture. The 15% miss rate is acceptable because diversification across 19 tickers limits individual tail exposure.
+
+**References:** Angelopoulos & Bates (2023), *Conformal Risk Control*; MAPIE library (Jackknife+ method).
+
+---
+
+## Monitoring and Alerts
+
+**Files:** `council/monitor.py`, `council/alerts.py`
+
+Four families of daily checks run automatically:
+
+| Check | Trigger condition | Severity |
+|---|---|---|
+| Alpha decay | Rolling IC < 0.01 for 5+ consecutive days | CRITICAL |
+| Feature drift | KS test: > 20% of top-10 SHAP features have p-value < 0.05 | WARNING |
+| SHAP stability | Jaccard overlap of top-10 features vs 30-day baseline < 70% | WARNING |
+| Regime change | HMM new state + transition probability > 0.70 | INFO |
+
+CRITICAL alerts trigger email dispatch via `council/alerts.py`. All alert results are exposed at `GET /api/monitoring/alerts` and logged to MLflow as scalar metrics.
+
+---
+
+## Asset Universe
+
+**File:** `config/universe.yaml`
+
+**19 equities across two segments:**
+
+| Segment | Tickers | Max Weight/Position |
+|---------|---------|---------------------|
+| Large-cap (6) | AAPL, MSFT, GOOGL, AMZN, META, NVDA | 8% |
+| Mid-cap (13) | ETSY, DOCU, UBER, ABNB, PLTR, SNOW, CRWD, NET, SQ, SHOP, FVRR, ROKU, DDOG | 5% |
+
+**Crypto (in progress):**
+| Tickers | Max Weight/Position |
+|---------|---------------------|
+| BTCUSD, ETHUSD | 20% (higher limit for volatility profile) |
+
+**Minimum liquidity threshold:** $1,000,000 average daily volume. Data scheduled at 21:30 ET in the America/New_York timezone with up to 2-day forward fill for gaps.
+
+**Macro inputs (from FRED):** VIXCLS, DGS10 (10Y Treasury), DGS2 (2Y Treasury), S&P 500 with 21/63/252-day rolling windows.
+
+---
+
+## Expected Results and Performance Criteria
+
+### Model Promotion Gates
+
+A model candidate is promoted to production only if all of the following gates are green:
+
+| Gate | Requirement |
+|------|-------------|
+| Out-of-sample Sharpe | `oos_sharpe > 0` |
+| Probability of Backtest Overfitting proxy | `pbo ≤ 0.50` |
+| Walk-forward windows | `walk_forward_window_count ≥ 1` |
+| MLflow lineage | `pipeline_run_id`, `data_version`, `feature_version`, `model_version` all present |
+| Metrics logged | `sharpe`, `max_drawdown`, `turnover`, `oos_sharpe`, `oos_max_drawdown`, `oos_turnover` |
+
+Candidates are rejected if gross/net metrics diverge implausibly from the estimated transaction costs, or if manual overrides were required to pass any gate.
+
+### Portfolio Risk Targets (hard constraints enforced at runtime)
+
+| Constraint | Limit |
+|------------|-------|
+| Max single position | 10% of portfolio (8% large-cap, 5% mid-cap) |
+| Daily one-way turnover | ≤ 30% |
+| Annualized portfolio volatility | ≤ 20% |
+| Single sector exposure | ≤ 25% |
+| Long-only | Yes (no shorts in current scope) |
+
+### Backtest Realism Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Fill model | Next-open (order at EOD → fill at T+1 open) |
+| Slippage | 3 bps probabilistic |
+| Commission | 1 bps |
+| Total transaction cost | 4 bps per one-way trade |
+| Capital assumption | Long-only, fully invested |
+
+### Alpha Decay Thresholds
+
+| Metric | Alert threshold |
+|--------|-----------------|
+| Rolling IC (Information Coefficient) | < 0.01 sustained for 5+ days |
+| SHAP feature Jaccard overlap | < 70% vs 30-day baseline |
+| KS test feature drift (top-10 SHAP) | > 20% of features with p < 0.05 |
+
+### Adaptive Weight Stability
+
+The council's adaptive reweighting requires at least 30 days of IC history before it activates. The rolling IC-Sharpe window is 100 days — chosen over shorter windows (60 days is considered too noisy for equity IC-Sharpe estimation, where noise dominates signal over short horizons). No model weight falls below 5% or exceeds 70% after renormalization.
+
+### What to Expect in Paper Trading
+
+During normal (non-bear) market conditions with a liquid universe:
+- **Orders per day:** typically 5–15 (≤ 20 enforced by kill switch)
+- **Turnover:** typically 5–15% one-way per rebalance (≤ 30% hard cap)
+- **Regime stability:** the HMM tends to stay in a single state for multiple weeks unless macro conditions shift sharply
+- **Signal quality check:** if IC stays above 0.01 for the LightGBM model, alpha has not decayed; sentiment model IC is more variable and may trigger warnings in low-news periods
+
+These are **design-level targets** from the constraint and monitoring setup. Live out-of-sample performance depends on realized alpha, market conditions, and execution quality — not guaranteed.
+
+---
 
 ## Architecture
 
 ```text
-                                  +----------------------+
-                                  |      MLflow          |
-                                  | runs, metrics, tags  |
-                                  +----------+-----------+
-                                             ^
-                                             |
-+-------------+      +-------------+      +--+----------------+      +-------------------+
-| data/ingest | ---> | data/features| ---> | models + council | ---> | council/portfolio |
-| OHLCV/news  |      | Alpha158 etc |      | signals, weights |      | target weights    |
-+------+------+      +------+------+      +---------+---------+      +---------+---------+
-       |                    |                        |                          |
-       v                    v                        v                          v
-+-------------+      +-------------+      +-------------------+      +-------------------+
-| raw datasets |      | feature sets |      | model artifacts   |      | data/orders/*.parquet |
-+-------------+      +------+------+      +-------------------+      +---------+---------+
-                             |                                                  |
-                             v                                                  v
-                       +-------------+                                +-------------------+
-                       | ArcticDB /  |                                | trading_service   |
-                       | local store |                                | preflight, risk,  |
-                       +------+------+                                | reconcile, submit |
-                              |                                       +---------+---------+
-                              |                                                 |
-                              v                                                 v
-                       +-------------+                                +-------------------+
-                       |  Dagster    |                                | Alpaca Paper      |
-                       | orchestration|                               | orders and fills  |
-                       +------+------+                                +---------+---------+
-                              |                                                 |
-                              +---------------------+---------------------------+
-                                                    |
-                         +--------------------------+--------------------------+
-                         |                                                     |
-                         v                                                     v
-                +-------------------+                                 +-------------------+
-                | FastAPI Admin UI  |                                 | Streamlit Dashboard |
-                | control plane     |                                 | monitoring/read-only|
-                +-------------------+                                 +-------------------+
+                              +----------------------+
+                              |       MLflow         |
+                              | runs, metrics, tags  |
+                              +----------+-----------+
+                                         ^
+                                         |
++--------------+   +----------------+   +-----------------+   +-------------------+
+| data/ingest  |-->| data/features  |-->| models + council|-->| council/portfolio |
+| OHLCV/news/  |   | Alpha158,      |   | signals, regime |   | target weights    |
+| macro (FRED) |   | sentiment,     |   | weights, council|   | data/orders/*.pq  |
++--------------+   | sector exposure|   +-----------------+   +---------+---------+
+       |           +-------+--------+           |                       |
+       v                   v                    v                       v
+ +-----------+       +-----------+     +------------------+   +------------------+
+ | raw data  |       | ArcticDB  |     | conformal sizer  |   | trading_service  |
+ | parquet   |       | LMDB,     |     | MAPIE Jackknife+ |   | preflight, risk, |
+ +-----------+       | point-in- |     +------------------+   | reconcile, submit|
+                     | time vrsn |                             +---------+--------+
+                     +-----+-----+                                       |
+                           |                                             v
+                     +-----+-----+                             +------------------+
+                     |  Dagster  |                             | Alpaca Paper API |
+                     | pipeline  |                             | orders & fills   |
+                     | 21:30 ET  |                             +---------+--------+
+                     +-----+-----+                                       |
+                           +---------------------+------------------------+
+                                                 |
+                      +--------------------------+--------------------------+
+                      |                                                     |
+                      v                                                     v
+             +------------------+                                 +--------------------+
+             | FastAPI Admin UI |                                 | Streamlit Dashboard|
+             | control plane    |                                 | read-only monitor  |
+             | :8000            |                                 | :8501              |
+             +------------------+                                 +--------------------+
 ```
 
-## Core Components
-
-### Pipeline and Data Layer
-- `data/pipeline.py`: Dagster assets, jobs, partitions, and asset checks.
-- `data/ingest/`: market, news, and macro ingestion.
-- `data/features/`: Alpha158, sentiment, sector exposure, and related feature builders.
-- `data/store/arctic_store.py`: point-in-time feature storage.
-
-### Models and Council
-- `models/technical.py`: LightGBM-based technical alpha model.
-- `models/sentiment.py`: sentiment alpha model.
-- `models/regime.py`: regime detection model.
-- `council/aggregator.py`: combines model outputs with regime-conditional weights.
-- `council/portfolio.py`: converts council signals into feasible portfolio weights.
-
-### Trading and Operations
-- `api/services/trading_service.py`: preflight checks, reconciliation, execution, live status, trade history.
-- `api/services/pipeline_automation.py`: monitors Dagster runs and auto-executes orders when enabled.
-- `execution/alpaca_adapter.py`: Alpaca paper broker adapter.
-- `council/risk_engine.py`: operational risk checks used before execution.
-
-### Interfaces
-- `api/`: FastAPI backend and Admin UI.
-- `dashboard/`: Streamlit dashboard.
-- `docker-compose.yml`: local multi-service runtime.
-
-## Daily Operational Flow
-
-### 1. Pipeline Run
-A Dagster run produces the daily datasets and artifacts:
-- raw market, news, macro inputs
-- feature tables
-- model outputs and council scores
-- optimized portfolio weights
-- `data/orders/{date}.parquet`
-
-### 2. Lineage and Contracts
-Orders and model-related artifacts carry minimum lineage metadata:
-- `pipeline_run_id`
-- `data_version`
-- `feature_version`
-- `model_version`
-
-Dagster asset checks fail closed when the expected contracts are violated.
-
-### 3. Pre-Trade Controls
-Before orders are sent, the trading service evaluates:
-- paper-mode enforcement
-- kill switch / automation pause
-- max daily order count
-- max turnover
-- max position size
-- projected risk breaches
-- reconciliation between current positions and target orders
-
-### 4. Execution
-If preflight is green, the service:
-- normalizes notionals to share quantities
-- submits paper orders to Alpaca
-- records operations artifacts and trade logs
-- updates trade history with live broker order status
-
-### 5. Monitoring
-The system exposes runtime status through:
-- Admin UI: operational control and execution status
-- Dashboard: portfolio, regime, attribution, alerts
-- Dagster UI: orchestration state
-- MLflow UI: training, retraining, backtest, promotion evidence
-
-## Main Features
-
-### Ensemble Alpha Stack
-- Technical model with Alpha158-style features
-- Sentiment model built from financial news
-- Regime-aware weighting logic in the council
-- Adaptive aggregation based on model diagnostics and regime context
-
-### Portfolio Construction
-- Long-only optimization
-- Max position cap
-- Turnover control
-- Sector exposure handling
-- Live Alpaca portfolio used as the optimization baseline
-- Fail-closed behavior if the broker snapshot is unavailable
-
-### Paper Trading Controls
-- Automatic order execution after successful Dagster runs
-- Preflight and reconciliation endpoints
-- Kill switch support
-- Runtime environment validation
-- Persistent operations and risk artifacts
-
-### Experiment Tracking and Validation
-- Standardized MLflow runs and tags
-- Backtest metrics with gross/net realism
-- Walk-forward diagnostics and promotion gates
-- Data, feature, and model lineage propagation
+---
 
 ## Quick Start
 
-### Local Python Setup
+### Python Setup
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements_api.txt   # for API / admin only
 ```
 
-### Required Environment
+### Environment Configuration
 
 Create a `.env` file in the project root:
 
 ```env
+# Alpaca Paper Trading (required for order execution)
 ALPACA_API_KEY=your_alpaca_key
 ALPACA_SECRET_KEY=your_alpaca_secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
+
+# Storage and tracking
 ARCTICDB_URI=lmdb://data/arctic/
 MLFLOW_TRACKING_URI=http://localhost:5000
+DATABASE_URL=postgresql://mlcouncil:password@localhost:5432/mlcouncil
+
+# Optional: alerts
+ALERT_EMAIL=your@email.com
+SMTP_PASSWORD=your_smtp_password
+
+# Optional: market data enrichment
+POLYGON_API_KEY=your_polygon_key
 ```
 
-Runtime profiles and examples live under `config/`:
-- `config/runtime.env`
-- `config/runtime.local.env.example`
-- `config/runtime.paper.env.example`
-
-Environment loading works like this:
-- `.env` in the project root is the source of truth for local secrets such as Alpaca credentials.
-- `config/runtime*.env` provides non-secret runtime defaults and safety limits.
-- Placeholder values in `config/runtime*.env` do not override real values from `.env`.
-- Set `MLCOUNCIL_ENV_PROFILE=paper` if you want the stricter paper-runtime validation path.
-
-Recommended paper-trading values:
+**Runtime safety limits** (set these for paper trading):
 
 ```env
 MLCOUNCIL_ENV_PROFILE=paper
@@ -201,147 +370,217 @@ MLCOUNCIL_MAX_DAILY_ORDERS=20
 MLCOUNCIL_MAX_TURNOVER=0.30
 MLCOUNCIL_MAX_POSITION_SIZE=0.10
 MLCOUNCIL_AUTOMATION_PAUSED=false
+MLCOUNCIL_AUTO_EXECUTE=false
 ```
 
-Important Alpaca runtime behavior:
-- The optimizer reads the current Alpaca paper portfolio and uses it as the rebalance baseline.
-- If Alpaca account or positions cannot be read, order generation fails closed instead of assuming an empty portfolio.
-- Existing live positions outside the new target universe are included in reconciliation so the system can generate closing sells.
+Profile templates: `config/runtime.local.env.example`, `config/runtime.paper.env.example`.
 
-Python dependency note:
-- Keep `yfinance` on `0.2.x`. The repository pins `yfinance>=0.2.40,<1.0` to stay compatible with `alpaca-trade-api`.
+**Dependency note:** Keep `yfinance` on `0.2.x`. The repo pins `yfinance>=0.2.40,<1.0` for compatibility with `alpaca-trade-api`.
+
+---
 
 ## Run the System
 
-### Docker Compose
+### Docker Compose (recommended)
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-Services:
-- Admin UI and API: `http://localhost:8000`
-- Streamlit Dashboard: `http://localhost:8501`
-- Dagster UI: `http://localhost:3000`
-- MLflow UI: `http://localhost:5000`
+| Service | URL |
+|---------|-----|
+| Admin UI + API | http://localhost:8000 |
+| Streamlit Dashboard | http://localhost:8501 |
+| Dagster UI | http://localhost:3000 |
+| MLflow UI | http://localhost:5000 |
 
-### Local Services Without Docker
+### Local (no Docker)
 
 ```bash
-python run_admin.py
-streamlit run dashboard/app.py
-dagster dev -f data/pipeline.py
+python run_admin.py                           # FastAPI admin API
+streamlit run dashboard/app.py                # Public dashboard
+dagster dev -f data/pipeline.py               # Dagster pipeline UI
+python scripts/run_pipeline.py                # Standalone demo run
 ```
 
-## Pipeline and Trading Usage
+---
 
-### Trigger a Pipeline Run
+## Daily Operational Flow
+
+### 1. Pre-Check
+
+Before running:
+
+```bash
+GET /api/health           # runtime + trading_operations summary
+GET /api/trading/status   # paused, kill_switch_active, paper_guard_ok
+```
+
+Abort if `paper_guard_ok=false`, `paused=true`, or any `HIGH` risk breach.
+
+### 2. Pipeline Run
+
+Trigger via Dagster UI or API:
 
 ```bash
 curl -X POST http://localhost:8000/api/pipeline/run \
   -H "Content-Type: application/json" \
-  -d '{"partition":"2026-04-07"}'
+  -d '{"partition":"2026-04-11"}'
 ```
 
-### Check Automation Status
+This produces:
+- `data/orders/{date}.parquet` with lineage metadata
+- Model artifacts and MLflow runs
+
+### 3. Preflight + Execute
 
 ```bash
-curl http://localhost:8000/api/pipeline/automation/<run_id>
-```
+# Review preflight (blocks if any control fires)
+curl http://localhost:8000/api/trading/preflight/2026-04-11
 
-### Manual Preflight and Execution
-
-```bash
-curl http://localhost:8000/api/trading/preflight/2026-04-07
+# Execute (only if preflight is green)
 curl -X POST http://localhost:8000/api/trading/execute \
   -H "Content-Type: application/json" \
-  -d '{"date":"2026-04-07"}'
+  -d '{"date":"2026-04-11"}'
 ```
 
-### Enable Auto-Execute
+**Hard stop conditions** — do not execute if:
+- `pretrade.blocked=true`
+- Any `HIGH` breach in `data/risk/risk_report_{date}.json`
+- Projected turnover above limit
+- Daily order count above `MLCOUNCIL_MAX_DAILY_ORDERS`
 
-Set:
+### 4. Post-Run Verification
+
+Artifacts to inspect:
+
+```
+data/operations/{date}.json     # operational state (trade_status: success/degraded/blocked)
+data/paper_trades/{date}.json   # submission log and liquidations
+data/risk/risk_report_{date}.json  # projected portfolio risk
+```
+
+### Auto-Execute Mode
+
+Set `MLCOUNCIL_AUTO_EXECUTE=true` to skip the manual execution step. After a successful Dagster run, the system automatically monitors completion and submits the orders through the trading service.
+
+### Kill Switch
 
 ```env
-MLCOUNCIL_AUTO_EXECUTE=true
+MLCOUNCIL_AUTOMATION_PAUSED=true
 ```
 
-When enabled, a successful pipeline run automatically monitors the Dagster run and executes the matching order date through the trading service.
+This stops order execution but keeps the analytical pipeline running. `POST /api/trading/execute` returns `409` while paused. Reset to `false` only after resolving the underlying issue.
 
-## Important Endpoints
+---
+
+## Key API Endpoints
 
 ### Health and Runtime
-- `GET /api/health`
-- `GET /api/health/dagster`
-- `GET /api/trading/status`
+
+```
+GET  /api/health
+GET  /api/health/dagster
+GET  /api/trading/status
+```
 
 ### Pipeline
-- `POST /api/pipeline/run`
-- `GET /api/pipeline/status`
-- `GET /api/pipeline/automation/{run_id}`
+
+```
+POST /api/pipeline/run
+GET  /api/pipeline/status
+GET  /api/pipeline/automation/{run_id}
+```
 
 ### Trading
-- `GET /api/trading/orders/latest`
-- `GET /api/trading/orders/pending/{date}`
-- `GET /api/trading/preflight/{date}`
-- `GET /api/trading/reconcile/{date}`
-- `POST /api/trading/execute`
-- `POST /api/trading/liquidate`
-- `GET /api/trading/history`
 
-### Configuration and Monitoring
-- `GET /api/config/universe`
-- `PUT /api/config/universe`
-- `GET /api/config/regime-weights`
-- `PUT /api/config/regime-weights`
-- `GET /api/monitoring/alerts`
-- `GET /api/monitoring/alerts/history`
+```
+GET  /api/trading/orders/latest
+GET  /api/trading/orders/pending/{date}
+GET  /api/trading/preflight/{date}
+GET  /api/trading/reconcile/{date}
+POST /api/trading/execute
+POST /api/trading/liquidate
+GET  /api/trading/history
+```
+
+### Configuration
+
+```
+GET  /api/config/universe
+PUT  /api/config/universe
+GET  /api/config/regime-weights
+PUT  /api/config/regime-weights
+```
+
+### Monitoring
+
+```
+GET  /api/monitoring/alerts
+GET  /api/monitoring/alerts/history
+```
+
+---
 
 ## Project Structure
 
 ```text
 MLCouncil/
-|-- api/                  FastAPI backend, Admin UI, service layer
-|-- backtest/             Backtest engine and validation
-|-- config/               Runtime and model configuration
-|-- council/              Aggregation, portfolio, risk, monitoring
-|-- dashboard/            Streamlit dashboard
-|-- data/                 Ingestion, features, storage, Dagster pipeline
-|-- docs/                 Operational documentation and phase notes
-|-- execution/            Broker adapter(s)
-|-- models/               Alpha and regime models
-|-- scripts/              Utility and support scripts
-|-- tests/                Pytest suite
-|-- docker-compose.yml    Local multi-service stack
-|-- requirements.txt      Main dependencies
-`-- run_admin.py          Admin server entry point
+├── api/                  FastAPI backend, Admin UI, service layer
+├── backtest/             NautilusTrader backtest engine and walk-forward validation
+├── config/               Runtime profiles, universe, regime weights, model config
+├── council/              Aggregator, portfolio, conformal sizer, risk engine, monitor, alerts
+├── dashboard/            Streamlit read-only dashboard
+├── data/                 Ingestion, Alpha158 features, ArcticDB store, Dagster pipeline
+├── docs/                 Phase docs, runbooks, promotion criteria, plans
+├── execution/            Alpaca adapter, OMS
+├── models/               LightGBM technical, FinBERT sentiment, HMM regime
+├── scripts/              Utility and support scripts
+├── tests/                Pytest suite (council, API, adapter, Arctic store, runtime env)
+├── docker-compose.yml    Local multi-service stack
+├── requirements.txt      Core dependencies
+├── requirements_api.txt  API/admin extra dependencies
+└── run_admin.py          Admin server entry point
 ```
+
+---
 
 ## Documentation
 
-### Foundation and Architecture Phases
-- [docs/fase1-foundations.md](docs/fase1-foundations.md)
-- [docs/fase2-realism.md](docs/fase2-realism.md)
-- [docs/fase3-operational-controls.md](docs/fase3-operational-controls.md)
-- [docs/fase4-hardening.md](docs/fase4-hardening.md)
+### Phase Architecture Docs
+- [docs/fase1-foundations.md](docs/fase1-foundations.md) — Data contracts, lineage, MLflow conventions
+- [docs/fase2-realism.md](docs/fase2-realism.md) — Transaction cost model, gross/net metrics, walk-forward + PBO gate
+- [docs/fase3-operational-controls.md](docs/fase3-operational-controls.md) — Pre-trade controls, kill switch, risk artifacts
+- [docs/fase4-hardening.md](docs/fase4-hardening.md) — Runtime profile validation, health surface, test coverage
 
 ### Operations
-- [docs/paper-trading-runbook.md](docs/paper-trading-runbook.md)
-- [docs/model-promotion-criteria.md](docs/model-promotion-criteria.md)
+- [docs/paper-trading-runbook.md](docs/paper-trading-runbook.md) — Daily operator workflow, triage guide
+- [docs/model-promotion-criteria.md](docs/model-promotion-criteria.md) — Promotion gates and qualitative checklist
+
+---
 
 ## Testing
 
 ```bash
-python -m pytest
-python -m pytest tests/test_council.py -v
-python -m pytest tests/test_trading_service.py -v
+python -m pytest                                   # full suite
+python -m pytest tests/test_council.py -v          # council aggregator + portfolio
+python -m pytest tests/test_api_health.py -v       # health endpoint
+python -m pytest tests/test_trading_service.py -v  # trading service
+python -m pytest tests/test_alpaca_adapter.py -v   # adapter (mocked)
+python -m pytest tests/test_arctic_store.py -v     # feature store (fake backend)
+python -m pytest tests/ -k "test_aggregator"       # single test by name
 ```
+
+`tests/conftest.py` installs a `slowapi` stub so rate-limiting tests run without the package installed.
+
+---
 
 ## Current Scope
 
-The current target is robust paper trading on US equities with Alpaca Paper.
-Kubernetes, GitOps, and live trading are intentionally out of scope until the paper-trading path remains stable end to end.
+The current production target is robust **paper trading on US equities** via Alpaca Paper, with crypto (BTC/USD, ETH/USD) support in progress. Kubernetes, GitOps, and live trading are intentionally out of scope until the paper-trading path is stable end to end.
+
+---
 
 ## License
 
