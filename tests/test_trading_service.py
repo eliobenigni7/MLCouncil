@@ -39,6 +39,34 @@ def _make_service(
 
 
 class TestTradingService:
+    def test_trading_service_uses_centralized_trading_settings(self, monkeypatch):
+        from api.services import trading_service as ts
+        from runtime_env import TradingSettings
+
+        svc = _make_service()
+        monkeypatch.setattr(
+            ts,
+            "get_trading_settings",
+            lambda: TradingSettings(
+                alpaca_base_url="https://paper-api.alpaca.markets",
+                automation_paused=True,
+                max_daily_orders=20,
+                max_turnover=0.30,
+                max_position_size=0.01,
+                max_sector_exposure=0.25,
+            ),
+        )
+
+        valid, msg = svc._validate_order(
+            {"ticker": "AAPL", "direction": "buy", "quantity": 10, "price": 150.0},
+            {"portfolio_value": 100000.0},
+            pd.DataFrame(),
+        )
+
+        assert svc._is_automation_paused() is True
+        assert valid is False
+        assert "exceeds max position" in msg
+
     def test_validate_order_valid(self):
         svc = _make_service()
 

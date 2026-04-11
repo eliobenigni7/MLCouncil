@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
 
-from runtime_env import get_runtime_profile, load_runtime_env
+from runtime_env import get_runtime_profile, get_trading_settings, load_runtime_env
 
 if TYPE_CHECKING:
     from execution.alpaca_adapter import AlpacaConfig, AlpacaLiveNode
@@ -53,6 +52,10 @@ class TradingService:
 
             self._risk_engine = RiskEngine()
         return self._risk_engine
+
+    @property
+    def trading_settings(self):
+        return get_trading_settings()
 
     @property
     def alert_dispatcher(self):
@@ -136,7 +139,7 @@ class TradingService:
         """Validate single order against safety limits."""
         del positions  # reserved for richer checks
 
-        max_position = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.10"))
+        max_position = self.trading_settings.max_position_size
         portfolio_value = float(account.get("portfolio_value", 0))
         if portfolio_value <= 0:
             return False, "No buying power"
@@ -392,8 +395,9 @@ class TradingService:
             pretrade["blocked"] = True
             pretrade["reason"] = "Trading paused by kill switch"
         else:
-            max_daily = int(os.getenv("MLCOUNCIL_MAX_DAILY_ORDERS", "20"))
-            max_turnover = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.30"))
+            settings = self.trading_settings
+            max_daily = settings.max_daily_orders
+            max_turnover = settings.max_turnover
 
             if len(orders) > max_daily:
                 pretrade["blocked"] = True
@@ -586,7 +590,7 @@ class TradingService:
         if not self.is_paper:
             return "Live trading blocked - paper mode only"
 
-        base_url = os.getenv("ALPACA_BASE_URL", "").strip()
+        base_url = self.trading_settings.alpaca_base_url
         if base_url and "paper-api.alpaca.markets" not in base_url:
             return "Trading blocked - ALPACA_BASE_URL must point to Alpaca paper"
 
@@ -639,8 +643,7 @@ class TradingService:
         return merged
 
     def _is_automation_paused(self) -> bool:
-        flag = os.getenv("MLCOUNCIL_AUTOMATION_PAUSED", "").strip().lower()
-        return flag in {"1", "true", "yes", "on"}
+        return self.trading_settings.automation_paused
 
     def _normalize_order(self, order: dict, positions_df: pd.DataFrame) -> dict[str, Any]:
         symbol = str(order.get("ticker"))
@@ -778,11 +781,12 @@ class TradingService:
             )
 
         returns = self._load_historical_returns(target_symbols)
-        base_sector_limit = float(os.getenv("MLCOUNCIL_MAX_SECTOR_EXPOSURE", "0.25"))
+        settings = self.trading_settings
+        base_sector_limit = settings.max_sector_exposure
         self.risk_engine.limits.max_sector_exposure = compute_effective_sector_cap(
             target_symbols,
             base_sector_cap=base_sector_limit,
-            max_position=float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.10")),
+            max_position=settings.max_position_size,
         )
         report = self.risk_engine.compute_full_risk(
             positions=projected_positions,
