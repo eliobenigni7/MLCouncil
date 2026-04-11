@@ -18,6 +18,7 @@ automatically falls back to Parquet-based storage with same interface.
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -112,7 +113,14 @@ class FeatureStore:
             if path.exists():
                 existing = pl.read_parquet(path)
                 df = pl.concat([existing, df], how="diagonal_relaxed")
-            df.write_parquet(path)
+            tmp_path = path.with_name(f"{path.name}.tmp")
+            try:
+                df.write_parquet(tmp_path)
+                os.replace(tmp_path, path)
+            except Exception:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise
 
     # ------------------------------------------------------------------
     # Read
