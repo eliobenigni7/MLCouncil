@@ -39,6 +39,35 @@ PLACEHOLDER_ENV_VALUES = {
     "your-secret",
 }
 
+_DOCKER_SECRETS_DIR = Path("/run/secrets")
+
+# Mapping from env-var name to Docker secret filename
+_SECRET_FILE_NAMES: dict[str, str] = {
+    "ALPACA_API_KEY": "alpaca_api_key",
+    "ALPACA_PAPER_KEY": "alpaca_api_key",
+    "ALPACA_SECRET_KEY": "alpaca_secret_key",
+    "ALPACA_PAPER_SECRET": "alpaca_secret_key",
+    "SMTP_PASSWORD": "smtp_password",
+}
+
+
+def get_secret(env_name: str, default: str = "") -> str:
+    """Read a secret, preferring Docker secret files over env vars.
+
+    Lookup order:
+      1. ``/run/secrets/<mapped_name>`` (Docker secret mount)
+      2. ``os.environ[env_name]``
+      3. *default*
+
+    This allows the same application code to work both in Docker
+    (with secrets mounted) and locally (with ``.env`` / env vars).
+    """
+    secret_filename = _SECRET_FILE_NAMES.get(env_name, env_name.lower())
+    secret_path = _DOCKER_SECRETS_DIR / secret_filename
+    if secret_path.is_file():
+        return secret_path.read_text().strip()
+    return os.environ.get(env_name, default)
+
 
 @dataclass(frozen=True)
 class TradingSettings:

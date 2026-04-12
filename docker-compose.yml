@@ -1,3 +1,11 @@
+secrets:
+  alpaca_api_key:
+    file: ./secrets/alpaca_api_key
+  alpaca_secret_key:
+    file: ./secrets/alpaca_secret_key
+  smtp_password:
+    file: ./secrets/smtp_password
+
 services:
   # Admin API
   admin-api:
@@ -5,12 +13,14 @@ services:
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "${ADMIN_API_PORT:-8000}:8000"
+    secrets:
+      - alpaca_api_key
+      - alpaca_secret_key
+      - smtp_password
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - DAGSTER_GRAPHQL_URL=http://dagster:3000/graphql
-      - ALPACA_API_KEY=${ALPACA_API_KEY}
-      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
       - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
       - MLCOUNCIL_AUTO_EXECUTE=${MLCOUNCIL_AUTO_EXECUTE:-false}
       - MLCOUNCIL_MAX_DAILY_ORDERS=${MLCOUNCIL_MAX_DAILY_ORDERS:-20}
@@ -66,6 +76,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+    secrets:
+      - alpaca_api_key
+      - alpaca_secret_key
     env_file:
       - path: .env
         required: true
@@ -73,8 +86,6 @@ services:
       - ARCTICDB_URI=lmdb://data/arctic/
       - DAGSTER_HOME=/app/data/dagster
       - MLFLOW_TRACKING_URI=http://mlflow:5000
-      - ALPACA_API_KEY=${ALPACA_API_KEY}
-      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
       - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
     restart: unless-stopped
     healthcheck:
@@ -109,11 +120,12 @@ services:
   intraday-supervisor:
     build: .
     command: python scripts/run_intraday_supervisor.py
+    secrets:
+      - alpaca_api_key
+      - alpaca_secret_key
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
       - MLFLOW_TRACKING_URI=http://mlflow:5000
-      - ALPACA_API_KEY=${ALPACA_API_KEY}
-      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
       - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
       - MLCOUNCIL_ENV_PROFILE=${MLCOUNCIL_ENV_PROFILE:-paper}
       - MLCOUNCIL_INTRADAY_INTERVAL_MINUTES=${MLCOUNCIL_INTRADAY_INTERVAL_MINUTES:-15}

@@ -31,7 +31,7 @@ from typing import Optional
 _TRADE_LOG_LOCK = threading.Lock()
 
 import pandas as pd
-from runtime_env import load_runtime_env
+from runtime_env import get_secret, load_runtime_env
 
 load_runtime_env()
 
@@ -57,8 +57,8 @@ class AlpacaConfig:
     def from_env(cls) -> "AlpacaConfig":
         mode = TradingMode(os.getenv("TRADING_MODE", "paper"))
         return cls(
-            paper_key=os.getenv("ALPACA_PAPER_KEY", "") or os.getenv("ALPACA_API_KEY", ""),
-            paper_secret=os.getenv("ALPACA_PAPER_SECRET", "") or os.getenv("ALPACA_SECRET_KEY", ""),
+            paper_key=get_secret("ALPACA_PAPER_KEY") or get_secret("ALPACA_API_KEY"),
+            paper_secret=get_secret("ALPACA_PAPER_SECRET") or get_secret("ALPACA_SECRET_KEY"),
             live_key=os.getenv("ALPACA_LIVE_KEY"),
             live_secret=os.getenv("ALPACA_LIVE_SECRET"),
             mode=mode,

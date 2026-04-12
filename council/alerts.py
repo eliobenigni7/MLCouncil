@@ -27,10 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from runtime_env import get_secret
 
 _ROOT = Path(__file__).parents[1]
 _ALERTS_DIR = _ROOT / "data" / "alerts"
 _MONITORING_DIR = _ROOT / "data" / "monitoring"
+_DEADLETTER_DIR = _ALERTS_DIR / "deadletter"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +108,7 @@ class AlertDispatcher:
     def __init__(self) -> None:
         _ALERTS_DIR.mkdir(parents=True, exist_ok=True)
         _MONITORING_DIR.mkdir(parents=True, exist_ok=True)
+        _DEADLETTER_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -201,7 +204,7 @@ class AlertDispatcher:
         Silently skips when credentials are not configured.
         """
         email_addr = os.environ.get("ALERT_EMAIL", "")
-        smtp_password = os.environ.get("SMTP_PASSWORD", "")
+        smtp_password = get_secret("SMTP_PASSWORD")
 
         if not email_addr or not smtp_password:
             logger.debug(
@@ -235,6 +238,60 @@ class AlertDispatcher:
             logger.info(f"CRITICAL alert email sent to {email_addr}")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed to send alert email: {exc}")
+            self._save_to_deadletter(alert)
+
+    # ------------------------------------------------------------------
+    # Deadletter queue
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _save_to_deadletter(alert: AlertResult) -> None:
+        """Persist a failed-to-email alert so it can be retried later."""
+        _DEADLETTER_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S%f")
+        dl_path = _DEADLETTER_DIR / f"{ts}_{alert.check_type}.json"
+        try:
+            dl_path.write_text(json.dumps(alert.to_dict(), indent=2, default=str))
+            logger.warning(f"CRITICAL alert saved to deadletter: {dl_path.name}")
+        except OSError as exc:
+            logger.error(f"Could not write deadletter file: {exc}")
+
+    def retry_deadletter(self) -> int:
+        """Attempt to re-send all deadlettered CRITICAL alerts.
+
+        Returns the number of alerts successfully sent and removed from
+        the deadletter queue.
+        """
+        if not _DEADLETTER_DIR.exists():
+            return 0
+
+        sent = 0
+        for dl_file in sorted(_DEADLETTER_DIR.glob("*.json")):
+            try:
+                data = json.loads(dl_file.read_text())
+                alert = AlertResult(
+                    is_alert=True,
+                    severity=Severity.CRITICAL,
+                    model_name=data.get("model_name", "unknown"),
+                    check_type=data.get("check_type", "unknown"),
+                    message=data.get("message", ""),
+                    recommendation=data.get("recommendation", ""),
+                    metric_value=float(data.get("metric_value", 0.0)),
+                    threshold=float(data.get("threshold", 0.0)),
+                    timestamp=data.get("timestamp", ""),
+                )
+                # Try sending — if it fails again, _send_email will
+                # re-save to deadletter (but we remove this file first
+                # to avoid duplicates).
+                dl_file.unlink()
+                self._send_email(alert)
+                sent += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Deadletter retry failed for {dl_file.name}: {exc}")
+
+        if sent:
+            logger.info(f"Deadletter retry: {sent} alert(s) re-sent successfully.")
+        return sent
 
 
 # ---------------------------------------------------------------------------

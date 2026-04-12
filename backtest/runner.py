@@ -266,6 +266,61 @@ def _make_equity(ticker: str, venue: "Venue") -> "Equity":
 # run_backtest
 # ===========================================================================
 
+def _run_lookahead_preflight(start_date: str, end_date: str) -> None:
+    """Load available feature parquets and run lookahead-bias checks.
+
+    Warns on any suspicious findings but does not block the backtest.
+    """
+    import logging as _logging
+
+    _logger = _logging.getLogger(__name__)
+    features_dir = _ROOT / "data" / "features" / "alpha158"
+
+    if not features_dir.exists():
+        _logger.debug("No alpha158 feature dir found — skipping lookahead check.")
+        return
+
+    # Sample up to 5 parquet files from the backtest period
+    parquets = sorted(features_dir.glob("*.parquet"))
+    if not parquets:
+        return
+
+    sample_files = [
+        p for p in parquets
+        if start_date <= p.stem <= end_date
+    ][:5]
+
+    if not sample_files:
+        sample_files = parquets[:3]
+
+    try:
+        from backtest.validation import validate_no_lookahead
+
+        frames = []
+        for pq in sample_files:
+            try:
+                frames.append(pd.read_parquet(pq))
+            except Exception:
+                continue
+        if not frames:
+            return
+
+        df = pd.concat(frames, ignore_index=True)
+        warnings = validate_no_lookahead(
+            features_df=df,
+            target_col="forward_return",
+            date_col="valid_time",
+        )
+        if warnings:
+            _logger.warning(
+                "Lookahead bias pre-flight found %d warning(s) — "
+                "review feature pipeline before trusting backtest results.",
+                len(warnings),
+            )
+    except Exception as exc:
+        _logger.debug("Lookahead pre-flight skipped: %s", exc)
+
+
 def run_backtest(
     start_date: str = "2020-01-01",
     end_date: str = "2023-12-31",
@@ -274,6 +329,7 @@ def run_backtest(
     slippage_bps: float = 3.0,
     commission_bps: float = 1.0,
     verbose: bool = False,
+    skip_lookahead_check: bool = False,
 ) -> BacktestResult:
     """Configura e lancia il backtest NautilusTrader.
 
@@ -293,6 +349,8 @@ def run_backtest(
         Commissioni in basis-point (default 1 bps).
     verbose : bool
         Se True, abilita il logging NautilusTrader.
+    skip_lookahead_check : bool
+        Se True, salta la validazione di lookahead bias pre-backtest.
 
     Returns
     -------
@@ -304,13 +362,23 @@ def run_backtest(
             "Esegui: pip install nautilus_trader"
         )
 
-    # Carica universo
+    # Carica universo (survivorship-bias-aware when history file exists)
     if universe is None:
         try:
-            from data.pipeline import _load_universe
-            universe = _load_universe()
+            from data.pipeline import load_universe_as_of
+            universe = load_universe_as_of(as_of_date=start_date)
         except Exception:
-            universe = ["AAPL", "MSFT", "GOOGL"]
+            try:
+                from data.pipeline import _load_universe
+                universe = _load_universe()
+            except Exception:
+                universe = ["AAPL", "MSFT", "GOOGL"]
+
+    # ------------------------------------------------------------------
+    # 0. Pre-flight: lookahead-bias validation on available features
+    # ------------------------------------------------------------------
+    if not skip_lookahead_check:
+        _run_lookahead_preflight(start_date, end_date)
 
     # ------------------------------------------------------------------
     # 1. Configura BacktestEngine
