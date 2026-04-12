@@ -322,3 +322,37 @@ def test_intraday_supervisor_list_decisions_skips_unreadable_directory(tmp_path:
     payloads = supervisor.list_decisions(limit=5)
 
     assert payloads == []
+
+
+def test_intraday_supervisor_runs_crypto_universe_outside_equity_hours(tmp_path: Path):
+    from intraday.market import USMarketCalendar
+    from intraday.supervisor import IntradaySupervisor
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=object(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL", "BTCUSD"],
+        calendar=USMarketCalendar(),
+    )
+
+    sunday = datetime(2026, 4, 12, 3, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    assert supervisor._should_run_cycle(sunday) is True
+    assert supervisor._resolve_market_session(sunday) == "crypto"
+
+
+def test_intraday_supervisor_keeps_equity_only_schedule_closed_outside_market_hours(tmp_path: Path):
+    from intraday.market import USMarketCalendar
+    from intraday.supervisor import IntradaySupervisor
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=object(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL", "MSFT"],
+        calendar=USMarketCalendar(),
+    )
+
+    sunday = datetime(2026, 4, 12, 3, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    assert supervisor._should_run_cycle(sunday) is False
+    assert supervisor._resolve_market_session(sunday) == "closed"

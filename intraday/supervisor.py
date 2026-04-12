@@ -40,6 +40,7 @@ class IntradaySupervisor:
         self.schedule_minutes = schedule_minutes
         self.universe = list(universe or ["AAPL", "MSFT", "NVDA", "AMZN", "META"])
         self.calendar = calendar or USMarketCalendar()
+        self._has_crypto_universe = any(self._is_crypto_ticker(ticker) for ticker in self.universe)
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -196,7 +197,7 @@ class IntradaySupervisor:
                 now = self._normalize_now(None)
                 self.state["market_session"] = self._resolve_market_session(now)
                 self._persist_state()
-                if self.calendar.is_market_open(now):
+                if self._should_run_cycle(now):
                     self.run_cycle(now=now)
             time.sleep(1.0)
 
@@ -396,12 +397,33 @@ class IntradaySupervisor:
     def _resolve_market_session(self, now: datetime) -> str:
         window = self.calendar.trading_window(now)
         if window is None:
-            return "closed"
+            return "crypto" if self._has_crypto_universe else "closed"
         if self.calendar.is_market_open(now):
             return window.session
-        if now < window.opens_at:
+        if self._has_crypto_universe:
+            return "crypto"
+        if now.astimezone(_NY_TZ) < window.opens_at:
             return "pre_market"
         return "post_market"
+
+    def _should_run_cycle(self, now: datetime) -> bool:
+        if self._has_crypto_universe:
+            return True
+        return self.calendar.is_market_open(now)
+
+    @staticmethod
+    def _is_crypto_ticker(ticker: str) -> bool:
+        upper = str(ticker).strip().upper()
+        if not upper:
+            return False
+        normalized = upper.replace("/", "").replace("-", "")
+        base_currency, quote_currency = normalized[:-3], normalized[-3:]
+        return (
+            len(normalized) >= 6
+            and quote_currency == "USD"
+            and 2 <= len(base_currency) <= 10
+            and base_currency.isalpha()
+        )
 
     def _normalize_now(self, now: datetime | None) -> datetime:
         if now is None:
