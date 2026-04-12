@@ -1,0 +1,61 @@
+# Historical universe membership for survivorship-bias-free backtesting.
+#
+# Each ticker has an 'added' date (when it entered the tradable universe)
+# and an optional 'removed' date.  If 'removed' is absent, the ticker is
+# still an active member.
+#
+# IMPORTANT: Update this file whenever the universe changes so that
+# backtests running over past dates only include tickers that were
+# actually tradable at that point in time.
+#
+# Dates approximate the IPO / listing date for mid-cap names;
+# large-caps are set to the pipeline start date (2018-01-01).
+
+membership:
+  # Large cap (all present since pipeline inception)
+  AAPL:
+    added: "2018-01-01"
+  MSFT:
+    added: "2018-01-01"
+  GOOGL:
+    added: "2018-01-01"
+  AMZN:
+    added: "2018-01-01"
+  META:
+    added: "2018-01-01"
+  NVDA:
+    added: "2018-01-01"
+
+  # Mid cap (added around their IPO / listing dates)
+  ETSY:
+    added: "2018-01-01"
+  DOCU:
+    added: "2018-04-27"
+  UBER:
+    added: "2019-05-10"
+  ABNB:
+    added: "2020-12-10"
+  PLTR:
+    added: "2020-09-30"
+  SNOW:
+    added: "2020-09-16"
+  CRWD:
+    added: "2019-06-12"
+  NET:
+    added: "2019-09-13"
+  SQ:
+    added: "2018-01-01"
+  SHOP:
+    added: "2018-01-01"
+  FVRR:
+    added: "2019-06-13"
+  ROKU:
+    added: "2018-01-01"
+  DDOG:
+    added: "2019-09-19"
+
+  # Crypto
+  BTCUSD:
+    added: "2018-01-01"
+  ETHUSD:
+    added: "2018-01-01"

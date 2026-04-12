@@ -140,6 +140,68 @@ def _load_universe(include_crypto: bool = True) -> list[str]:
     return tickers
 
 
+def load_universe_as_of(
+    as_of_date: str | date_type | None = None,
+    include_crypto: bool = True,
+) -> list[str]:
+    """Return only tickers that were universe members on *as_of_date*.
+
+    Uses ``config/universe_history.yaml`` which records ``added`` /
+    ``removed`` dates per ticker.  Falls back to :func:`_load_universe`
+    (full current universe) when the history file is missing or
+    *as_of_date* is ``None``.
+
+    Parameters
+    ----------
+    as_of_date:
+        ISO-8601 date string or ``datetime.date``.  ``None`` → current
+        universe (no survivorship filtering).
+    include_crypto:
+        Whether to include crypto tickers (BTCUSD, ETHUSD …).
+    """
+    if as_of_date is None:
+        return _load_universe(include_crypto=include_crypto)
+
+    if isinstance(as_of_date, str):
+        as_of_date = date_type.fromisoformat(as_of_date)
+
+    history_path = _ROOT / "config" / "universe_history.yaml"
+    if not history_path.exists():
+        return _load_universe(include_crypto=include_crypto)
+
+    with open(history_path) as f:
+        history = yaml.safe_load(f) or {}
+
+    membership = history.get("membership", {})
+    if not membership:
+        return _load_universe(include_crypto=include_crypto)
+
+    # Also load the current universe to know which tickers are equity vs crypto
+    with open(_ROOT / "config" / "universe.yaml") as f:
+        cfg = yaml.safe_load(f)
+    crypto_tickers: set[str] = set()
+    crypto_cfg = cfg.get("crypto_universe", {})
+    if isinstance(crypto_cfg, dict):
+        for bucket_values in crypto_cfg.values():
+            if isinstance(bucket_values, list):
+                crypto_tickers.update(bucket_values)
+    elif isinstance(crypto_cfg, list):
+        crypto_tickers.update(crypto_cfg)
+
+    tickers: list[str] = []
+    for ticker, periods in membership.items():
+        if not include_crypto and ticker in crypto_tickers:
+            continue
+        added = date_type.fromisoformat(str(periods.get("added", "2018-01-01")))
+        removed_raw = periods.get("removed")
+        removed = date_type.fromisoformat(str(removed_raw)) if removed_raw else None
+
+        if as_of_date >= added and (removed is None or as_of_date < removed):
+            tickers.append(ticker)
+
+    return tickers
+
+
 def _normalize_df(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize datetime columns to UTC timezone for Polars 1.x strict concat.
     Also cast Datetime to Date for compatibility with existing parquet files."""
