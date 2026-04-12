@@ -21,6 +21,7 @@ def test_market_calendar_handles_holiday_and_half_day_close():
     assert calendar.is_market_open(independence_observed) is False
     assert calendar.is_market_open(half_day_open) is True
     assert calendar.is_market_open(half_day_closed) is False
+    assert calendar.is_crypto_market_open(independence_observed) is True
 
 
 def test_intraday_supervisor_run_cycle_is_idempotent_for_same_slot(tmp_path: Path):
@@ -324,14 +325,18 @@ def test_intraday_supervisor_list_decisions_skips_unreadable_directory(tmp_path:
     assert payloads == []
 
 
-def test_intraday_supervisor_runs_crypto_universe_outside_equity_hours(tmp_path: Path):
+def test_intraday_supervisor_runs_crypto_universe_outside_equity_hours(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     from intraday.market import USMarketCalendar
     from intraday.supervisor import IntradaySupervisor
 
+    monkeypatch.setenv("MLCOUNCIL_CRYPTO_ENABLED", "true")
     supervisor = IntradaySupervisor(
         market_data_adapter=object(),
         storage_dir=tmp_path / "intraday",
-        universe=["AAPL", "BTCUSD"],
+        universe=["AAPL", "MSFT"],
         calendar=USMarketCalendar(),
     )
 
@@ -339,6 +344,29 @@ def test_intraday_supervisor_runs_crypto_universe_outside_equity_hours(tmp_path:
 
     assert supervisor._should_run_cycle(sunday) is True
     assert supervisor._resolve_market_session(sunday) == "crypto"
+    assert supervisor._select_universe(sunday) == ["BTCUSD", "ETHUSD"]
+
+
+def test_intraday_supervisor_uses_equity_universe_during_market_hours_when_crypto_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from intraday.market import USMarketCalendar
+    from intraday.supervisor import IntradaySupervisor
+
+    monkeypatch.setenv("MLCOUNCIL_CRYPTO_ENABLED", "true")
+    supervisor = IntradaySupervisor(
+        market_data_adapter=object(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL", "MSFT"],
+        calendar=USMarketCalendar(),
+    )
+
+    weekday_open = datetime(2026, 4, 13, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    assert supervisor._should_run_cycle(weekday_open) is True
+    assert supervisor._resolve_market_session(weekday_open) == "regular"
+    assert supervisor._select_universe(weekday_open) == ["AAPL", "MSFT"]
 
 
 def test_intraday_supervisor_keeps_equity_only_schedule_closed_outside_market_hours(tmp_path: Path):

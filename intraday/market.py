@@ -84,6 +84,10 @@ class USMarketCalendar:
         localized = self._localize(moment)
         return window.opens_at <= localized < window.closes_at
 
+    def is_crypto_market_open(self, moment: datetime) -> bool:
+        del moment
+        return True
+
     def slot_start(self, moment: datetime, interval_minutes: int) -> datetime:
         localized = self._localize(moment)
         minutes = (localized.hour * 60) + localized.minute

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+import yaml
 
 from intraday.agent import FallbackIntradayAgent
 from intraday.contracts import (
@@ -21,6 +24,7 @@ from intraday.market_data import MarketDataAdapter, MarketSnapshot
 
 
 _NY_TZ = ZoneInfo("America/New_York")
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 class IntradaySupervisor:
@@ -38,9 +42,22 @@ class IntradaySupervisor:
         self.agent_orchestrator = agent_orchestrator or FallbackIntradayAgent()
         self.storage_dir = Path(storage_dir)
         self.schedule_minutes = schedule_minutes
-        self.universe = list(universe or ["AAPL", "MSFT", "NVDA", "AMZN", "META"])
+        raw_universe = list(universe or ["AAPL", "MSFT", "NVDA", "AMZN", "META"])
+        self.universe = raw_universe
         self.calendar = calendar or USMarketCalendar()
-        self._has_crypto_universe = any(self._is_crypto_ticker(ticker) for ticker in self.universe)
+        self.crypto_enabled = os.getenv("MLCOUNCIL_CRYPTO_ENABLED", "false").strip().lower() == "true"
+        self.equity_universe = [
+            ticker for ticker in raw_universe if not self._is_crypto_ticker(ticker)
+        ]
+        inline_crypto_universe = [
+            ticker for ticker in raw_universe if self._is_crypto_ticker(ticker)
+        ]
+        configured_crypto_universe = self._load_crypto_universe()
+        if self.crypto_enabled:
+            self.crypto_universe = configured_crypto_universe or inline_crypto_universe
+        else:
+            self.crypto_universe = []
+        self._has_crypto_universe = bool(self.crypto_universe)
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -107,21 +124,26 @@ class IntradaySupervisor:
 
     def run_cycle(self, *, now: datetime | None = None) -> IntradayDecision:
         moment = self._normalize_now(now)
+        active_universe = self._select_universe(moment)
         slot = self.calendar.slot_start(moment, self.schedule_minutes)
         slot_key = slot.isoformat()
         existing = self._load_decision_by_slot(slot_key)
-        if existing is not None and self._is_current_payload(existing):
+        if (
+            existing is not None
+            and list(existing.get("universe", [])) == active_universe
+            and self._is_current_payload(existing)
+        ):
             self.state["last_completed_slot"] = slot_key
             self._persist_state()
             return self._decision_from_payload(existing)
 
         market_snapshot = self.market_data_adapter.get_market_snapshot(
             as_of=slot,
-            universe=self.universe,
+            universe=active_universe,
         )
         news_items = self.market_data_adapter.get_news_snapshot(
             as_of=slot,
-            universe=self.universe,
+            universe=active_universe,
         )
         feature_snapshot = self._build_feature_snapshot(slot, market_snapshot, news_items)
         agent_trace = self.agent_orchestrator.synthesize(
@@ -131,6 +153,7 @@ class IntradaySupervisor:
         )
         decision = self._build_decision(
             slot=slot,
+            universe=active_universe,
             market_snapshot=market_snapshot,
             feature_snapshot=feature_snapshot,
             agent_trace=agent_trace,
@@ -244,6 +267,7 @@ class IntradaySupervisor:
         self,
         *,
         slot: datetime,
+        universe: list[str],
         market_snapshot: MarketSnapshot,
         feature_snapshot: FeatureSnapshot,
         agent_trace: AgentDecisionTrace,
@@ -251,14 +275,14 @@ class IntradaySupervisor:
         intents = self._build_execution_intents(feature_snapshot, agent_trace)
         slot_key = slot.isoformat()
         decision_id = hashlib.sha256(
-            "|".join([slot_key, ",".join(self.universe), feature_snapshot.version]).encode("utf-8")
+            "|".join([slot_key, ",".join(universe), feature_snapshot.version]).encode("utf-8")
         ).hexdigest()[:16]
         return IntradayDecision(
             decision_id=decision_id,
             as_of=slot_key,
             market_session=market_snapshot.session,
             schedule_minutes=self.schedule_minutes,
-            universe=self.universe,
+            universe=universe,
             market_snapshot_version=f"{market_snapshot.source}-{slot.strftime('%Y%m%d%H%M')}",
             feature_snapshot=feature_snapshot,
             agent_trace=agent_trace,
@@ -396,20 +420,52 @@ class IntradaySupervisor:
 
     def _resolve_market_session(self, now: datetime) -> str:
         window = self.calendar.trading_window(now)
-        if window is None:
-            return "crypto" if self._has_crypto_universe else "closed"
         if self.calendar.is_market_open(now):
-            return window.session
-        if self._has_crypto_universe:
+            return window.session if window is not None else "regular"
+        if self._has_crypto_universe and self.calendar.is_crypto_market_open(now):
             return "crypto"
+        if window is None:
+            return "closed"
         if now.astimezone(_NY_TZ) < window.opens_at:
             return "pre_market"
         return "post_market"
 
     def _should_run_cycle(self, now: datetime) -> bool:
-        if self._has_crypto_universe:
-            return True
-        return self.calendar.is_market_open(now)
+        if self.calendar.is_market_open(now):
+            return bool(self.equity_universe)
+        return self._has_crypto_universe and self.calendar.is_crypto_market_open(now)
+
+    def _select_universe(self, now: datetime) -> list[str]:
+        if self.calendar.is_market_open(now):
+            return list(self.equity_universe)
+        if self._has_crypto_universe and self.calendar.is_crypto_market_open(now):
+            return list(self.crypto_universe)
+        return list(self.equity_universe)
+
+    def _load_crypto_universe(self) -> list[str]:
+        config_path = _ROOT / "config" / "universe.yaml"
+        try:
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+        except OSError:
+            return []
+
+        crypto_cfg = cfg.get("crypto_universe", {})
+        if not isinstance(crypto_cfg, dict):
+            return []
+
+        tickers: list[str] = []
+        seen: set[str] = set()
+        for bucket_values in crypto_cfg.values():
+            if not isinstance(bucket_values, list):
+                continue
+            for ticker in bucket_values:
+                normalized = str(ticker).strip().upper()
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                tickers.append(normalized)
+        return tickers
 
     @staticmethod
     def _is_crypto_ticker(ticker: str) -> bool:
