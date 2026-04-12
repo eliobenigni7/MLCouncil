@@ -109,7 +109,7 @@ class IntradaySupervisor:
         slot = self.calendar.slot_start(moment, self.schedule_minutes)
         slot_key = slot.isoformat()
         existing = self._load_decision_by_slot(slot_key)
-        if existing is not None:
+        if existing is not None and self._is_current_payload(existing):
             self.state["last_completed_slot"] = slot_key
             self._persist_state()
             return self._decision_from_payload(existing)
@@ -139,6 +139,28 @@ class IntradaySupervisor:
         self.state["last_completed_slot"] = slot_key
         self._persist_state()
         return decision
+
+    def _is_current_payload(self, payload: dict[str, Any]) -> bool:
+        feature_snapshot = payload.get("feature_snapshot")
+        if not isinstance(feature_snapshot, dict):
+            return False
+
+        source = str(feature_snapshot.get("source", ""))
+        features = feature_snapshot.get("features", {})
+        if not isinstance(features, dict):
+            return False
+
+        adapter_name = self.market_data_adapter.__class__.__name__
+        if adapter_name == "PolygonMarketDataAdapter":
+            if source != "polygon-prev+alpaca-fallback":
+                return False
+            for values in features.values():
+                if not isinstance(values, dict):
+                    return False
+                if "previous_day_volume" not in values:
+                    return False
+
+        return True
 
     def list_decisions(self, *, limit: int = 20) -> list[dict[str, Any]]:
         decisions_dir = self.storage_dir / "decisions"

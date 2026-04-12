@@ -27,6 +27,7 @@ class AssetContract:
     min_rows: int = 0
     allow_empty: bool = False
     min_feature_columns: int = 0
+    partition_alignment: str = "exact"
 
 
 ASSET_CONTRACTS: dict[str, AssetContract] = {
@@ -65,6 +66,7 @@ ASSET_CONTRACTS: dict[str, AssetContract] = {
         unique_key_columns=("valid_time",),
         non_null_columns=("valid_time",),
         min_rows=1,
+        partition_alignment="latest_available",
     ),
     "alpha158_features": AssetContract(
         required_columns=("ticker", "valid_time"),
@@ -126,7 +128,11 @@ def _count_nulls(frame: pd.DataFrame, columns: tuple[str, ...]) -> dict[str, int
     return {column: count for column, count in counts.items() if count > 0}
 
 
-def _ensure_partition_alignment(frame: pd.DataFrame, partition_date: str | None) -> None:
+def _ensure_partition_alignment(
+    frame: pd.DataFrame,
+    partition_date: str | None,
+    mode: str = "exact",
+) -> None:
     if partition_date is None or frame.empty or "valid_time" not in frame.columns:
         return
 
@@ -136,10 +142,16 @@ def _ensure_partition_alignment(frame: pd.DataFrame, partition_date: str | None)
         return
 
     expected = pd.Timestamp(partition_date).date()
-    if expected not in set(valid_dates):
+    if mode == "exact" and expected not in set(valid_dates):
         raise ValueError(
             f"valid_time does not include partition_date={partition_date}"
         )
+    if mode == "latest_available" and max(valid_dates) > expected:
+        raise ValueError(
+            f"valid_time extends beyond partition_date={partition_date}"
+        )
+    if mode not in {"exact", "latest_available"}:
+        raise ValueError(f"Unknown partition alignment mode: {mode}")
 
 
 def validate_asset_contract(
@@ -188,7 +200,11 @@ def validate_asset_contract(
                 f"got {len(feature_columns)}"
             )
 
-    _ensure_partition_alignment(frame, partition_date)
+    _ensure_partition_alignment(
+        frame,
+        partition_date,
+        mode=contract.partition_alignment,
+    )
 
     return {
         "row_count": int(len(frame)),

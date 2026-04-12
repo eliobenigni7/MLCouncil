@@ -47,6 +47,7 @@ _SECRET_FILE_NAMES: dict[str, str] = {
     "ALPACA_PAPER_KEY": "alpaca_api_key",
     "ALPACA_SECRET_KEY": "alpaca_secret_key",
     "ALPACA_PAPER_SECRET": "alpaca_secret_key",
+    "POLYGON_API_KEY": "polygon_api_key",
     "SMTP_PASSWORD": "smtp_password",
 }
 

@@ -330,9 +330,17 @@ def _load_live_portfolio_snapshot(
                 "(invalid current_value)"
             )
 
+        normalized_positions = positions_df.assign(current_value=current_values)
+        if normalized_positions["symbol"].duplicated().any():
+            # Alpaca puo' restituire lo stesso simbolo da sorgenti multiple
+            # (es. TradingClient + endpoint crypto). Manteniamo una sola riga
+            # per ticker per evitare di contare due volte la stessa esposizione.
+            normalized_positions = normalized_positions.drop_duplicates(
+                subset=["symbol"], keep="last"
+            )
+
         current_weights = (
-            positions_df
-            .assign(current_value=current_values)
+            normalized_positions
             .set_index("symbol")["current_value"]
             .astype(float)
             .div(portfolio_value)
@@ -1014,7 +1022,12 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
         n = len(tickers)
         return pd.DataFrame(np.eye(n) * 0.0001, index=tickers, columns=tickers)
 
-    ohlcv = pl.concat(frames).sort(["ticker", "valid_time"])
+    ohlcv = (
+        pl.concat(frames)
+        .sort(["ticker", "valid_time", "transaction_time"])
+        .unique(["ticker", "valid_time"], keep="last")
+        .sort(["ticker", "valid_time"])
+    )
     # drop_nulls before pivot would discard every row where *any* ticker has a
     # missing return (e.g. halts, sparse mid-caps).  Instead, compute returns
     # per ticker (nulls only at each ticker's first row) then pivot and use

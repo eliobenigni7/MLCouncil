@@ -59,11 +59,15 @@ def _build_supervisor() -> IntradaySupervisor:
 
         adapter = _FallbackAdapter()
 
-    try:
-        agent = OpenAIIntradayAgent(
-            fallback_agent=FallbackIntradayAgent(),
-        )
-    except Exception:
+    agent_provider = os.getenv("MLCOUNCIL_INTRADAY_AGENT_PROVIDER", "rule-based").strip().lower()
+    if agent_provider == "openai":
+        try:
+            agent = OpenAIIntradayAgent(
+                fallback_agent=FallbackIntradayAgent(),
+            )
+        except Exception:
+            agent = FallbackIntradayAgent()
+    else:
         agent = FallbackIntradayAgent()
 
     return IntradaySupervisor(
@@ -137,6 +141,13 @@ def _load_decision_payload(decision_id: str):
 
 
 def _log_decision(payload: dict):
+    if os.getenv("MLCOUNCIL_INTRADAY_LOG_TO_MLFLOW", "false").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
     try:
         log_intraday_decision(
             decision=payload,

@@ -14,55 +14,63 @@ def test_polygon_market_data_adapter_builds_rich_snapshot_and_news(monkeypatch):
     monkeypatch.setenv("POLYGON_API_KEY", "polygon-test")
     requests_seen: list[str] = []
 
+    class FallbackAdapter:
+        def get_market_snapshot(self, *, as_of, universe):
+            from intraday.market_data import MarketSnapshot
+
+            return MarketSnapshot(
+                as_of=as_of,
+                universe=universe,
+                source="alpaca-fallback",
+                session="regular",
+                bars={
+                    "AAPL": {
+                        "close": 201.0,
+                        "return_15m": 0.015,
+                        "day_change_pct": 0.0203,
+                        "spread_bps": 9.95,
+                        "intraday_range_pct": 0.0227,
+                        "volume_ratio": 0.0,
+                        "distance_from_vwap": 0.0045,
+                        "minute_volume": 12500.0,
+                    },
+                    "MSFT": {
+                        "close": 412.0,
+                        "return_15m": -0.019,
+                        "day_change_pct": -0.0144,
+                        "spread_bps": 9.7,
+                        "intraday_range_pct": 0.0108,
+                        "volume_ratio": 0.0,
+                        "distance_from_vwap": -0.0036,
+                        "minute_volume": 9800.0,
+                    },
+                },
+            )
+
+        def get_news_snapshot(self, *, as_of, universe):
+            del as_of, universe
+            return []
+
     def handler(request: httpx.Request) -> httpx.Response:
         requests_seen.append(str(request.url))
         path = request.url.path
 
-        if path == "/v2/snapshot/locale/us/markets/stocks/tickers":
-            payload = {
-                "results": [
-                    {
-                        "ticker": "AAPL",
-                        "lastTrade": {"p": 201.0},
-                        "lastQuote": {"P": 201.1, "p": 200.9},
-                        "min": {"v": 12500.0},
-                        "day": {"o": 198.0, "c": 201.0, "h": 202.0, "l": 197.5, "v": 250000.0, "vw": 200.1},
-                        "prevDay": {"c": 197.0, "v": 5000000.0},
-                    },
-                    {
-                        "ticker": "MSFT",
-                        "lastTrade": {"p": 412.0},
-                        "lastQuote": {"P": 412.2, "p": 411.8},
-                        "min": {"v": 9800.0},
-                        "day": {"o": 415.0, "c": 412.0, "h": 416.0, "l": 411.5, "v": 180000.0, "vw": 413.5},
-                        "prevDay": {"c": 418.0, "v": 4300000.0},
-                    },
-                ]
-            }
-            return httpx.Response(200, json=payload)
-
-        if path == "/v2/aggs/ticker/AAPL/range/5/minute/2026-04-09/2026-04-09":
+        if path == "/v2/aggs/ticker/AAPL/prev":
             return httpx.Response(
                 200,
                 json={
                     "results": [
-                        {"t": 1, "c": 198.0, "v": 1500.0},
-                        {"t": 2, "c": 199.0, "v": 1600.0},
-                        {"t": 3, "c": 200.0, "v": 1700.0},
-                        {"t": 4, "c": 201.0, "v": 1800.0},
+                        {"T": "AAPL", "v": 5000000.0, "vw": 200.1, "o": 198.0, "c": 197.0, "h": 202.0, "l": 197.5},
                     ]
                 },
             )
 
-        if path == "/v2/aggs/ticker/MSFT/range/5/minute/2026-04-09/2026-04-09":
+        if path == "/v2/aggs/ticker/MSFT/prev":
             return httpx.Response(
                 200,
                 json={
                     "results": [
-                        {"t": 1, "c": 420.0, "v": 1200.0},
-                        {"t": 2, "c": 418.0, "v": 1100.0},
-                        {"t": 3, "c": 415.0, "v": 1000.0},
-                        {"t": 4, "c": 412.0, "v": 900.0},
+                        {"T": "MSFT", "v": 4300000.0, "vw": 413.5, "o": 415.0, "c": 418.0, "h": 416.0, "l": 411.5},
                     ]
                 },
             )
@@ -89,19 +97,24 @@ def test_polygon_market_data_adapter_builds_rich_snapshot_and_news(monkeypatch):
         transport=httpx.MockTransport(handler),
         base_url="https://api.polygon.io",
     )
-    adapter = PolygonMarketDataAdapter(client=client, base_url="https://api.polygon.io")
+    adapter = PolygonMarketDataAdapter(
+        client=client,
+        base_url="https://api.polygon.io",
+        fallback_adapter=FallbackAdapter(),
+    )
     as_of = datetime(2026, 4, 9, 10, 45, tzinfo=ZoneInfo("America/New_York"))
 
     snapshot = adapter.get_market_snapshot(as_of=as_of, universe=["AAPL", "MSFT"])
     news_items = adapter.get_news_snapshot(as_of=as_of, universe=["AAPL", "MSFT"])
 
-    assert snapshot.source == "polygon"
-    assert snapshot.bars["AAPL"]["return_15m"] == pytest.approx((201.0 / 198.0) - 1.0)
-    assert snapshot.bars["AAPL"]["spread_bps"] == pytest.approx(((201.1 - 200.9) / 201.0) * 10000, rel=1e-3)
-    assert snapshot.bars["MSFT"]["intraday_range_pct"] == pytest.approx((416.0 - 411.5) / 415.0)
-    assert snapshot.bars["AAPL"]["volume_ratio"] > 0
+    assert snapshot.source == "polygon-prev+alpaca-fallback"
+    assert snapshot.bars["AAPL"]["return_15m"] == pytest.approx(0.015)
+    assert snapshot.bars["AAPL"]["spread_bps"] == pytest.approx(9.95)
+    assert snapshot.bars["MSFT"]["intraday_range_pct"] == pytest.approx(0.0108)
+    assert snapshot.bars["AAPL"]["previous_day_volume"] == pytest.approx(5000000.0)
     assert len(news_items) == 2
     assert news_items[0]["source"] == "Polygon News"
+    assert any("/v2/aggs/ticker/AAPL/prev" in url for url in requests_seen)
     assert any("/v2/reference/news" in url for url in requests_seen)
 
 

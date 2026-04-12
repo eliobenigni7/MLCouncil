@@ -360,6 +360,10 @@ SMTP_PASSWORD=your_smtp_password
 
 # Optional: market data enrichment
 POLYGON_API_KEY=your_polygon_key
+
+# Intraday runtime defaults
+MLCOUNCIL_INTRADAY_AGENT_PROVIDER=rule-based
+MLCOUNCIL_INTRADAY_LOG_TO_MLFLOW=false
 ```
 
 **Runtime safety limits** (set these for paper trading):
@@ -374,6 +378,19 @@ MLCOUNCIL_AUTO_EXECUTE=false
 ```
 
 Profile templates: `config/runtime.local.env.example`, `config/runtime.paper.env.example`.
+
+### Docker Secrets
+
+When running with Docker Compose, prefer Docker secrets for broker and market-data credentials:
+
+```text
+secrets/alpaca_api_key
+secrets/alpaca_secret_key
+secrets/polygon_api_key
+secrets/smtp_password
+```
+
+The application reads `/run/secrets/*` first, then falls back to environment variables.
 
 **Dependency note:** Keep `yfinance` on `0.2.x`. The repo pins `yfinance>=0.2.40,<1.0` for compatibility with `alpaca-trade-api`.
 
@@ -394,6 +411,8 @@ docker compose up -d
 | Streamlit Dashboard | http://localhost:8501 |
 | Dagster UI | http://localhost:3000 |
 | MLflow UI | http://localhost:5000 |
+
+The Compose stack also starts an `intraday-supervisor` container. It auto-starts on boot and runs an intraday cycle every `MLCOUNCIL_INTRADAY_INTERVAL_MINUTES` during US market hours.
 
 ### Local (no Docker)
 
@@ -475,6 +494,46 @@ This stops order execution but keeps the analytical pipeline running. `POST /api
 
 ---
 
+## Intraday Runtime
+
+The intraday path is intentionally separate from the Dagster daily pipeline.
+
+- `daily_pipeline` remains an end-of-day batch job.
+- `intraday-supervisor` runs lightweight 15-minute cycles during market hours.
+- By default the intraday decision engine is local `rule-based`, not OpenAI-backed.
+
+Current intraday data path:
+
+- Market snapshot: Alpaca intraday snapshot
+- Historical daily enrichment: Polygon `/v2/aggs/ticker/{ticker}/prev`
+- News enrichment: Polygon `/v2/reference/news`
+
+This hybrid path is intentional. Many Polygon plans do not include the real-time stock snapshot endpoints used by higher-tier integrations. The adapter therefore avoids unsupported Polygon endpoints and degrades gracefully to Alpaca market data while still using Polygon where the key is entitled.
+
+Manual controls:
+
+```text
+POST /api/intraday/control/start
+POST /api/intraday/control/pause
+POST /api/intraday/control/resume
+POST /api/intraday/control/stop
+POST /api/intraday/cycle
+GET  /api/intraday/status
+GET  /api/intraday/decisions/latest
+POST /api/intraday/decisions/{decision_id}/execute
+```
+
+Key settings:
+
+```env
+MLCOUNCIL_INTRADAY_INTERVAL_MINUTES=15
+MLCOUNCIL_INTRADAY_UNIVERSE=AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA
+MLCOUNCIL_INTRADAY_AGENT_PROVIDER=rule-based
+MLCOUNCIL_INTRADAY_LOG_TO_MLFLOW=false
+```
+
+---
+
 ## Key API Endpoints
 
 ### Health and Runtime
@@ -503,6 +562,20 @@ GET  /api/trading/reconcile/{date}
 POST /api/trading/execute
 POST /api/trading/liquidate
 GET  /api/trading/history
+```
+
+### Intraday
+
+```
+GET  /api/intraday/status
+POST /api/intraday/control/start
+POST /api/intraday/control/pause
+POST /api/intraday/control/resume
+POST /api/intraday/control/stop
+POST /api/intraday/cycle
+GET  /api/intraday/decisions/latest
+GET  /api/intraday/decisions/{decision_id}/explain
+POST /api/intraday/decisions/{decision_id}/execute
 ```
 
 ### Configuration

@@ -3,6 +3,8 @@ secrets:
     file: ./secrets/alpaca_api_key
   alpaca_secret_key:
     file: ./secrets/alpaca_secret_key
+  polygon_api_key:
+    file: ./secrets/polygon_api_key
   smtp_password:
     file: ./secrets/smtp_password
 
@@ -16,6 +18,7 @@ services:
     secrets:
       - alpaca_api_key
       - alpaca_secret_key
+      - polygon_api_key
       - smtp_password
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
@@ -123,6 +126,7 @@ services:
     secrets:
       - alpaca_api_key
       - alpaca_secret_key
+      - polygon_api_key
     environment:
       - ARCTICDB_URI=lmdb://data/arctic/
       - MLFLOW_TRACKING_URI=http://mlflow:5000
@@ -130,6 +134,8 @@ services:
       - MLCOUNCIL_ENV_PROFILE=${MLCOUNCIL_ENV_PROFILE:-paper}
       - MLCOUNCIL_INTRADAY_INTERVAL_MINUTES=${MLCOUNCIL_INTRADAY_INTERVAL_MINUTES:-15}
       - MLCOUNCIL_INTRADAY_UNIVERSE=${MLCOUNCIL_INTRADAY_UNIVERSE:-AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA}
+      - MLCOUNCIL_INTRADAY_AGENT_PROVIDER=${MLCOUNCIL_INTRADAY_AGENT_PROVIDER:-rule-based}
+      - MLCOUNCIL_INTRADAY_LOG_TO_MLFLOW=${MLCOUNCIL_INTRADAY_LOG_TO_MLFLOW:-false}
       - MLCOUNCIL_AUTOMATION_PAUSED=${MLCOUNCIL_AUTOMATION_PAUSED:-false}
     env_file:
       - path: .env

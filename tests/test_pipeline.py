@@ -178,6 +178,78 @@ def test_daily_orders_contract_requires_lineage_columns():
         validate_asset_contract("daily_orders", df, partition_date="2024-01-15")
 
 
+def test_raw_macro_contract_accepts_latest_available_before_partition():
+    """Il contratto macro accetta lag fisiologico rispetto alla partizione."""
+    from data.contracts import validate_asset_contract
+
+    df = pl.DataFrame(
+        {
+            "valid_time": [date(2024, 1, 12), date(2024, 1, 14)],
+            "vix": [12.3, 12.8],
+            "yield_spread": [0.51, 0.49],
+        }
+    )
+
+    summary = validate_asset_contract("raw_macro", df, partition_date="2024-01-15")
+    assert summary["row_count"] == 2
+
+
+def test_raw_macro_contract_rejects_future_data_beyond_partition():
+    """Il contratto macro rifiuta dati che superano la partizione richiesta."""
+    from data.contracts import validate_asset_contract
+
+    df = pl.DataFrame(
+        {
+            "valid_time": [date(2024, 1, 15), date(2024, 1, 16)],
+            "vix": [12.8, 13.1],
+            "yield_spread": [0.49, 0.47],
+        }
+    )
+
+    with pytest.raises(ValueError, match="extends beyond partition_date"):
+        validate_asset_contract("raw_macro", df, partition_date="2024-01-15")
+
+
+def test_compute_covariance_deduplicates_ticker_date_rows(tmp_path):
+    """La covarianza deve tollerare duplicati ticker+valid_time nei parquet OHLCV."""
+    dates = pd.date_range("2024-01-01", periods=35, freq="D")
+
+    def _write_prices(ticker: str, base_price: float, duplicate_last: bool = False) -> None:
+        rows: list[dict[str, object]] = []
+        for idx, day in enumerate(dates):
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "valid_time": day.date(),
+                    "transaction_time": pd.Timestamp(day).tz_localize("UTC"),
+                    "adj_close": base_price + idx,
+                }
+            )
+        if duplicate_last:
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "valid_time": dates[-1].date(),
+                    "transaction_time": pd.Timestamp(dates[-1]).tz_localize("UTC") + pd.Timedelta(hours=1),
+                    "adj_close": base_price + len(dates),
+                }
+            )
+
+        ticker_dir = tmp_path / "ohlcv" / ticker
+        ticker_dir.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(rows).write_parquet(ticker_dir / "2024.parquet")
+
+    _write_prices("BTCUSD", 100.0, duplicate_last=True)
+    _write_prices("ETHUSD", 200.0, duplicate_last=True)
+
+    with patch.object(_pipeline, "_DATA_DIR", tmp_path):
+        cov = _pipeline._compute_covariance(["BTCUSD", "ETHUSD"])
+
+    assert isinstance(cov, pd.DataFrame)
+    assert cov.index.tolist() == ["BTCUSD", "ETHUSD"]
+    assert cov.columns.tolist() == ["BTCUSD", "ETHUSD"]
+
+
 def _make_context(partition_date: str = "2024-01-15") -> MagicMock:
     """Context mock generico per test di asset."""
     ctx = MagicMock(spec=dg.AssetExecutionContext)
@@ -906,6 +978,34 @@ class TestLivePortfolioSnapshot:
         with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
             with pytest.raises(RuntimeError, match="invalid current_value"):
                 _pipeline._load_live_portfolio_snapshot(self.TICKERS)
+
+    def test_load_live_portfolio_snapshot_deduplicates_duplicate_symbols(self):
+        """Simboli duplicati dal broker non devono rompere il reindex dei pesi."""
+        class FakeNode:
+            def get_account_info(self):
+                return {"portfolio_value": 100000.0}
+
+            def get_all_positions(self, strict=False):
+                assert strict is True, "expected strict=True for live positions fetch"
+                return pd.DataFrame(
+                    [
+                        {"symbol": "BTCUSD", "qty": 0.2, "current_value": 14000.0},
+                        {"symbol": "AAPL", "qty": 10, "current_value": 5000.0},
+                        {"symbol": "BTCUSD", "qty": 0.2, "current_value": 14000.0},
+                    ]
+                )
+
+        fake_module = self._install_fake_alpaca_module(FakeNode())
+
+        with patch.dict(sys.modules, {"execution.alpaca_adapter": fake_module}):
+            weights, portfolio_value = _pipeline._load_live_portfolio_snapshot(
+                ["BTCUSD", "AAPL", "MSFT"]
+            )
+
+        assert portfolio_value == 100000.0
+        assert weights.loc["BTCUSD"] == pytest.approx(0.14)
+        assert weights.loc["AAPL"] == pytest.approx(0.05)
+        assert weights.loc["MSFT"] == 0.0
 
     def test_portfolio_weights_uses_live_snapshot_as_optimizer_baseline(self):
         """portfolio_weights deve passare il snapshot live al baseline dell'ottimizzatore."""
