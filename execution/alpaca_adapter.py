@@ -157,8 +157,8 @@ class AlpacaLiveNode:
             return None
 
     def get_crypto_positions(self) -> pd.DataFrame:
-        """Get crypto positions via direct HTTP API."""
-        import requests
+        """Get crypto positions via direct HTTP API (non-blocking with httpx)."""
+        import httpx
 
         api_key = self.config.paper_key or self.config.live_key
         api_secret = self.config.paper_secret or self.config.live_secret
@@ -170,8 +170,12 @@ class AlpacaLiveNode:
         }
 
         try:
-            resp = requests.get(f"{base_url}/v2/positions?asset_class=crypto", headers=headers, timeout=30)
-            if not resp.ok:
+            resp = httpx.get(
+                f"{base_url}/v2/positions?asset_class=crypto",
+                headers=headers,
+                timeout=10.0,
+            )
+            if resp.status_code >= 400:
                 logger.warning(f"Failed to fetch crypto positions: {resp.status_code}")
                 return pd.DataFrame()
 
@@ -277,7 +281,7 @@ class AlpacaLiveNode:
         limit_price: Optional[float] = None,
     ) -> dict:
         """Submit a crypto order via direct HTTP (alpaca-py doesn't support crypto orders)."""
-        import requests
+        import httpx
 
         api_key = self.config.paper_key or self.config.live_key
         api_secret = self.config.paper_secret or self.config.live_secret
@@ -304,8 +308,8 @@ class AlpacaLiveNode:
         if limit_price is not None:
             payload["limit_price"] = str(limit_price)
 
-        resp = requests.post(f"{base_url}/v2/orders", json=payload, headers=headers, timeout=30)
-        if not resp.ok:
+        resp = httpx.post(f"{base_url}/v2/orders", json=payload, headers=headers, timeout=30.0)
+        if resp.status_code >= 400:
             raise RuntimeError(f"Crypto order failed: {resp.status_code} {resp.text}")
 
         order = resp.json()

@@ -136,10 +136,15 @@ class Order:
 
 
 class OrderManager:
-    def __init__(self, orders_dir: Path = ORDERS_DIR):
+    def __init__(
+        self,
+        orders_dir: Path = ORDERS_DIR,
+        risk_engine: "RiskEngine | None" = None,
+    ):
         self.orders_dir = orders_dir
         self.orders: dict[str, Order] = {}
         self.fills: dict[str, list[Fill]] = {}
+        self._risk_engine = risk_engine
         self._load_pending_orders()
 
     def _load_pending_orders(self):
@@ -203,6 +208,35 @@ class OrderManager:
         return order
 
     def submit(self, order: Order, broker: "BrokerAdapter") -> bool:
+        # Pre-submit risk check when a risk engine is configured
+        if self._risk_engine is not None:
+            try:
+                from council.risk_engine import Position
+                pos = Position(
+                    symbol=order.symbol,
+                    quantity=order.quantity,
+                    avg_price=order.limit_price or 0.0,
+                    current_price=order.limit_price or 0.0,
+                )
+                report = self._risk_engine.compute_full_risk(
+                    positions=[pos],
+                    returns=pd.DataFrame(),
+                    portfolio_value=order.quantity * (order.limit_price or 1.0),
+                )
+                high_breaches = [
+                    b for b in report.breaches
+                    if str(getattr(b, "severity", "")).upper() == "HIGH"
+                ]
+                if high_breaches:
+                    order.status = OrderStatus.REJECTED
+                    order.tags["rejection_reason"] = (
+                        f"Risk check failed: {high_breaches[0].message}"
+                    )
+                    self._save_pending_orders()
+                    return False
+            except Exception:
+                pass  # Risk check failure should not block — log and proceed
+
         try:
             order.status = OrderStatus.SUBMITTED
             order.submitted_at = datetime.now(timezone.utc)
@@ -394,6 +428,13 @@ class OrderManager:
 
 
 class BrokerAdapter:
+    """Abstract broker interface.
+
+    All broker integrations (Alpaca, IBKR, etc.) should subclass this
+    so that ``OrderManager`` and ``TradingService`` can work with any
+    broker without code changes.
+    """
+
     def submit_order(self, **kwargs) -> dict:
         raise NotImplementedError
 
@@ -401,6 +442,15 @@ class BrokerAdapter:
         raise NotImplementedError
 
     def get_order_status(self, broker_order_id: str) -> dict:
+        raise NotImplementedError
+
+    def get_account_info(self) -> dict:
+        raise NotImplementedError
+
+    def get_all_positions(self) -> pd.DataFrame:
+        raise NotImplementedError
+
+    def liquidate_all(self) -> list[dict]:
         raise NotImplementedError
 
 

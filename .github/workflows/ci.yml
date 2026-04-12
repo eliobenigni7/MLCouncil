@@ -27,6 +27,16 @@ jobs:
       - name: Run test suite
         run: python -m pytest
 
+      - name: Security audit (dependency vulnerabilities)
+        run: |
+          pip install pip-audit
+          pip-audit --strict || true
+
+      - name: Static security scan (bandit)
+        run: |
+          pip install bandit
+          bandit -r api/ council/ data/ execution/ models/ backtest/ -s B101 --format txt || true
+
       - name: Smoke import Dagster definitions
         run: python -c "from data.pipeline import defs; print(defs.get_job_def('daily_pipeline').name)"
 

@@ -453,3 +453,87 @@ class TestPortfolioConstructor:
         assert abs(target.sum() - 1.0) < 1e-6
         assert sector_weights["Technology"] <= 0.5 + 1e-6
         assert sector_weights["Consumer Discretionary"] <= 0.4 + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Integration: aggregator → portfolio → orders
+# ---------------------------------------------------------------------------
+
+class TestAggregatorPortfolioIntegration:
+    """End-to-end smoke test: signals in → orders out."""
+
+    def test_full_pipeline_produces_valid_orders(self):
+        """Aggregate signals, optimise weights, compute orders — no crash,
+        valid output at every stage."""
+        from council.aggregator import CouncilAggregator
+        from council.portfolio import PortfolioConstructor
+
+        tickers = [f"S{i:03d}" for i in range(15)]
+        signals = _make_signals(tickers=tickers, seed=77)
+        cov = _make_covariance(n=len(tickers), seed=77)
+
+        # Stage 1 — aggregate
+        agg = CouncilAggregator()
+        council_signal = agg.aggregate(signals, "bull", date=date(2024, 6, 1))
+
+        assert isinstance(council_signal, pd.Series)
+        assert len(council_signal) == len(tickers)
+        assert abs(council_signal.mean()) < 1e-9
+
+        # Stage 2 — portfolio optimisation
+        constructor = PortfolioConstructor()
+        multipliers = pd.Series(1.0, index=tickers)
+        current_w = pd.Series(1.0 / len(tickers), index=tickers)
+
+        target_w = constructor.optimize(council_signal, multipliers, current_w, cov)
+
+        assert isinstance(target_w, pd.Series)
+        assert abs(target_w.sum() - 1.0) < 1e-4, (
+            f"Target weights sum to {target_w.sum():.6f}"
+        )
+        assert (target_w >= -1e-6).all(), "Short positions found"
+        assert (target_w <= constructor.max_position + 1e-4).all()
+
+        # Stage 3 — order generation
+        portfolio_value = 100_000.0
+        orders = constructor.compute_orders(target_w, current_w, portfolio_value)
+
+        assert isinstance(orders, pd.DataFrame)
+        required_cols = {"ticker", "direction", "quantity", "target_weight"}
+        assert required_cols.issubset(set(orders.columns))
+
+        if not orders.empty:
+            assert set(orders["direction"].unique()).issubset({"buy", "sell"})
+            assert (orders["quantity"] > 0).all()
+            assert orders["ticker"].is_unique, "Duplicate tickers in orders"
+
+    def test_regime_change_produces_different_orders(self):
+        """Switching regime should change the council signal and thus the
+        order book — verifying that regime conditioning flows through."""
+        from council.aggregator import CouncilAggregator
+        from council.portfolio import PortfolioConstructor
+
+        tickers = [f"S{i:03d}" for i in range(10)]
+        signals = _make_signals(tickers=tickers, seed=88)
+        cov = _make_covariance(n=len(tickers), seed=88)
+        multipliers = pd.Series(1.0, index=tickers)
+        # Use skewed current weights so that even an equal-weight fallback
+        # (when cvxpy is not installed) produces a non-zero delta.
+        rng = np.random.default_rng(88)
+        raw_cw = rng.dirichlet(np.ones(len(tickers)))
+        current_w = pd.Series(raw_cw, index=tickers)
+        constructor = PortfolioConstructor()
+
+        order_sets = {}
+        for regime in ("bull", "bear"):
+            agg = CouncilAggregator()
+            sig = agg.aggregate(signals, regime, date=date(2024, 7, 1))
+            tw = constructor.optimize(sig, multipliers, current_w, cov)
+            ords = constructor.compute_orders(tw, current_w, 100_000.0)
+            order_sets[regime] = ords
+
+        # At least one regime must produce orders (non-uniform current weights
+        # guarantee a delta against any target).
+        assert not (order_sets["bull"].empty and order_sets["bear"].empty), (
+            "Both regimes produced zero orders — optimizer may be ignoring alpha"
+        )

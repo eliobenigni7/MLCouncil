@@ -314,7 +314,7 @@ class CouncilAggregator:
             )
             self._weights_log[date]["orthogonality"] = ortho_report
 
-        logger.debug(
+        logger.info(
             f"[{date}] regime={regime} weights={weights} "
             f"n_tickers={len(tickers)} active_models={active_models}"
         )

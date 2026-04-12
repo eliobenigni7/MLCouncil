@@ -186,9 +186,35 @@ class RegimeModel:
     # fit
     # ------------------------------------------------------------------
 
-    def fit(self, macro_df: pl.DataFrame) -> None:
-        """Fit the regime model on macro time-series data."""
-        df = macro_df.sort("valid_time").to_pandas()
+    def fit(
+        self,
+        macro_df: pl.DataFrame,
+        train_end: str | None = None,
+    ) -> None:
+        """Fit the regime model on macro time-series data.
+
+        Parameters
+        ----------
+        macro_df:
+            Polars DataFrame with a ``valid_time`` column and macro
+            features (e.g. ``sp500_ret_20d``, ``vix``, ``yield_spread``).
+        train_end:
+            Optional ISO-8601 date string.  When provided, only data up
+            to and including this date is used for training (expanding-
+            window style), preventing the model from seeing future data
+            during walk-forward backtests.
+        """
+        sorted_df = macro_df.sort("valid_time")
+        if train_end is not None:
+            sorted_df = sorted_df.filter(
+                pl.col("valid_time") <= pl.lit(train_end).str.to_date()
+            )
+            if sorted_df.is_empty():
+                raise ValueError(
+                    f"No data before train_end={train_end!r} — cannot fit."
+                )
+
+        df = sorted_df.to_pandas()
         feat_cols = self._select_feature_cols(df)
         self._feature_cols = feat_cols
 

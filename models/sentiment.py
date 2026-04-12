@@ -203,7 +203,12 @@ class SentimentModel(BaseModel):
     # fit — calibrate aggregation weights
     # ------------------------------------------------------------------
 
-    def fit(self, features: pl.DataFrame, targets: pd.Series) -> None:
+    def fit(
+        self,
+        features: pl.DataFrame,
+        targets: pd.Series,
+        cutoff_date: date | None = None,
+    ) -> None:
         """Calibrate the recency decay factor on historical data.
 
         Uses ``scipy.optimize.minimize_scalar`` (bounded Brent method) to
@@ -223,11 +228,24 @@ class SentimentModel(BaseModel):
             pd.Series of cross-sectional rank percentiles.  Index may be a
             ``(ticker, valid_time)`` MultiIndex or a flat index aligned
             row-by-row with *features*.
+        cutoff_date:
+            Optional training cutoff.  When provided, only features with
+            ``valid_time <= cutoff_date`` are used for calibration,
+            preventing leakage from test-period headlines into the
+            decay-factor optimisation.
         """
         from scipy.optimize import minimize_scalar
         from scipy.stats import spearmanr
 
         date_col = "valid_time" if "valid_time" in features.columns else "date"
+
+        # Filter to training period to prevent train/test leakage
+        if cutoff_date is not None:
+            features = features.filter(pl.col(date_col) <= cutoff_date)
+            if features.is_empty():
+                self._last_trained = datetime.now().isoformat()
+                return
+
         dates_sorted = sorted(features[date_col].unique().to_list())
         ref_date = dates_sorted[-1]
 
