@@ -251,6 +251,38 @@ def test_intraday_supervisor_list_decisions_orders_by_as_of(tmp_path: Path):
     assert decisions[1]["as_of"] == earlier.as_of
 
 
+def test_intraday_supervisor_marks_data_not_ready_when_snapshot_is_empty(tmp_path: Path):
+    from intraday.market_data import MarketSnapshot
+    from intraday.supervisor import IntradaySupervisor
+
+    class EmptyAdapter:
+        def get_market_snapshot(self, *, as_of: datetime, universe: list[str]):
+            return MarketSnapshot(
+                as_of=as_of,
+                universe=universe,
+                bars={ticker: {"close": 0.0, "return_15m": 0.0} for ticker in universe},
+                source="empty-feed",
+                session="regular",
+            )
+
+        def get_news_snapshot(self, *, as_of: datetime, universe: list[str]):
+            return []
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=EmptyAdapter(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL", "MSFT"],
+    )
+
+    decision = supervisor.run_cycle(
+        now=datetime(2026, 4, 9, 11, 0, tzinfo=ZoneInfo("America/New_York"))
+    )
+
+    assert decision.decision_state == "data_not_ready"
+    assert decision.execution_intents == []
+    assert "data_not_ready" in decision.agent_trace.summary
+
+
 def test_intraday_supervisor_list_decisions_skips_unreadable_day_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -369,10 +401,14 @@ def test_intraday_supervisor_uses_equity_universe_during_market_hours_when_crypt
     assert supervisor._select_universe(weekday_open) == ["AAPL", "MSFT"]
 
 
-def test_intraday_supervisor_keeps_equity_only_schedule_closed_outside_market_hours(tmp_path: Path):
+def test_intraday_supervisor_keeps_equity_only_schedule_closed_outside_market_hours(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     from intraday.market import USMarketCalendar
     from intraday.supervisor import IntradaySupervisor
 
+    monkeypatch.delenv("MLCOUNCIL_CRYPTO_ENABLED", raising=False)
     supervisor = IntradaySupervisor(
         market_data_adapter=object(),
         storage_dir=tmp_path / "intraday",

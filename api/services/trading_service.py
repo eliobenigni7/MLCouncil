@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
 
-from runtime_env import get_runtime_profile, get_trading_settings, load_runtime_env
+from runtime_env import get_runtime_profile, get_trading_settings
 
 if TYPE_CHECKING:
     from execution.alpaca_adapter import AlpacaConfig, AlpacaLiveNode
@@ -24,7 +25,6 @@ _TRADE_LOG_LOCK = threading.Lock()
 
 class TradingService:
     def __init__(self):
-        load_runtime_env()
         self._node: Optional["AlpacaLiveNode"] = None
         self._config: Optional["AlpacaConfig"] = None
         self._risk_engine = None
@@ -72,13 +72,14 @@ class TradingService:
 
     def get_status(self) -> dict:
         """Return Alpaca connection status, runtime state, and account info."""
+        paused = self._is_automation_paused()
         guard_error = self._paper_guard_error()
         base = {
             "connected": False,
             "paper": self.is_paper,
             "runtime_profile": get_runtime_profile(),
-            "paused": self._is_automation_paused(),
-            "kill_switch_active": self._is_automation_paused(),
+            "paused": paused,
+            "kill_switch_active": paused,
             "paper_guard_ok": guard_error is None,
             "account": {},
             "positions": [],
@@ -344,6 +345,7 @@ class TradingService:
         execution_key: str,
         orders: list[dict[str, Any]],
         lineage: dict[str, str] | None = None,
+        symbols_to_close: list[str] | None = None,
     ) -> dict[str, Any]:
         runtime_profile = get_runtime_profile()
         paused = self._is_automation_paused()
@@ -374,6 +376,8 @@ class TradingService:
             account=account,
         )
 
+        symbols_to_close = reconciliation["symbols_to_close"]
+
         pretrade = {
             "blocked": False,
             "reason": None,
@@ -390,7 +394,7 @@ class TradingService:
             pretrade["reason"] = guard_error
         elif not orders:
             pretrade["blocked"] = True
-            pretrade["reason"] = f"No orders found for {date}"
+            pretrade["reason"] = f"No orders found for {execution_key}"
         elif paused:
             pretrade["blocked"] = True
             pretrade["reason"] = "Trading paused by kill switch"
@@ -420,6 +424,7 @@ class TradingService:
                     normalized_orders=normalized_orders,
                     positions_df=positions_df,
                     account=account,
+                    symbols_to_close=symbols_to_close,
                 )
                 pretrade["risk_report_path"] = risk_report["path"]
                 pretrade["breaches"] = risk_report["breaches"]
@@ -474,6 +479,8 @@ class TradingService:
         as_of = str(decision.get("as_of") or datetime.now(timezone.utc).isoformat())
         execution_key = as_of.split("T")[0]
         orders = self._orders_from_intraday_decision(decision)
+        orders, sizing_warnings = self._risk_adjust_intraday_orders(orders)
+        symbols_to_close = decision.get("symbols_to_close", [])
         lineage = {
             "decision_id": str(decision.get("decision_id", "unknown")),
             "strategy_version": str(decision.get("strategy_version", "intraday-v1")),
@@ -483,8 +490,12 @@ class TradingService:
             execution_key=execution_key,
             orders=orders,
             lineage=lineage,
+            symbols_to_close=symbols_to_close,
         )
         snapshot = self._public_context(context)
+        if sizing_warnings:
+            snapshot["pretrade"].setdefault("warnings", [])
+            snapshot["pretrade"]["warnings"].extend(sizing_warnings)
 
         if snapshot["pretrade"]["blocked"]:
             operations_path = self._write_operations(
@@ -643,6 +654,9 @@ class TradingService:
         return merged
 
     def _is_automation_paused(self) -> bool:
+        raw = os.getenv("MLCOUNCIL_AUTOMATION_PAUSED")
+        if raw is not None:
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
         return self.trading_settings.automation_paused
 
     def _normalize_order(self, order: dict, positions_df: pd.DataFrame) -> dict[str, Any]:
@@ -743,6 +757,7 @@ class TradingService:
         normalized_orders: list[dict],
         positions_df: pd.DataFrame,
         account: dict,
+        symbols_to_close: list[str] | None = None,
     ) -> dict[str, Any]:
         from council import risk_engine as risk_mod
         from council.risk_engine import Position
@@ -769,7 +784,7 @@ class TradingService:
                     continue
                 current_value = portfolio_value * target_weight
                 price = float(order["estimated_price"] or 0.0) or 1.0
-                projected_qty = max(int(current_value / price), 1)
+                projected_qty = max(current_value / price, 0.0)
 
             projected_positions.append(
                 Position(
@@ -779,6 +794,13 @@ class TradingService:
                     current_price=price,
                 )
             )
+
+        # Exclude positions being closed from projected risk
+        if symbols_to_close:
+            symbols_to_close_set = set(symbols_to_close)
+            projected_positions = [
+                p for p in projected_positions if p.symbol not in symbols_to_close_set
+            ]
 
         returns = self._load_historical_returns(target_symbols)
         settings = self.trading_settings
@@ -987,6 +1009,108 @@ class TradingService:
                 }
             )
         return orders
+
+    def _risk_adjust_intraday_orders(
+        self,
+        orders: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        if not orders:
+            return [], []
+
+        warnings: list[str] = []
+        try:
+            account = self.node.get_account_info()
+            positions_df = self.node.get_all_positions()
+            portfolio_value = float(account.get("portfolio_value", 0.0) or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            return orders, [f"intraday risk-adjust skipped: {exc}"]
+
+        if portfolio_value <= 0:
+            return orders, ["intraday risk-adjust skipped: portfolio_value<=0"]
+
+        from execution.alpaca_adapter import AlpacaLiveNode
+
+        settings = self.trading_settings
+        max_equity_position = float(settings.max_position_size)
+        max_crypto_position = float(
+            os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20")
+        )
+        max_crypto_turnover = float(
+            os.getenv("MLCOUNCIL_MAX_CRYPTO_TURNOVER", str(settings.max_turnover))
+        )
+
+        current_weight_by_symbol: dict[str, float] = {}
+        if not positions_df.empty and {"symbol", "current_value"}.issubset(positions_df.columns):
+            grouped = (
+                positions_df.assign(
+                    current_value=pd.to_numeric(positions_df["current_value"], errors="coerce").fillna(0.0)
+                )
+                .groupby("symbol", as_index=False)["current_value"]
+                .sum()
+            )
+            for _, row in grouped.iterrows():
+                symbol = str(row["symbol"])
+                current_weight_by_symbol[symbol] = float(row["current_value"]) / portfolio_value
+
+        adjusted_orders: list[dict[str, Any]] = []
+        for order in orders:
+            ticker = str(order.get("ticker", ""))
+            if not ticker:
+                continue
+            direction = str(order.get("direction", "buy")).lower()
+            target_weight = float(order.get("target_weight", 0.0) or 0.0)
+            requested_notional = float(order.get("quantity", 0.0) or 0.0)
+
+            if direction != "buy":
+                adjusted_orders.append(order)
+                continue
+            if target_weight <= 0.0 or requested_notional <= 0.0:
+                continue
+
+            current_weight = float(current_weight_by_symbol.get(ticker, 0.0))
+            max_allowed = (
+                max_crypto_position
+                if AlpacaLiveNode._is_crypto(ticker)
+                else max_equity_position
+            )
+            available_weight = max(max_allowed - current_weight, 0.0)
+            if available_weight <= 0.0:
+                warnings.append(
+                    f"{ticker}: dropped buy intent (current {current_weight:.2%} >= limit {max_allowed:.2%})"
+                )
+                continue
+            if target_weight > available_weight:
+                scale = available_weight / target_weight
+                scaled = dict(order)
+                scaled["target_weight"] = available_weight
+                scaled["quantity"] = requested_notional * scale
+                adjusted_orders.append(scaled)
+                warnings.append(
+                    f"{ticker}: target_weight scaled {target_weight:.2%}->{available_weight:.2%} to fit position cap"
+                )
+            else:
+                adjusted_orders.append(order)
+
+        if not adjusted_orders:
+            return adjusted_orders, warnings
+
+        only_crypto = all(
+            AlpacaLiveNode._is_crypto(str(order.get("ticker", "")))
+            for order in adjusted_orders
+        )
+        turnover_cap = max_crypto_turnover if only_crypto else float(settings.max_turnover)
+        max_notional = turnover_cap * portfolio_value
+        total_notional = sum(abs(float(order.get("quantity", 0.0) or 0.0)) for order in adjusted_orders)
+        if total_notional > max_notional > 0:
+            scale = max_notional / total_notional
+            for order in adjusted_orders:
+                order["quantity"] = float(order.get("quantity", 0.0) or 0.0) * scale
+                order["target_weight"] = float(order.get("target_weight", 0.0) or 0.0) * scale
+            warnings.append(
+                f"intraday intents scaled by {scale:.2f} to respect turnover cap {turnover_cap:.2%}"
+            )
+
+        return adjusted_orders, warnings
 
     def _public_context(self, context: dict[str, Any]) -> dict[str, Any]:
         return {

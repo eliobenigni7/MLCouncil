@@ -916,12 +916,21 @@ def portfolio_weights(
     current_w, _ = _load_live_portfolio_snapshot(cov_tickers)
 
     constructor = PortfolioConstructor()
-    weights = constructor.optimize_with_crypto(
-        alpha_signals=signal_aligned,
-        position_multipliers=multipliers,
-        current_weights=current_w,
-        returns_covariance=cov,
-    )
+    optimize_with_crypto = getattr(constructor, "optimize_with_crypto", None)
+    if callable(optimize_with_crypto):
+        weights = optimize_with_crypto(
+            alpha_signals=signal_aligned,
+            position_multipliers=multipliers,
+            current_weights=current_w,
+            returns_covariance=cov,
+        )
+    else:
+        weights = constructor.optimize(
+            alpha_signals=signal_aligned,
+            position_multipliers=multipliers,
+            current_weights=current_w,
+            returns_covariance=cov,
+        )
 
     weights = attach_lineage(weights.rename("target_weight"), **extract_lineage(council_signal))
     context.log.info(

@@ -33,6 +33,8 @@ SECTOR_MAP = {
     "FVRR": "Technology",
     "ROKU": "Communication Services",
     "DDOG": "Technology",
+    "BTCUSD": "Crypto",
+    "ETHUSD": "Crypto",
 }
 
 UNIQUE_SECTORS = sorted(set(SECTOR_MAP.values()))

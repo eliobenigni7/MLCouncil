@@ -107,6 +107,54 @@ class TestTradingService:
         assert valid is False
         assert "Invalid quantity" in msg
 
+    def test_risk_adjust_intraday_orders_scales_to_position_cap(self, monkeypatch):
+        svc = _make_service(
+            account={"portfolio_value": 100000.0},
+            positions=pd.DataFrame(
+                [{"symbol": "BTCUSD", "current_value": 15000.0}]
+            ),
+        )
+        monkeypatch.setenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20")
+
+        orders = [
+            {
+                "ticker": "BTCUSD",
+                "direction": "buy",
+                "quantity": 10000.0,
+                "target_weight": 0.10,
+            }
+        ]
+
+        adjusted, warnings = svc._risk_adjust_intraday_orders(orders)
+
+        assert len(adjusted) == 1
+        assert adjusted[0]["target_weight"] == pytest.approx(0.05)
+        assert adjusted[0]["quantity"] == pytest.approx(5000.0)
+        assert any("scaled" in item for item in warnings)
+
+    def test_risk_adjust_intraday_orders_drops_buy_when_already_above_cap(self, monkeypatch):
+        svc = _make_service(
+            account={"portfolio_value": 100000.0},
+            positions=pd.DataFrame(
+                [{"symbol": "BTCUSD", "current_value": 30000.0}]
+            ),
+        )
+        monkeypatch.setenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20")
+
+        orders = [
+            {
+                "ticker": "BTCUSD",
+                "direction": "buy",
+                "quantity": 2000.0,
+                "target_weight": 0.02,
+            }
+        ]
+
+        adjusted, warnings = svc._risk_adjust_intraday_orders(orders)
+
+        assert adjusted == []
+        assert any("dropped buy intent" in item for item in warnings)
+
     def test_get_pending_orders_empty(self):
         from api.services import trading_service as ts
 

@@ -18,7 +18,9 @@ _ROOT = Path(__file__).parents[2]
 def _load_intraday_universe() -> list[str]:
     env_value = os.getenv("MLCOUNCIL_INTRADAY_UNIVERSE", "")
     if env_value.strip():
-        return [ticker.strip().upper() for ticker in env_value.split(",") if ticker.strip()]
+        return [
+            ticker.strip().upper() for ticker in env_value.split(",") if ticker.strip()
+        ]
     return ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA"]
 
 
@@ -42,8 +44,7 @@ def _build_supervisor() -> IntradaySupervisor:
         class _FallbackAdapter:
             def get_market_snapshot(self, *, as_of: datetime, universe: list[str]):
                 bars = {
-                    ticker: {"close": 0.0, "return_15m": 0.0}
-                    for ticker in universe
+                    ticker: {"close": 0.0, "return_15m": 0.0} for ticker in universe
                 }
                 return MarketSnapshot(
                     as_of=as_of.astimezone(ZoneInfo("America/New_York")),
@@ -59,7 +60,9 @@ def _build_supervisor() -> IntradaySupervisor:
 
         adapter = _FallbackAdapter()
 
-    agent_provider = os.getenv("MLCOUNCIL_INTRADAY_AGENT_PROVIDER", "rule-based").strip().lower()
+    agent_provider = (
+        os.getenv("MLCOUNCIL_INTRADAY_AGENT_PROVIDER", "rule-based").strip().lower()
+    )
     if agent_provider == "openai":
         try:
             agent = OpenAIIntradayAgent(
@@ -76,6 +79,9 @@ def _build_supervisor() -> IntradaySupervisor:
         storage_dir=storage_dir,
         universe=_load_intraday_universe(),
         schedule_minutes=schedule_minutes,
+        executor=lambda payload: trading_service.service.execute_intraday_decision(
+            payload
+        ),
     )
 
 
@@ -121,6 +127,10 @@ def list_decisions(limit: int = 20):
 def run_cycle():
     payload = _supervisor.run_cycle().to_dict()
     _log_decision(payload)
+    try:
+        trading_service.service.execute_intraday_decision(payload)
+    except Exception:
+        pass
     return payload
 
 
@@ -154,7 +164,9 @@ def _log_decision(payload: dict):
             agent_trace=payload.get("agent_trace", {}),
             pipeline_run_id=f"intraday-{payload.get('decision_id', 'unknown')}",
             data_version=str(payload.get("data_snapshot_version", "unknown")),
-            feature_version=str(payload.get("feature_snapshot", {}).get("version", "unknown")),
+            feature_version=str(
+                payload.get("feature_snapshot", {}).get("version", "unknown")
+            ),
             environment=os.getenv("MLCOUNCIL_ENV_PROFILE", "local"),
             model_name="intraday-council",
             model_version=str(payload.get("strategy_version", "intraday-v1")),

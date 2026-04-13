@@ -58,6 +58,7 @@ class IntradayDecision:
     execution_intents: list[ExecutionIntent] = field(default_factory=list)
     data_snapshot_version: str = "unknown"
     strategy_version: str = "intraday-v1"
+    decision_state: str = "ready"
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

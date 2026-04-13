@@ -1049,19 +1049,17 @@ class TestLivePortfolioSnapshot:
         weights = pd.Series([0.5, 0.3, 0.2], index=self.TICKERS)
 
         import tempfile
-        import builtins
-
-        real_import = builtins.__import__
-
-        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "alpaca_trade_api":
-                raise ModuleNotFoundError("No module named 'alpaca_trade_api'")
-            return real_import(name, globals, locals, fromlist, level)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(_pipeline, "_ORDERS_DIR", Path(tmpdir)), patch(
                 "pandas.DataFrame.to_parquet", return_value=None
-            ) as mocked_save, patch("builtins.__import__", side_effect=guarded_import):
+            ) as mocked_save, patch.object(
+                _pipeline,
+                "_load_live_portfolio_snapshot",
+                side_effect=_pipeline.LivePortfolioSnapshotError(
+                    "live portfolio snapshot unavailable: adapter down"
+                ),
+            ):
                 with pytest.raises(RuntimeError, match="live portfolio snapshot"):
                     _call_asset(_pipeline.daily_orders, ctx, weights)
                 mocked_save.assert_not_called()

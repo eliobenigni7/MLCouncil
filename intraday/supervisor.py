@@ -37,15 +37,24 @@ class IntradaySupervisor:
         universe: list[str] | None = None,
         schedule_minutes: int = 15,
         calendar: USMarketCalendar | None = None,
+        executor=None,
     ) -> None:
         self.market_data_adapter = market_data_adapter
         self.agent_orchestrator = agent_orchestrator or FallbackIntradayAgent()
         self.storage_dir = Path(storage_dir)
         self.schedule_minutes = schedule_minutes
+        self.min_valid_close_ratio = float(
+            os.getenv("MLCOUNCIL_INTRADAY_MIN_VALID_CLOSE_RATIO", "0.70")
+        )
+        self.min_informative_ratio = float(
+            os.getenv("MLCOUNCIL_INTRADAY_MIN_INFORMATIVE_RATIO", "0.50")
+        )
         raw_universe = list(universe or ["AAPL", "MSFT", "NVDA", "AMZN", "META"])
         self.universe = raw_universe
         self.calendar = calendar or USMarketCalendar()
-        self.crypto_enabled = os.getenv("MLCOUNCIL_CRYPTO_ENABLED", "false").strip().lower() == "true"
+        self.crypto_enabled = (
+            os.getenv("MLCOUNCIL_CRYPTO_ENABLED", "false").strip().lower() == "true"
+        )
         self.equity_universe = [
             ticker for ticker in raw_universe if not self._is_crypto_ticker(ticker)
         ]
@@ -58,6 +67,7 @@ class IntradaySupervisor:
         else:
             self.crypto_universe = []
         self._has_crypto_universe = bool(self.crypto_universe)
+        self.executor = executor
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -125,6 +135,7 @@ class IntradaySupervisor:
     def run_cycle(self, *, now: datetime | None = None) -> IntradayDecision:
         moment = self._normalize_now(now)
         active_universe = self._select_universe(moment)
+        resolved_session = self._resolve_market_session(moment)
         slot = self.calendar.slot_start(moment, self.schedule_minutes)
         slot_key = slot.isoformat()
         existing = self._load_decision_by_slot(slot_key)
@@ -145,7 +156,41 @@ class IntradaySupervisor:
             as_of=slot,
             universe=active_universe,
         )
-        feature_snapshot = self._build_feature_snapshot(slot, market_snapshot, news_items)
+        feature_snapshot = self._build_feature_snapshot(
+            slot, market_snapshot, news_items
+        )
+        data_ready, data_reason = self._is_market_snapshot_ready(
+            feature_snapshot=feature_snapshot,
+            expected_tickers=active_universe,
+        )
+        if not data_ready:
+            agent_trace = AgentDecisionTrace(
+                agent_name="supervisor-data-guard",
+                summary=f"data_not_ready: {data_reason}",
+                confidence=0.0,
+                sentiment={},
+                rationale=[
+                    f"Snapshot source={feature_snapshot.source}",
+                    data_reason,
+                ],
+                prompt_version="data-guard-v1",
+                model_version="data-guard-v1",
+                provider="supervisor",
+            )
+            decision = self._build_decision(
+                slot=slot,
+                universe=active_universe,
+                market_session=resolved_session,
+                market_snapshot_source=market_snapshot.source,
+                feature_snapshot=feature_snapshot,
+                agent_trace=agent_trace,
+                decision_state="data_not_ready",
+            )
+            self._persist_decision(decision, market_snapshot)
+            self.state["market_session"] = resolved_session
+            self.state["last_completed_slot"] = slot_key
+            self._persist_state()
+            return decision
         agent_trace = self.agent_orchestrator.synthesize(
             market_snapshot=market_snapshot,
             feature_snapshot=feature_snapshot,
@@ -154,12 +199,14 @@ class IntradaySupervisor:
         decision = self._build_decision(
             slot=slot,
             universe=active_universe,
-            market_snapshot=market_snapshot,
+            market_session=resolved_session,
+            market_snapshot_source=market_snapshot.source,
             feature_snapshot=feature_snapshot,
             agent_trace=agent_trace,
+            decision_state="ready",
         )
         self._persist_decision(decision, market_snapshot)
-        self.state["market_session"] = market_snapshot.session
+        self.state["market_session"] = resolved_session
         self.state["last_completed_slot"] = slot_key
         self._persist_state()
         return decision
@@ -221,8 +268,9 @@ class IntradaySupervisor:
                 self.state["market_session"] = self._resolve_market_session(now)
                 self._persist_state()
                 if self._should_run_cycle(now):
-                    self.run_cycle(now=now)
-            time.sleep(1.0)
+                    decision = self.run_cycle(now=now)
+                    if decision.execution_intents:
+                        self._execute_decision(decision)
 
     def _build_feature_snapshot(
         self,
@@ -268,26 +316,31 @@ class IntradaySupervisor:
         *,
         slot: datetime,
         universe: list[str],
-        market_snapshot: MarketSnapshot,
+        market_session: str,
+        market_snapshot_source: str,
         feature_snapshot: FeatureSnapshot,
         agent_trace: AgentDecisionTrace,
+        decision_state: str = "ready",
     ) -> IntradayDecision:
         intents = self._build_execution_intents(feature_snapshot, agent_trace)
         slot_key = slot.isoformat()
         decision_id = hashlib.sha256(
-            "|".join([slot_key, ",".join(universe), feature_snapshot.version]).encode("utf-8")
+            "|".join([slot_key, ",".join(universe), feature_snapshot.version]).encode(
+                "utf-8"
+            )
         ).hexdigest()[:16]
         return IntradayDecision(
             decision_id=decision_id,
             as_of=slot_key,
-            market_session=market_snapshot.session,
+            market_session=market_session,
             schedule_minutes=self.schedule_minutes,
             universe=universe,
-            market_snapshot_version=f"{market_snapshot.source}-{slot.strftime('%Y%m%d%H%M')}",
+            market_snapshot_version=f"{market_snapshot_source}-{slot.strftime('%Y%m%d%H%M')}",
             feature_snapshot=feature_snapshot,
             agent_trace=agent_trace,
             execution_intents=intents,
-            data_snapshot_version=f"{market_snapshot.source}-{slot.strftime('%Y%m%d%H%M')}",
+            data_snapshot_version=f"{market_snapshot_source}-{slot.strftime('%Y%m%d%H%M')}",
+            decision_state=decision_state,
         )
 
     def _build_execution_intents(
@@ -302,7 +355,13 @@ class IntradaySupervisor:
             ticker_bias = float(agent_trace.ticker_scores.get(ticker, 0.0))
             day_change = float(feature.get("day_change_pct", 0.0))
             vwap_distance = float(feature.get("distance_from_vwap", 0.0))
-            score = momentum + (0.25 * sentiment) + (0.60 * ticker_bias) + (0.10 * day_change) + (0.05 * vwap_distance)
+            score = (
+                momentum
+                + (0.25 * sentiment)
+                + (0.60 * ticker_bias)
+                + (0.10 * day_change)
+                + (0.05 * vwap_distance)
+            )
             scored.append((ticker, score, float(feature.get("close", 0.0))))
 
         scored.sort(key=lambda item: item[1], reverse=True)
@@ -324,7 +383,9 @@ class IntradaySupervisor:
             )
         return intents
 
-    def _persist_decision(self, decision: IntradayDecision, market_snapshot: MarketSnapshot) -> None:
+    def _persist_decision(
+        self, decision: IntradayDecision, market_snapshot: MarketSnapshot
+    ) -> None:
         decision_dir = self.storage_dir / "decisions" / decision.as_of[:10]
         decision_dir.mkdir(parents=True, exist_ok=True)
         payload = decision.to_dict()
@@ -351,7 +412,11 @@ class IntradaySupervisor:
         for dated_dir in dated_dirs:
             try:
                 files = sorted(
-                    (path for path in dated_dir.iterdir() if path.is_file() and path.suffix == ".json"),
+                    (
+                        path
+                        for path in dated_dir.iterdir()
+                        if path.is_file() and path.suffix == ".json"
+                    ),
                     key=lambda path: path.name,
                     reverse=True,
                 )
@@ -381,7 +446,9 @@ class IntradaySupervisor:
     def _decision_from_payload(self, payload: dict[str, Any]) -> IntradayDecision:
         feature_snapshot = FeatureSnapshot(**payload["feature_snapshot"])
         agent_trace = AgentDecisionTrace(**payload["agent_trace"])
-        intents = [ExecutionIntent(**item) for item in payload.get("execution_intents", [])]
+        intents = [
+            ExecutionIntent(**item) for item in payload.get("execution_intents", [])
+        ]
         return IntradayDecision(
             decision_id=payload["decision_id"],
             as_of=payload["as_of"],
@@ -394,7 +461,54 @@ class IntradaySupervisor:
             execution_intents=intents,
             data_snapshot_version=payload.get("data_snapshot_version", "unknown"),
             strategy_version=payload.get("strategy_version", "intraday-v1"),
+            decision_state=payload.get("decision_state", "ready"),
         )
+
+    def _is_market_snapshot_ready(
+        self,
+        *,
+        feature_snapshot: FeatureSnapshot,
+        expected_tickers: list[str],
+    ) -> tuple[bool, str]:
+        features = feature_snapshot.features
+        if not expected_tickers:
+            return False, "empty intraday universe"
+        if not features:
+            return False, "empty feature snapshot"
+
+        valid_close = 0
+        informative = 0
+        expected_count = len(expected_tickers)
+        for ticker in expected_tickers:
+            row = features.get(ticker, {})
+            close = float(row.get("close", 0.0) or 0.0)
+            if close > 0.0:
+                valid_close += 1
+            signals = (
+                abs(float(row.get("return_15m", 0.0) or 0.0)),
+                abs(float(row.get("day_change_pct", 0.0) or 0.0)),
+                abs(float(row.get("intraday_range_pct", 0.0) or 0.0)),
+                abs(float(row.get("distance_from_vwap", 0.0) or 0.0)),
+                abs(float(row.get("spread_bps", 0.0) or 0.0)),
+                float(row.get("minute_volume", 0.0) or 0.0),
+                float(row.get("previous_day_volume", 0.0) or 0.0),
+            )
+            if any(value > 0.0 for value in signals):
+                informative += 1
+
+        close_ratio = valid_close / expected_count
+        informative_ratio = informative / expected_count
+        if close_ratio < self.min_valid_close_ratio:
+            return (
+                False,
+                f"valid_close_ratio={close_ratio:.2f} below threshold={self.min_valid_close_ratio:.2f}",
+            )
+        if informative_ratio < self.min_informative_ratio:
+            return (
+                False,
+                f"informative_ratio={informative_ratio:.2f} below threshold={self.min_informative_ratio:.2f}",
+            )
+        return True, "ok"
 
     def _load_state(self) -> dict[str, Any]:
         if not self._state_path.exists():
@@ -487,3 +601,11 @@ class IntradaySupervisor:
         if now.tzinfo is None:
             return now.replace(tzinfo=_NY_TZ)
         return now.astimezone(_NY_TZ)
+
+    def _execute_decision(self, decision: IntradayDecision) -> None:
+        if self.executor is None:
+            return
+        try:
+            self.executor(decision.to_dict())
+        except Exception:
+            pass

@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Position:
     symbol: str
-    quantity: int
+    quantity: float
     avg_price: float
     current_price: float
     sector: str = "Unknown"
