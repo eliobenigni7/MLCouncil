@@ -1,0 +1,680 @@
+# MLCouncil — Detailed Implementation Plan
+
+## 1. Purpose of this document
+
+This document translates the previously identified improvement opportunities into a concrete implementation plan for **MLCouncil**, with:
+- clear priorities,
+- workstreams,
+- detailed deliverables,
+- sequencing logic,
+- ownership hypotheses,
+- implementation roadmap,
+- governance and KPIs.
+
+The plan explicitly incorporates a **more robust and retrospective backtesting capability** as a core pillar, not as an optional future enhancement.
+
+---
+
+## 2. Strategic objective
+
+The goal is to evolve MLCouncil from a technically promising PoC into a system that is:
+
+- safer,
+- more reproducible,
+- more trustworthy,
+- more auditable,
+- more robust in portfolio construction and risk handling,
+- better validated through retrospective and walk-forward testing,
+- easier to operate and extend.
+
+In practical terms, the implementation effort should reduce three classes of risk:
+
+1. **Operational risk**  
+   Exposure of secrets, unauthenticated admin surfaces, weak runtime controls.
+
+2. **Model / portfolio correctness risk**  
+   Mismatch between intended logic and actual portfolio behavior, especially in sizing, drawdown handling, and transaction cost realism.
+
+3. **Validation and credibility risk**  
+   Insufficient evidence that strategy performance is robust, stable, and not driven by implementation artifacts or overfitting.
+
+---
+
+## 3. Design principles
+
+The implementation should follow these principles:
+
+### 3.1 Fix system integrity before adding complexity
+New model ideas should not be prioritized ahead of hardening the platform, the portfolio engine, and the validation stack.
+
+### 3.2 Prefer fail-closed over fail-open
+Sensitive admin and execution paths must fail safely by default.
+
+### 3.3 Align documentation, configuration, and behavior
+In a quantitative system, code–config–docs drift creates real operational and analytical confusion.
+
+### 3.4 Make validation as strong as modeling
+A good model with weak validation is not production-grade. Backtesting, benchmark comparison, and regime analysis are core product capabilities.
+
+### 3.5 Make every critical artifact traceable
+Models, configurations, test outputs, backtest results, and deployment decisions should be reproducible and attributable.
+
+---
+
+## 4. Priority framework
+
+The implementation is organized into the following macro-priorities:
+
+- **P1 — Security and platform integrity**
+- **P1 — Portfolio/risk correctness**
+- **P2 — Robust retrospective backtesting and validation**
+- **P2 — Reproducibility and environment parity**
+- **P2 — CI/CD quality gates**
+- **P3 — Artifact/data governance**
+- **P3 — Process, review model, and operator UX**
+
+### Recommended sequence
+1. Security hardening
+2. Portfolio and risk correctness fixes
+3. Backtesting and retrospective validation framework
+4. Reproducibility baseline
+5. CI/CD quality gates
+6. Artifact governance
+7. Process and UI/operator safety enhancements
+
+---
+
+## 5. Workstream 1 — Security hardening and secret management
+
+### Objective
+Eliminate avoidable security exposure in the runtime/admin layer and ensure sensitive surfaces are protected by default.
+
+### Why this matters
+A system can have excellent models and still be unacceptable if:
+- admin endpoints remain accessible without strong auth,
+- secrets are rendered or exposed in UI/API responses,
+- runtime protections depend on optional configuration.
+
+### Target outcomes
+- No admin functionality accessible without explicit authentication.
+- No endpoint or UI component returns secrets in clear text.
+- Sensitive runtime values are masked or omitted.
+- Secret handling is consistent across local, CI, and containerized environments.
+
+### Detailed deliverables
+
+#### 5.1 Admin API fail-closed authentication
+- Enforce mandatory API key or equivalent auth for paper/admin profile.
+- Refuse startup or disable sensitive routes if the required secret is not configured.
+- Separate health/public endpoints from protected admin endpoints.
+
+#### 5.2 Secret masking and rendering policy
+- Replace any runtime settings response that exposes actual secret values.
+- Introduce a single masking utility for secret-like fields.
+- Ensure UI templates never display secrets, even partially beyond a safe mask policy.
+
+#### 5.3 Secret scanning and repository hygiene
+- Enable repository-level secret scanning and push protection.
+- Add a pre-commit or CI check to detect obvious leaked credentials.
+- Review `.env`, compose, and docs to ensure no sample credentials are risky.
+
+#### 5.4 Access logging and auditability
+- Log access to protected admin endpoints.
+- Distinguish successful and failed authentication attempts.
+- Keep logs free of secret payloads.
+
+### Suggested tasks
+- Patch auth boot logic.
+- Patch runtime settings endpoint/service.
+- Add tests for:
+  - unauthenticated admin access blocked,
+  - secret masking behavior,
+  - startup failure when required key is missing.
+
+### Definition of done
+- Protected endpoints cannot be used without auth.
+- Secrets are not visible in any API response or UI view.
+- CI includes at least one secret-related guard.
+- Regression tests cover the hardened behavior.
+
+---
+
+## 6. Workstream 2 — Portfolio construction and risk correctness
+
+### Objective
+Ensure the portfolio engine behaves exactly as intended under position sizing, cash reserve, drawdown scaling, turnover, and cost assumptions.
+
+### Why this matters
+Even small logic mismatches in portfolio construction can invalidate:
+- backtests,
+- paper trading performance,
+- risk monitoring,
+- optimization assumptions,
+- trust in results.
+
+### Key issues to address
+- Budget fraction / cash reserve logic must match intended portfolio tiers.
+- Drawdown scaling must actually reduce exposure rather than getting neutralized by renormalization.
+- Transaction cost assumptions must be consistent across code, docs, and evaluation outputs.
+- Position sizing and constraints should be testable and explainable.
+
+### Target outcomes
+- Portfolio rules are deterministic and correctly implemented.
+- Risk overlays truly affect final exposure.
+- Documentation matches runtime behavior.
+- Portfolio logic is regression-tested.
+
+### Detailed deliverables
+
+#### 6.1 Budget fraction logic correction
+- Explicitly define when cash reserve applies.
+- Remove indirect condition logic that unintentionally affects all tiers.
+- Add tier-by-tier unit tests.
+
+#### 6.2 Drawdown scaling correction
+- Ensure scaling reduces gross exposure as intended.
+- Avoid normalization steps that erase protective reductions.
+- Add tests for multiple drawdown levels.
+
+#### 6.3 Transaction cost model alignment
+- Consolidate cost assumptions into a single source of truth.
+- Reconcile:
+  - README assumptions,
+  - config assumptions,
+  - portfolio constructor defaults,
+  - backtest assumptions.
+
+#### 6.4 Risk policy explainability
+- Expose in logs or diagnostics:
+  - pre-risk weights,
+  - post-risk weights,
+  - applied scaling factors,
+  - turnover clipping,
+  - sector/beta constraint adjustments.
+
+### Suggested tasks
+- Refactor portfolio constructor policy constants.
+- Add regression tests:
+  - budget allocation by portfolio tier,
+  - exposure reduction under drawdown,
+  - transaction cost consistency.
+- Add debug-level portfolio attribution logs.
+
+### Definition of done
+- Portfolio/risk behavior matches declared policy.
+- Exposure actually decreases when drawdown protection triggers.
+- Cost assumptions are synchronized.
+- Test suite covers the main portfolio logic branches.
+
+---
+
+## 7. Workstream 3 — Robust retrospective backtesting and validation
+
+### Objective
+Build a serious retrospective validation framework able to test MLCouncil end-to-end under realistic historical conditions.
+
+### Why this matters
+This is one of the most important additions to the roadmap.
+
+Without stronger backtesting, it is impossible to confidently distinguish:
+- genuine signal quality,
+- portfolio engine artifacts,
+- cost model illusions,
+- regime-specific fragility,
+- overfitting.
+
+A more robust retrospective framework is required to decide whether the system is merely elegant or actually reliable.
+
+### Strategic role
+This workstream should be treated as a **core P2 pillar**, immediately after P1 hardening and correctness fixes.
+
+### Target outcomes
+- Historical performance is measured with realistic assumptions.
+- Evaluation is performed out-of-sample and walk-forward.
+- Strategy behavior is understood across market regimes.
+- Baselines and benchmarks are explicit.
+- Promotion decisions are based on evidence, not intuition.
+
+### Detailed deliverables
+
+#### 7.1 Unified backtest engine
+Build or harden a simulation framework that:
+- uses a consistent order lifecycle,
+- models fills, slippage, and commissions explicitly,
+- tracks cash, positions, realized/unrealized PnL,
+- supports rebalancing logic consistent with live/paper behavior.
+
+Deliverables:
+- backtest runner,
+- order fill policy module,
+- portfolio accounting component,
+- execution assumptions config.
+
+#### 7.2 Walk-forward validation framework
+Introduce rolling historical evaluation:
+- train on a window,
+- validate on the next period,
+- roll forward repeatedly.
+
+Key requirements:
+- no future leakage,
+- stable split logic,
+- consistent feature generation per window,
+- reusable evaluation reports.
+
+Deliverables:
+- rolling window runner,
+- split configuration,
+- aggregated evaluation outputs.
+
+#### 7.3 Purging / embargo / leakage prevention
+If signals depend on overlapping horizons or temporally adjacent observations:
+- use purging logic,
+- apply embargo where appropriate,
+- prevent train-test contamination.
+
+Deliverables:
+- split validation policy,
+- leakage diagnostics,
+- tests for split correctness.
+
+#### 7.4 Regime-by-regime analysis
+Performance should be decomposed by market regime, not only measured in aggregate.
+
+Required slices:
+- bull markets,
+- bear markets,
+- sideways periods,
+- high-volatility phases,
+- low-volatility phases,
+- stress windows / shocks.
+
+Deliverables:
+- regime tagging pipeline,
+- per-regime performance report,
+- regime robustness view.
+
+#### 7.5 Benchmark suite
+Evaluate the system against simple and meaningful baselines:
+- SPY / QQQ buy-and-hold,
+- equal-weight universe,
+- simple momentum baseline,
+- volatility-targeted heuristic baseline,
+- optional risk-parity-style benchmark.
+
+Deliverables:
+- benchmark library,
+- benchmark comparison report,
+- relative alpha table.
+
+#### 7.6 Attribution analysis
+Understand where performance comes from:
+- technical model contribution,
+- sentiment contribution,
+- regime filter contribution,
+- allocator / aggregator contribution,
+- optimizer / risk overlay contribution,
+- execution frictions.
+
+Deliverables:
+- contribution decomposition,
+- ablation framework,
+- comparison dashboard/report.
+
+#### 7.7 Stability metrics
+Track more than Sharpe/CAGR.
+
+Minimum set:
+- CAGR,
+- annualized volatility,
+- Sharpe,
+- Sortino,
+- max drawdown,
+- Calmar,
+- hit ratio,
+- turnover,
+- average holding period,
+- worst month,
+- tail metrics,
+- performance decay out-of-sample.
+
+Deliverables:
+- standardized metrics schema,
+- backtest report template,
+- exportable run artifacts.
+
+#### 7.8 Overfitting diagnostics
+Add explicit diagnostics that reduce the risk of false confidence:
+- purged cross-validation,
+- PBO-style diagnostics or approximation,
+- sensitivity analysis across key parameters,
+- ablation / robustness grid.
+
+Deliverables:
+- robustness notebook/report pipeline,
+- promotion guardrails,
+- “reject if only in-sample improvement” checks.
+
+### Suggested tasks
+- Define backtest engine interfaces.
+- Reuse live/paper execution assumptions wherever possible.
+- Introduce experiment configs for:
+  - cost levels,
+  - rebalance frequency,
+  - universe variants,
+  - benchmark sets.
+- Add historical scenario packs:
+  - calm regime,
+  - crisis regime,
+  - high-rate regime,
+  - rebound regime.
+
+### Definition of done
+- A full historical run can be reproduced deterministically.
+- Results are available both aggregate and by regime.
+- Benchmark comparison is automatic.
+- Strategy changes can be accepted or rejected based on out-of-sample evidence.
+
+---
+
+## 8. Workstream 4 — Reproducibility and environment parity
+
+### Objective
+Make builds, tests, and runtime behavior stable across CI, local development, and containerized execution.
+
+### Why this matters
+A quant/ML system that is not reproducible is very difficult to trust or debug.
+
+### Problems typically caused by weak parity
+- CI passes but container fails.
+- Local runs differ from deployed behavior.
+- Dependency updates silently alter outputs.
+- Historical re-runs cannot be reproduced.
+
+### Target outcomes
+- One explicit Python target version.
+- One dependency locking strategy.
+- Consistent environments across local, CI, Docker.
+- Environment metadata attached to key artifacts.
+
+### Detailed deliverables
+
+#### 8.1 Python version unification
+- Pick a single target version.
+- Align CI, Docker, local docs, and tooling.
+
+#### 8.2 Dependency locking
+- Introduce a lockfile or equivalent pinning approach.
+- Separate dev, runtime, and API dependencies clearly.
+- Review open-ended version constraints.
+
+#### 8.3 Build parity validation
+- Ensure CI and Docker run the same essential test commands.
+- Add a smoke test for the containerized app.
+- Validate that runtime env parsing behaves consistently.
+
+#### 8.4 Artifact metadata enrichment
+Attach to model and backtest artifacts:
+- Python version,
+- dependency fingerprint,
+- git SHA,
+- config hash,
+- environment profile.
+
+### Definition of done
+- No meaningful version drift between CI and runtime.
+- Dependency resolution is deterministic.
+- A historical run can be recreated with the same environment metadata.
+
+---
+
+## 9. Workstream 5 — CI/CD quality gates
+
+### Objective
+Strengthen the development lifecycle so regressions, unsafe changes, and quality issues are detected automatically.
+
+### Why this matters
+The codebase already has useful tests. The missing step is turning them into stronger delivery controls.
+
+### Target outcomes
+- Faster detection of regressions.
+- Minimum quality baseline for all changes.
+- Better confidence in merges.
+- Reduced long-term maintenance burden.
+
+### Detailed deliverables
+
+#### 9.1 Coverage baseline
+- Add coverage reporting.
+- Set an initial realistic threshold.
+- Track changed-lines coverage where possible.
+
+#### 9.2 Static quality checks
+- Introduce linting.
+- Add type checking incrementally.
+- Prioritize high-risk modules:
+  - api,
+  - runtime_env,
+  - council,
+  - execution,
+  - portfolio/risk modules.
+
+#### 9.3 Security and dependency scanning
+- Add dependency vulnerability checks.
+- Integrate repository security scanning.
+- Fail builds for critical issues where practical.
+
+#### 9.4 Test matrix improvements
+- Consider a small matrix on key Python/runtime dimensions once parity is stable.
+- Ensure critical runtime profiles are represented.
+
+### Definition of done
+- CI includes tests, coverage, lint, type checks, and at least one security scan.
+- Quality signals are visible on every PR.
+- Regressions are less likely to reach main.
+
+---
+
+## 10. Workstream 6 — Artifact, model, and data governance
+
+### Objective
+Make model and data artifacts easier to track, validate, promote, and roll back.
+
+### Why this matters
+Without coherent governance, the system may function, but:
+- artifact provenance is weak,
+- rollback is manual,
+- promotion is subjective,
+- auditability is limited.
+
+### Target outcomes
+- Critical artifacts are versioned and traceable.
+- Promotion decisions are documented and reproducible.
+- Integrity checks are applied consistently.
+- Contracts expand beyond only a subset of data assets.
+
+### Detailed deliverables
+
+#### 10.1 Model registry discipline
+- Use MLflow registry or equivalent more systematically.
+- Distinguish:
+  - experimental run,
+  - candidate model,
+  - approved model,
+  - archived model.
+
+#### 10.2 Artifact integrity checks
+- Standardize hashing/checksum policy.
+- Apply to all critical artifacts, not only a subset.
+
+#### 10.3 Expanded contracts and checks
+Extend validation to:
+- operational payloads,
+- backtest outputs,
+- risk outputs,
+- model evaluation outputs,
+- execution artifacts.
+
+#### 10.4 Promotion workflow
+Define a lightweight but explicit promotion process:
+- technical validation passed,
+- backtesting evidence passed,
+- benchmark comparison acceptable,
+- review completed,
+- artifact registered and tagged.
+
+### Definition of done
+- Every promoted model is fully attributable.
+- Critical artifacts have integrity metadata.
+- Registry state reflects actual lifecycle status.
+
+---
+
+## 11. Workstream 7 — Process, review model, and operator UX
+
+### Objective
+Improve maintainability, change control, and operator safety.
+
+### Why this matters
+Strong technical foundations degrade quickly if:
+- all changes depend on a single maintainer,
+- review is informal,
+- the admin/operator UI is not designed for safe operations.
+
+### Target outcomes
+- Better development discipline.
+- Lower human error risk.
+- Improved clarity for future contributors or reviewers.
+- Safer operational workflows.
+
+### Detailed deliverables
+
+#### 11.1 Lightweight engineering governance
+- PR templates,
+- issue categories,
+- simple ADRs for major design changes,
+- changelog discipline.
+
+#### 11.2 Review policy
+For sensitive domains, require at least one review:
+- auth/security,
+- portfolio/risk,
+- execution/broker adapters,
+- backtesting assumptions,
+- model promotion logic.
+
+#### 11.3 Operator-safe UX
+Admin surfaces should:
+- mask secrets completely,
+- separate info from action,
+- require confirmation for critical actions,
+- clearly display environment/profile,
+- highlight doc-code-config inconsistencies.
+
+#### 11.4 Operational observability UX
+- clearer status dashboards,
+- explicit warnings when runtime assumptions are incomplete,
+- surfaced portfolio/risk diagnostics,
+- surfaced last successful validation/backtest summary.
+
+### Definition of done
+- Change management is more structured.
+- Operators are less likely to make unsafe mistakes.
+- UI supports decision-making, not just visibility.
+
+---
+
+## 12. Implementation roadmap (12-week version)
+
+## Phase 1 — Weeks 1–2
+### Focus
+Security hardening + portfolio correctness
+
+### Deliverables
+- Admin auth fail-closed
+- Secret masking
+- secret-scanning baseline
+- budget fraction fix
+- drawdown scaling fix
+- transaction cost assumption alignment
+- regression tests for core portfolio logic
+
+### Exit criteria
+- No secret exposure
+- no unauthenticated admin path
+- portfolio/risk fixes merged and tested
+
+---
+
+## Phase 2 — Weeks 3–5
+### Focus
+Backtesting foundation + reproducibility baseline
+
+### Deliverables
+- unified backtest runner
+- cost/slippage model centralization
+- walk-forward runner skeleton
+- Python version alignment
+- dependency locking
+- environment metadata capture
+
+### Exit criteria
+- first deterministic end-to-end retrospective run
+- parity between CI target and runtime target
+
+---
+
+## Phase 3 — Weeks 5–7
+### Focus
+Validation depth expansion
+
+### Deliverables
+- regime-aware reporting
+- benchmark suite
+- attribution/ablation view
+- leakage controls / purging
+- expanded metrics schema
+- first promotion-oriented validation report
+
+### Exit criteria
+- each strategy change can be compared out-of-sample and versus benchmarks
+
+---
+
+## Phase 4 — Weeks 7–9
+### Focus
+CI/CD hardening
+
+### Deliverables
+- coverage reporting
+- linting
+- type checks on critical paths
+- security/dependency scanning
+- improved PR checks
+
+### Exit criteria
+- merged changes pass stronger automated gates
+
+---
+
+## Phase 5 — Weeks 9–12
+### Focus
+Artifact governance + process + operator UX
+
+### Deliverables
+- model/artifact registry workflow
+- expanded contracts
+- promotion workflow
+- PR template / ADR / review model
+- operator-safe admin improvements
+
+### Exit criteria
+- system is materially more auditable, governable, and maintainable
+
+---
+
+## 13. Detailed 30-60-90 day view
+
+## First 30 days
+### Main goal
+Stop the bigge
