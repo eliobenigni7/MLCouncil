@@ -341,7 +341,7 @@ pip install -r requirements_api.txt   # for API / admin only
 
 ### Environment Configuration
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` in the project root and fill in the real secrets:
 
 ```env
 # Alpaca Paper Trading (required for order execution)

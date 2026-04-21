@@ -14,7 +14,7 @@ services:
     build: .
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "${ADMIN_API_PORT:-8000}:8000"
+      - "127.0.0.1:${ADMIN_API_PORT:-8000}:8000"
     secrets:
       - alpaca_api_key
       - alpaca_secret_key
@@ -49,7 +49,7 @@ services:
   dashboard:
     build: .
     ports:
-      - "${DASHBOARD_PORT:-8501}:8501"
+      - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
     environment:
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
@@ -71,7 +71,7 @@ services:
   dagster:
     build: .
     ports:
-      - "${DAGSTER_PORT:-3000}:3000"
+      - "127.0.0.1:${DAGSTER_PORT:-3000}:3000"
     command:
       - sh
       - -c
@@ -102,7 +102,7 @@ services:
   mlflow:
     build: .
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
     command:
       - sh
       - -c

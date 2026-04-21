@@ -269,8 +269,13 @@ class IntradaySupervisor:
                 self._persist_state()
                 if self._should_run_cycle(now):
                     decision = self.run_cycle(now=now)
-                    if decision.execution_intents:
+                    if (
+                        decision.decision_state == "ready"
+                        and decision.execution_intents
+                        and not self._is_decision_executed(decision.decision_id)
+                    ):
                         self._execute_decision(decision)
+            time.sleep(1.0)
 
     def _build_feature_snapshot(
         self,
@@ -347,6 +352,7 @@ class IntradaySupervisor:
         self,
         feature_snapshot: FeatureSnapshot,
         agent_trace: AgentDecisionTrace,
+        portfolio_value: float = 100_000.0,
     ) -> list[ExecutionIntent]:
         scored: list[tuple[str, float, float]] = []
         for ticker, feature in feature_snapshot.features.items():
@@ -605,7 +611,42 @@ class IntradaySupervisor:
     def _execute_decision(self, decision: IntradayDecision) -> None:
         if self.executor is None:
             return
+        execution_status = "attempted"
         try:
-            self.executor(decision.to_dict())
-        except Exception:
-            pass
+            result = self.executor(decision.to_dict())
+            if isinstance(result, dict):
+                if result.get("error"):
+                    execution_status = "blocked"
+                else:
+                    execution_status = "degraded" if result.get("orders_rejected") else "success"
+        except Exception as e:
+            import traceback
+            print(f"[INTRADAY] Execution failed for {decision.decision_id}: {e}")
+            print(traceback.format_exc())
+            execution_status = "failed"
+        self._mark_decision_execution_status(decision, execution_status)
+
+    def _is_decision_executed(self, decision_id: str) -> bool:
+        payload = self._load_decision_by_id(decision_id)
+        if payload is None:
+            return False
+        execution_status = str(payload.get("execution_status", "")).lower()
+        return execution_status in {"attempted", "success", "degraded", "blocked", "submitted"}
+
+    def _mark_decision_execution_status(
+        self,
+        decision: IntradayDecision,
+        execution_status: str,
+    ) -> None:
+        decision_path = self.storage_dir / "decisions" / decision.as_of[:10] / f"{decision.decision_id}.json"
+        if not decision_path.exists():
+            return
+        try:
+            payload = json.loads(decision_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        payload["execution_status"] = execution_status
+        try:
+            decision_path.write_text(json.dumps(payload, indent=2))
+        except OSError:
+            return

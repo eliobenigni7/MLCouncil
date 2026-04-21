@@ -378,6 +378,7 @@ def step_portfolio(
         position_multipliers=multipliers.reindex(cov_tickers).fillna(1.0),
         current_weights=current_w,
         returns_covariance=cov,
+        portfolio_value=portfolio_value,
     )
 
     orders = constructor.compute_orders(target_w, current_w, portfolio_value)

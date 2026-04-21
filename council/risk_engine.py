@@ -117,7 +117,7 @@ class ExposureReport:
 class RiskLimits:
     max_var_pct: float = 0.02
     max_cvar_pct: float = 0.035
-    max_sector_exposure: float = 0.25
+    max_sector_exposure: float = 1.0  # 1.0 = no limit
     max_single_position: float = 0.10
     max_crypto_position: float = 0.20
     max_net_exposure: float = 1.0

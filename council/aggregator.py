@@ -20,7 +20,9 @@ Typical daily flow
 
 from __future__ import annotations
 
+import pickle
 from datetime import date
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -517,3 +519,32 @@ class CouncilAggregator:
             else:
                 result[m] = 0.0
         return result
+
+    # --------------------------------------------------------------------------
+    # Persistence
+    # --------------------------------------------------------------------------
+
+    def save(self, path: str | Path) -> None:
+        """Pickle the aggregator state to disk.
+
+        Saves all internal state needed to reconstruct the aggregator exactly:
+        base weights config, IC history, weights log, and orthogonality monitor.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self.__dict__, f, protocol=pickle.HIGHEST_PROTOCOL)
+        logger.info(f"CouncilAggregator saved to {path}")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "CouncilAggregator":
+        """Reconstruct a CouncilAggregator from a pickled state file."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Aggregator state not found: {path}")
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        instance = cls.__new__(cls)
+        instance.__dict__.update(state)
+        logger.info(f"CouncilAggregator loaded from {path}")
+        return instance

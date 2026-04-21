@@ -357,6 +357,57 @@ def test_intraday_supervisor_list_decisions_skips_unreadable_directory(tmp_path:
     assert payloads == []
 
 
+def test_intraday_supervisor_marks_decision_as_executed(tmp_path: Path):
+    from intraday.market_data import MarketSnapshot
+    from intraday.supervisor import IntradaySupervisor
+
+    class FakeAdapter:
+        def get_market_snapshot(self, *, as_of: datetime, universe: list[str]):
+            return MarketSnapshot(
+                as_of=as_of,
+                universe=universe,
+                bars={"AAPL": {"close": 201.0, "return_15m": 0.012}},
+                source="fake-feed",
+                session="regular",
+            )
+
+        def get_news_snapshot(self, *, as_of: datetime, universe: list[str]):
+            return []
+
+    class FakeAgent:
+        def synthesize(self, *, market_snapshot, feature_snapshot, news_items):
+            del market_snapshot, feature_snapshot, news_items
+            return AgentDecisionTrace(
+                agent_name="rule-based-agent",
+                summary="AAPL long.",
+                confidence=0.68,
+                sentiment={"AAPL": 0.7},
+                ticker_scores={"AAPL": 0.9},
+                rationale=["Positive momentum."],
+                prompt_version="fallback-v1",
+                model_version="rule-based-v1",
+            )
+
+    supervisor = IntradaySupervisor(
+        market_data_adapter=FakeAdapter(),
+        agent_orchestrator=FakeAgent(),
+        storage_dir=tmp_path / "intraday",
+        universe=["AAPL"],
+        executor=lambda payload: {"orders_submitted": 1, "orders_rejected": 0},
+    )
+
+    decision = supervisor.run_cycle(
+        now=datetime(2026, 4, 9, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+    )
+    supervisor._execute_decision(decision)
+
+    latest = supervisor.get_latest_decision()
+
+    assert latest is not None
+    assert latest["execution_status"] == "success"
+    assert supervisor._is_decision_executed(decision.decision_id) is True
+
+
 def test_intraday_supervisor_runs_crypto_universe_outside_equity_hours(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

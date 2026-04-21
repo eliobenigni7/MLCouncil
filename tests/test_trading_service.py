@@ -44,6 +44,7 @@ class TestTradingService:
         from runtime_env import TradingSettings
 
         svc = _make_service()
+        monkeypatch.delenv("MLCOUNCIL_AUTOMATION_PAUSED", raising=False)
         monkeypatch.setattr(
             ts,
             "get_trading_settings",
@@ -106,6 +107,16 @@ class TestTradingService:
         valid, msg = svc._validate_order(order, account, pd.DataFrame())
         assert valid is False
         assert "Invalid quantity" in msg
+
+    def test_validate_order_accepts_fractional_crypto_quantity(self):
+        svc = _make_service()
+
+        order = {"ticker": "BTCUSD", "direction": "sell", "share_quantity": 0.075, "price": 70000.0}
+        account = {"portfolio_value": 100000.0}
+
+        valid, msg = svc._validate_order(order, account, pd.DataFrame())
+        assert valid is True
+        assert msg == "OK"
 
     def test_risk_adjust_intraday_orders_scales_to_position_cap(self, monkeypatch):
         svc = _make_service(
@@ -268,6 +279,50 @@ class TestTradingService:
         assert len(result) == 1
         assert result[0]["order_id"] == "ord-456"
         assert result[0]["status"] == "accepted"
+
+    def test_get_trade_history_filters_out_non_trade_audit_payloads(self):
+        from api.services import trading_service as ts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svc = _make_service()
+            svc._node.list_orders.return_value = []
+
+            trade_dir = Path(tmpdir) / "paper_trades"
+            trade_dir.mkdir(parents=True, exist_ok=True)
+            (trade_dir / "2026-04-13.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "account": {"portfolio_value": 100000.0},
+                            "lineage": {"decision_id": "dec-1"},
+                            "orders": [{"symbol": "BTCUSD"}],
+                            "pretrade": {"blocked": False},
+                            "reconciliation": {"date": "2026-04-13"},
+                        },
+                        {
+                            "order_id": "ord-789",
+                            "symbol": "BTCUSD",
+                            "qty": 0.05,
+                            "side": "sell",
+                            "order_type": "market",
+                            "status": "filled",
+                            "submitted_at": "2026-04-13T09:18:22+00:00",
+                            "mode": "paper",
+                        },
+                    ]
+                )
+            )
+
+            original_dir = ts.TRADE_LOG_DIR
+            ts.TRADE_LOG_DIR = trade_dir
+            try:
+                result = svc.get_trade_history(days=1)
+            finally:
+                ts.TRADE_LOG_DIR = original_dir
+
+        assert len(result) == 1
+        assert result[0]["order_id"] == "ord-789"
+        assert result[0]["symbol"] == "BTCUSD"
 
     def test_get_status_connected_includes_runtime_flags(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "paper")
@@ -570,11 +625,13 @@ class TestTradingService:
         assert payload["lineage"]["pipeline_run_id"] == "run-006"
 
     def test_execute_intraday_decision_converts_execution_intents_and_keeps_lineage(self, monkeypatch):
+        from api.services import trading_service as ts
+
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
 
         svc = _make_service()
         decision = {
-            "decision_id": "decision-789",
+            "decision_id": "decision-789-test",
             "as_of": "2026-04-09T14:45:00+00:00",
             "strategy_version": "intraday-v1",
             "market_session": "regular",
@@ -590,9 +647,135 @@ class TestTradingService:
             ],
         }
 
-        result = svc.execute_intraday_decision(decision)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_ops_dir = ts.OPERATIONS_DIR
+            original_intraday_ops_dir = ts.INTRADAY_OPERATIONS_DIR
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            ts.INTRADAY_OPERATIONS_DIR = ts.OPERATIONS_DIR / "intraday"
+            try:
+                result = svc.execute_intraday_decision(decision)
+            finally:
+                ts.OPERATIONS_DIR = original_ops_dir
+                ts.INTRADAY_OPERATIONS_DIR = original_intraday_ops_dir
 
         svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
         assert result["orders_submitted"] == 1
-        assert result["lineage"]["decision_id"] == "decision-789"
+        assert result["lineage"]["decision_id"] == "decision-789-test"
         assert result["lineage"]["strategy_version"] == "intraday-v1"
+
+    def test_prepare_execution_context_honors_explicit_symbols_to_close(self, monkeypatch):
+        svc = _make_service()
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+
+        captured: dict[str, object] = {}
+
+        def fake_compute_projected_risk(**kwargs):
+            captured.update(kwargs)
+            return {
+                "path": "risk.json",
+                "breaches": [],
+                "warnings": [],
+                "blocked": False,
+                "reason": None,
+            }
+
+        svc._compute_projected_risk = fake_compute_projected_risk
+
+        svc._prepare_execution_context_from_orders(
+            execution_key="2026-04-09",
+            orders=[
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 1000.0,
+                    "target_weight": 0.01,
+                }
+            ],
+            symbols_to_close=["BTCUSD"],
+        )
+
+        assert captured["symbols_to_close"] == ["BTCUSD"]
+
+    def test_execute_intraday_decision_is_idempotent_per_decision_id(self, monkeypatch):
+        from api.services import trading_service as ts
+
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+        svc = _make_service()
+        decision = {
+            "decision_id": "decision-repeat",
+            "as_of": "2026-04-09T14:45:00+00:00",
+            "strategy_version": "intraday-v1",
+            "market_session": "regular",
+            "execution_intents": [
+                {
+                    "ticker": "AAPL",
+                    "side": "buy",
+                    "target_weight": 0.01,
+                    "quantity_notional": 1000.0,
+                    "confidence": 0.81,
+                    "rationale": "AAPL strongest intraday long",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_ops_dir = ts.OPERATIONS_DIR
+            original_intraday_ops_dir = ts.INTRADAY_OPERATIONS_DIR
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            ts.INTRADAY_OPERATIONS_DIR = ts.OPERATIONS_DIR / "intraday"
+            try:
+                first = svc.execute_intraday_decision(decision)
+                second = svc.execute_intraday_decision(decision)
+            finally:
+                ts.OPERATIONS_DIR = original_ops_dir
+                ts.INTRADAY_OPERATIONS_DIR = original_intraday_ops_dir
+
+        assert first["orders_submitted"] == 1
+        assert "already been executed" in second["error"]
+        svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
+
+    def test_execute_intraday_decision_preserves_fractional_crypto_quantity(self, monkeypatch):
+        from api.services import trading_service as ts
+        from council import risk_engine as risk_mod
+
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+        svc = _make_service()
+        svc._node.get_latest_price.return_value = 70000.0
+        decision = {
+            "decision_id": "decision-btc-fractional",
+            "as_of": "2026-04-13T09:15:00+00:00",
+            "strategy_version": "intraday-v1",
+            "market_session": "crypto",
+            "execution_intents": [
+                {
+                    "ticker": "BTCUSD",
+                    "side": "sell",
+                    "target_weight": 0.055,
+                    "quantity_notional": 5500.0,
+                    "confidence": 0.45,
+                    "rationale": "BTCUSD weakest intraday asset",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_ops_dir = ts.OPERATIONS_DIR
+            original_intraday_ops_dir = ts.INTRADAY_OPERATIONS_DIR
+            original_risk_dir = risk_mod.RISK_DIR
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            ts.INTRADAY_OPERATIONS_DIR = ts.OPERATIONS_DIR / "intraday"
+            risk_mod.RISK_DIR = tmp_path / "risk"
+            try:
+                result = svc.execute_intraday_decision(decision)
+            finally:
+                ts.OPERATIONS_DIR = original_ops_dir
+                ts.INTRADAY_OPERATIONS_DIR = original_intraday_ops_dir
+                risk_mod.RISK_DIR = original_risk_dir
+
+        submitted_qty = svc._node.submit_order.call_args[0][1]
+        assert submitted_qty == pytest.approx(5500.0 / 70000.0)
+        assert submitted_qty > 0
+        assert result["orders_submitted"] == 1

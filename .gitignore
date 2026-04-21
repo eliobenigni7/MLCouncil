@@ -1,44 +1,50 @@
 # Environment
 .env
+.env.*
+!.env.example
 
-# Data
-data/raw/
-data/arctic/
+# Secrets
+secrets/
 
-# Generated data
-data/results/
-data/orders/
-data/cache/
-data/monitoring/
-data/alerts/
-data/dagster/
-data/operations/
-data/paper_trades/
-data/risk/
-/.playwright-cli/
+# Data (sensitive data, models, etc.)
+data/
+
+# MLflow
+mlruns/
+mlflow.db
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pkl
+*.egg-info/
+.venv/
 .pytest_cache/
+.ruff_cache/
 
 # Build
 dist/
-*.egg-info/
-.venv/
 
-# Runtime databases
-*.db
-mlflow.db
+# Checkpoints
+models/checkpoints/
 
 # Generated decisions
 data/intraday/decisions/*/
-data/ohlcv/
+data/intraday/supervisor_state.json
 
-# Stray directories
-E:/
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (if bind-mounted)
+volumes/
 
 # Worktrees
 .worktrees/

@@ -18,7 +18,8 @@ Per avviare il server:
 import hashlib
 import pickle
 import sys
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
+import pytz
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +53,7 @@ if str(_ROOT) not in sys.path:
 
 _DATA_DIR       = _ROOT / "data" / "raw"
 _ORDERS_DIR     = _ROOT / "data" / "orders"
+_RESULTS_DIR    = _ROOT / "data" / "results"
 _CHECKPOINTS    = _ROOT / "models" / "checkpoints"
 _EXCLUDE_COLS   = {"ticker", "valid_time", "transaction_time"}
 _MIN_ALPHA_FEATURES = 50
@@ -758,20 +760,17 @@ def current_regime(
             f"current_regime [{partition_date}]: HMM caricato da {checkpoint}"
         )
     else:
-        context.log.warning(
+        #_checkpoint_intentionally_left_out — HMM must be trained by train_hmm_job
+        context.log.error(
             f"current_regime [{partition_date}]: "
-            "checkpoint non trovato — training inline"
+            f"checkpoint {checkpoint} non trovato. "
+            "L'HMM non può allenarsi inline (richiede storico completo). "
+            "Lancia 'train_hmm_job' per generare il checkpoint."
         )
-        if raw_macro.is_empty():
-            return "transition"
-        regime_model = RegimeModel()
-        try:
-            regime_model.fit(raw_macro)
-        except Exception as exc:
-            context.log.warning(
-                f"HMM fit fallito: {exc} — fallback a 'transition'"
-            )
-            return "transition"
+        raise FileNotFoundError(
+            f"HMM checkpoint mancante: {checkpoint}. "
+            "Esegui train_hmm_job per allenare e salvare il modello HMM."
+        )
 
     try:
         regime = regime_model.predict_regime(raw_macro)
@@ -796,9 +795,126 @@ def current_regime(
     return regime
 
 
-# ===========================================================================
+# ============================================================================
+# LAYER 3b — HMM TRAINING (separate job, full-history training)
+# ============================================================================
+
+_CHECKPOINTS.mkdir(parents=True, exist_ok=True)
+
+
+@dg.asset(
+    name="train_hmm",
+    description=(
+        "Allena l'HMM su tutto lo storico macro e salva il checkpoint. "
+        "Job separato (non daily) — schedule: domenicale 23:00 ET."
+    ),
+)
+def train_hmm(context: AssetExecutionContext) -> dict:
+    """Allena RegimeModel su tutto lo storico macro e salva checkpoint + regime_history.
+
+    Questo asset è UNPARTITIONED — gira una volta per generare il checkpoint
+    che poi ``current_regime`` consuma ad ogni run giornaliero.
+    """
+    from data.ingest.macro import download_macro
+    from data.features.alpha158 import build_macro_context
+
+    # Carica tutto lo storico macro (no partition filter)
+    today = date_type.today().isoformat()
+    download_macro(end=today, data_dir=_DATA_DIR)
+
+    macro_dir = _DATA_DIR / "macro"
+
+    def _path(name: str) -> str | None:
+        p = macro_dir / f"{name}.parquet"
+        return str(p) if p.exists() else None
+
+    macro = build_macro_context(
+        vix_path=_path("vix"),
+        treasuries_path=_path("treasuries"),
+        sp500_path=_path("sp500"),
+    )
+
+    if macro.is_empty():
+        raise RuntimeError(
+            "train_hmm: nessun dato macro disponibile. "
+            "Impossibile allenare l'HMM."
+        )
+
+    context.log.info(f"train_hmm: allenamento su {macro.shape[0]} osservazioni macro")
+
+    from models.regime import RegimeModel
+    regime_model = RegimeModel()
+    regime_model.fit(macro)
+
+    # Salva checkpoint con hash
+    checkpoint_path = _CHECKPOINTS / "hmm_latest.pkl"
+    regime_model.save(str(checkpoint_path))
+    context.log.info(f"train_hmm: checkpoint salvato in {checkpoint_path}")
+
+    # Genera regime history per la dashboard
+    try:
+        history_df = regime_model.get_regime_history(macro)
+        history_path = _RESULTS_DIR / "regime_history.parquet"
+        _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        history_df.to_parquet(history_path, index=False)
+        context.log.info(
+            f"train_hmm: regime_history salvato in {history_path} "
+            f"({len(history_df)} righe)"
+        )
+    except Exception as exc:
+        context.log.warning(f"train_hmm: errore generando regime_history: {exc}")
+
+    probs = regime_model.predict_probabilities(macro)
+    current = regime_model.predict_regime(macro)
+    context.log.info(
+        f"train_hmm: regime corrente = {current.upper()} — "
+        f"probabilità: {', '.join(f'{k}={v:.1%}' for k,v in probs.items())}"
+    )
+
+    return {
+        "checkpoint": str(checkpoint_path),
+        "regime": current,
+        "probabilities": probs,
+        "n_observations": macro.shape[0],
+        "last_trained": regime_model._last_trained,
+    }
+
+
+train_hmm_job = dg.define_asset_job(
+    name="train_hmm_job",
+    selection=dg.AssetSelection.assets(train_hmm),
+    description=(
+        "Job HMM: allena RegimeModel su storico macro completo, "
+        "salva checkpoint e regime_history. Schedule: domenicale 23:00 ET."
+    ),
+)
+
+
+def _sunday_tags(context: "dg.ScheduleEvaluationContext") -> dict[str, str]:
+    """Tags per domenica — processa la settimana appena conclusa."""
+    et = pytz.timezone("America/New_York")
+    scheduled = context.scheduled_execution_time
+    if scheduled is None:
+        partition_date = date_type.today().isoformat()
+    else:
+        if scheduled.tzinfo is None:
+            scheduled = pytz.UTC.localize(scheduled)
+        et_time = scheduled.astimezone(et)
+        partition_date = et_time.date().isoformat()
+    return {"dagster/partition": partition_date}
+
+
+hmm_schedule = dg.ScheduleDefinition(
+    job=train_hmm_job,
+    cron_schedule="0 23 * * 0",       # 23:00 ET ogni domenica
+    execution_timezone="America/New_York",
+    tags_fn=_sunday_tags,
+)
+
+
+# ============================================================================
 # LAYER 4 — COUNCIL
-# ===========================================================================
+# ============================================================================
 
 @dg.asset(
     partitions_def=_DAILY_PARTITIONS,
@@ -849,6 +965,179 @@ def council_signal(
     )
     context.add_output_metadata(lineage_artifact_payload(lineage, signal_count=len(combined), regime=current_regime))
     return combined
+
+
+@dg.asset(
+    partitions_def=_DAILY_PARTITIONS,
+    retry_policy=_RETRY,
+    description="Salva lo stato dell'aggregator e la attribution corrente in data/results/.",
+)
+def save_council_results(
+    context: AssetExecutionContext,
+    lgbm_signals: pd.Series,
+    sentiment_signals: pd.Series,
+    current_regime: str,
+    council_signal: pd.Series,
+) -> None:
+    """Serializza CouncilAggregator e attribution parquet in data/results/.
+
+    Scrive:
+    - data/results/aggregator.pkl       → stato completo CouncilAggregator
+    - data/results/attribution.parquet → DataFrame con pesi, IC, Sharpe per ogni modello
+
+    Lo step è idempotente: se i file esistono già li sovrascrive con i dati più recenti.
+    """
+    from council.aggregator import CouncilAggregator
+
+    partition_date = context.partition_key
+    today = date_type.fromisoformat(partition_date)
+
+    # Crea e popola l'aggregator con i segnali disponibili
+    aggregator = CouncilAggregator(
+        config_path=str(_ROOT / "config" / "regime_weights.yaml")
+    )
+
+    signals: dict[str, pd.Series] = {}
+    if not lgbm_signals.empty:
+        signals["lgbm"] = lgbm_signals
+    if not sentiment_signals.empty:
+        signals["sentiment"] = sentiment_signals
+
+    if signals:
+        # Esegue aggregate per popolare _weights_log sull'ultimo giorno
+        aggregator.aggregate(signals, regime=current_regime, date=today)
+
+    # Salva stato aggregator
+    _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    aggregator.save(str(_RESULTS_DIR / "aggregator.pkl"))
+
+    # Salva attribution parquet
+    if not aggregator._weights_log:
+        context.log.warning(
+            f"save_council_results [{partition_date}]: weights_log vuoto, "
+            "skipping attribution.parquet"
+        )
+    else:
+        attr_rows = []
+        for log_date, log_entry in aggregator._weights_log.items():
+            weights_used = log_entry.get("weights", {})
+            contributions = log_entry.get("contributions", {})
+            ic_by_model = aggregator._ic_by_date
+            for model_name in weights_used:
+                ic_entries = sorted(ic_by_model.get(model_name, {}).items())
+                recent_30 = [v for _, v in ic_entries[-30:]]
+                recent_60 = [v for _, v in ic_entries[-60:]]
+                ic_30d = float(np.mean(recent_30)) if len(recent_30) >= 1 else float("nan")
+                sharpe_60d = (
+                    float(np.mean(recent_60) / (np.std(recent_60) + 1e-9) * np.sqrt(252))
+                    if len(recent_60) >= 2
+                    else float("nan")
+                )
+                attr_rows.append({
+                    "date": pd.Timestamp(log_date),
+                    "model_name": model_name,
+                    "weight": weights_used.get(model_name, float("nan")),
+                    "ic_rolling_30d": ic_30d,
+                    "sharpe_rolling_60d": sharpe_60d,
+                    "pnl_contribution": contributions.get(model_name, float("nan")),
+                })
+
+        if attr_rows:
+            attr_df = pd.DataFrame(attr_rows, columns=[
+                "date", "model_name", "weight",
+                "ic_rolling_30d", "sharpe_rolling_60d", "pnl_contribution",
+            ])
+            attr_df.to_parquet(_RESULTS_DIR / "attribution.parquet", index=False)
+            context.log.info(
+                f"save_council_results [{partition_date}]: "
+                f"attribution.parquet scritto ({len(attr_df)} righe)"
+            )
+
+    context.log.info(f"save_council_results [{partition_date}]: completato")
+
+
+@dg.asset(
+    partitions_def=_DAILY_PARTITIONS,
+    retry_policy=_RETRY,
+    description="Salva regime corrente e storia regimi in data/results/.",
+)
+def save_regime_results(
+    context: AssetExecutionContext,
+    raw_macro: pl.DataFrame,
+    current_regime: str,
+) -> None:
+    """Scrive current_regime.json e regime_history.parquet in data/results/.
+
+    Scrive:
+    - data/results/current_regime.json    → regime attuale con probabilità
+    - data/results/regime_history.parquet → storia completa regimi con probabilità
+    """
+    partition_date = context.partition_key
+
+    _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # current_regime.json
+    # ------------------------------------------------------------------
+    probs: dict[str, float] = {"bull": 0.0, "bear": 0.0, "transition": 0.0}
+    if not raw_macro.is_empty():
+        try:
+            from models.regime import RegimeModel
+            checkpoint = _CHECKPOINTS / "hmm_latest.pkl"
+            if checkpoint.exists():
+                import pickle as pickle_mod
+                with open(checkpoint, "rb") as f:
+                    regime_model: RegimeModel = pickle_mod.load(f)
+                prob_dict = regime_model.predict_probabilities(raw_macro)
+                for key in probs:
+                    if key in prob_dict:
+                        probs[key] = float(prob_dict[key])
+        except Exception as exc:
+            context.log.warning(
+                f"save_regime_results [{partition_date}]: "
+                f"probabilities unavailable ({exc})"
+            )
+
+    regime_payload = {
+        "regime": current_regime,
+        "bull": probs["bull"],
+        "bear": probs["bear"],
+        "transition": probs["transition"],
+    }
+    import json
+    with open(_RESULTS_DIR / "current_regime.json", "w") as f:
+        json.dump(regime_payload, f, indent=2, default=str)
+    context.log.info(
+        f"save_regime_results [{partition_date}]: "
+        f"current_regime.json written (regime={current_regime})"
+    )
+
+    # ------------------------------------------------------------------
+    # regime_history.parquet
+    # ------------------------------------------------------------------
+    if not raw_macro.is_empty():
+        try:
+            from models.regime import RegimeModel
+            checkpoint = _CHECKPOINTS / "hmm_latest.pkl"
+            if checkpoint.exists():
+                import pickle as pickle_mod
+                with open(checkpoint, "rb") as f:
+                    regime_model: RegimeModel = pickle_mod.load(f)
+                hist_df = regime_model.get_regime_history(raw_macro)
+                if "valid_time" in hist_df.columns:
+                    hist_df = hist_df.rename(columns={"valid_time": "date"})
+                if "date" in hist_df.columns:
+                    hist_df["date"] = pd.to_datetime(hist_df["date"])
+                hist_df.to_parquet(_RESULTS_DIR / "regime_history.parquet", index=False)
+                context.log.info(
+                    f"save_regime_results [{partition_date}]: "
+                    f"regime_history.parquet written ({len(hist_df)} righe)"
+                )
+        except Exception as exc:
+            context.log.warning(
+                f"save_regime_results [{partition_date}]: "
+                f"regime_history unavailable ({exc})"
+            )
 
 
 @dg.asset(
@@ -923,6 +1212,7 @@ def portfolio_weights(
             position_multipliers=multipliers,
             current_weights=current_w,
             returns_covariance=cov,
+            portfolio_value=portfolio_value,
         )
     else:
         weights = constructor.optimize(
@@ -930,6 +1220,7 @@ def portfolio_weights(
             position_multipliers=multipliers,
             current_weights=current_w,
             returns_covariance=cov,
+            portfolio_value=portfolio_value,
         )
 
     weights = attach_lineage(weights.rename("target_weight"), **extract_lineage(council_signal))
@@ -1072,10 +1363,33 @@ daily_job = dg.define_asset_job(
     ),
 )
 
+def _daily_partition_tags(context: "dg.ScheduleEvaluationContext") -> dict[str, str]:
+    """Ritorna i tags per la partition del job daily_pipeline.
+
+    Per uno schedule che gira alle 21:30 ET lun-ven, la partition da processare
+    è il giorno di mercato precedente (ieri). Se ieri era weekend, usa venerdi.
+    """
+    et = pytz.timezone("America/New_York")
+    scheduled = context.scheduled_execution_time
+    if scheduled is None:
+        partition_date = date_type.today() - timedelta(days=1)
+    else:
+        if scheduled.tzinfo is None:
+            scheduled = pytz.UTC.localize(scheduled)
+        et_time = scheduled.astimezone(et)
+        partition_date = et_time.date() - timedelta(days=1)
+        if partition_date.strftime("%a") == "Sat":
+            partition_date -= timedelta(days=1)
+        elif partition_date.strftime("%a") == "Sun":
+            partition_date -= timedelta(days=2)
+    return {"dagster/partition": partition_date.strftime("%Y-%m-%d")}
+
+
 daily_schedule = dg.ScheduleDefinition(
     job=daily_job,
     cron_schedule="30 21 * * 1-5",   # 21:30 ET, lun-ven
     execution_timezone="America/New_York",
+    tags_fn=_daily_partition_tags,
 )
 
 
@@ -1119,8 +1433,13 @@ _ALL_ASSETS = [
     sentiment_signals,
     current_regime,
     council_signal,
+    save_council_results,
+    save_regime_results,
     portfolio_weights,
     daily_orders,
+    train_hmm,
+    # train_hmm è escluso da daily_pipeline perché è unpartitioned
+    # (schedule: domenicale 23:00 ET tramite train_hmm_job)
 ]
 
 
@@ -1211,7 +1530,7 @@ defs = dg.Definitions(
         sentiment_features_contract,
         daily_orders_contract,
     ],
-    jobs=[daily_job],
-    schedules=[daily_schedule],
+    jobs=[daily_job, train_hmm_job],
+    schedules=[daily_schedule, hmm_schedule],
     sensors=[failure_sensor],
 )

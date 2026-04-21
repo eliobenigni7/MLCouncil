@@ -35,6 +35,7 @@ def test_build_supervisor_uses_rule_based_agent_by_default(monkeypatch):
     sentinel_adapter = object()
 
     monkeypatch.setenv("POLYGON_API_KEY", "polygon-test")
+    monkeypatch.delenv("MLCOUNCIL_AUTO_EXECUTE", raising=False)
     monkeypatch.delenv("MLCOUNCIL_INTRADAY_AGENT_PROVIDER", raising=False)
     monkeypatch.setattr(runtime_service, "PolygonMarketDataAdapter", lambda **kwargs: sentinel_adapter)
 
@@ -42,9 +43,31 @@ def test_build_supervisor_uses_rule_based_agent_by_default(monkeypatch):
 
     assert supervisor.market_data_adapter is sentinel_adapter
     assert supervisor.agent_orchestrator.__class__.__name__ == "FallbackIntradayAgent"
+    assert supervisor.executor is None
+
+
+def test_build_supervisor_enables_executor_only_when_auto_execute_is_true(monkeypatch):
+    from api.services import intraday_runtime_service as runtime_service
+
+    sentinel_adapter = object()
+
+    monkeypatch.setenv("POLYGON_API_KEY", "polygon-test")
+    monkeypatch.setenv("MLCOUNCIL_AUTO_EXECUTE", "true")
+    monkeypatch.setattr(
+        runtime_service,
+        "PolygonMarketDataAdapter",
+        lambda **kwargs: sentinel_adapter,
+    )
+
+    supervisor = runtime_service._build_supervisor()
+
+    assert supervisor.market_data_adapter is sentinel_adapter
+    assert callable(supervisor.executor)
 
 
 def test_intraday_supervisor_script_does_not_exit_immediately_with_import_error():
+    state_path = ROOT / "data" / "intraday" / "supervisor_state.json"
+    original_state = state_path.read_text() if state_path.exists() else None
     proc = subprocess.Popen(
         [sys.executable, "scripts/run_intraday_supervisor.py"],
         cwd=ROOT,
@@ -67,3 +90,7 @@ def test_intraday_supervisor_script_does_not_exit_immediately_with_import_error(
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if original_state is None:
+            state_path.unlink(missing_ok=True)
+        else:
+            state_path.write_text(original_state)

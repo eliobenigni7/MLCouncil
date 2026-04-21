@@ -22,13 +22,48 @@ import logging
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 _TRADE_LOG_LOCK = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Retry with exponential backoff
+# ---------------------------------------------------------------------------
+
+def _retry_request(
+    request_fn: Callable[[], requests.Response],
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+) -> requests.Response:
+    """Call request_fn up to max_attempts times, backing off on 429."""
+    last_resp = None
+    for attempt in range(max_attempts):
+        resp = request_fn()
+        if resp.status_code != 429:
+            return resp
+        last_resp = resp
+        # Respect Retry-After header if present, otherwise exponential backoff
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = base_delay * (2 ** attempt)
+        else:
+            delay = min(base_delay * (2 ** attempt), max_delay)
+        logger.warning(
+            "Alpaca API rate-limited (429), attempt %d/%d — waiting %.1fs",
+            attempt + 1, max_attempts, delay,
+        )
+        time.sleep(delay)
+    return last_resp or request_fn()
 
 import pandas as pd
 from runtime_env import get_secret, load_runtime_env
@@ -80,6 +115,12 @@ class AlpacaConfig:
 
 
 class AlpacaLiveNode:
+    # Crypto positions cache: shared across all instances (class-level)
+    # to avoid redundant calls even when a new node is instantiated.
+    _crypto_positions_cache: dict = {}
+    _crypto_positions_cache_at: float = 0.0
+    _CRYPTO_CACHE_TTL_SECONDS: float = 180.0  # 3 minutes
+
     def __init__(self, config: AlpacaConfig):
         self.config = config
         self.config.validate()
@@ -117,6 +158,24 @@ class AlpacaLiveNode:
     def is_paper(self) -> bool:
         return self.config.mode == TradingMode.PAPER
 
+    def _api_base_url(self) -> str:
+        return (
+            "https://paper-api.alpaca.markets"
+            if self.config.mode == TradingMode.PAPER
+            else "https://api.alpaca.markets"
+        )
+
+    def _api_auth_headers(self, include_json: bool = False) -> dict[str, str]:
+        api_key = self.config.paper_key or self.config.live_key or ""
+        api_secret = self.config.paper_secret or self.config.live_secret or ""
+        headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+        }
+        if include_json:
+            headers["Content-Type"] = "application/json"
+        return headers
+
     def is_tradeable(self, symbol: str) -> bool:
         try:
             from alpaca.trading.requests import GetAssetRequest
@@ -134,9 +193,12 @@ class AlpacaLiveNode:
 
             request = GetPositionRequest(symbol=symbol)
             pos = self._trading_client.get_open_position(request)
+            qty = float(pos.qty)
+            if not self._is_crypto(symbol):
+                qty = round(qty, 2)
             return {
                 "symbol": symbol,
-                "qty": round(float(pos.qty), 2),
+                "qty": qty,
                 "avg_price": float(pos.avg_entry_price),
                 "current_value": float(pos.market_value),
                 "current_price": float(pos.current_price) if pos.current_price else float(pos.avg_entry_price),
@@ -145,6 +207,8 @@ class AlpacaLiveNode:
             return None
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
+        if self._is_crypto(symbol):
+            return self._get_crypto_latest_price(symbol)
         try:
             from alpaca.data.requests import StockLatestTradeRequest
 
@@ -156,51 +220,92 @@ class AlpacaLiveNode:
         except Exception:
             return None
 
-    def get_crypto_positions(self) -> pd.DataFrame:
-        """Get crypto positions via direct HTTP API."""
+    def _get_crypto_latest_price(self, symbol: str) -> Optional[float]:
+        try:
+            from alpaca.data.historical.crypto import CryptoHistoricalDataClient
+            from alpaca.data.requests import CryptoLatestTradeRequest
+
+            api_key = self.config.paper_key or self.config.live_key
+            api_secret = self.config.paper_secret or self.config.live_secret
+            client = CryptoHistoricalDataClient(api_key, api_secret)
+
+            # Normalize symbol: BTCUSD → BTC/USD
+            normalized = symbol.upper().replace("-", "")
+            if normalized.endswith("USD") and len(normalized) > 3:
+                normalized = f"{normalized[:-3]}/USD"
+
+            trades = client.get_crypto_latest_trade(
+                CryptoLatestTradeRequest(symbol_or_symbols=[normalized])
+            )
+            if normalized in trades:
+                return float(trades[normalized].price)
+            # Try alternate key formats
+            for key in trades:
+                return float(trades[key].price)
+            return None
+        except Exception:
+            return None
+
+    def _get_crypto_positions_fresh(self) -> pd.DataFrame:
+        """Fetch crypto positions from Alpaca API with retry on 429."""
         import requests
 
-        api_key = self.config.paper_key or self.config.live_key
-        api_secret = self.config.paper_secret or self.config.live_secret
-        base_url = "https://paper-api.alpaca.markets" if self.config.mode == TradingMode.PAPER else "https://api.alpaca.markets"
+        def request_fn() -> requests.Response:
+            return requests.get(
+                f"{self._api_base_url()}/v2/positions?asset_class=crypto",
+                headers=self._api_auth_headers(),
+                timeout=30,
+            )
 
-        headers = {
-            "APCA-API-KEY-ID": api_key,
-            "APCA-API-SECRET-KEY": api_secret,
-        }
-
-        try:
-            resp = requests.get(f"{base_url}/v2/positions?asset_class=crypto", headers=headers, timeout=30)
-            if not resp.ok:
-                logger.warning(f"Failed to fetch crypto positions: {resp.status_code}")
-                return pd.DataFrame()
-
-            positions = resp.json()
-            if not positions:
-                return pd.DataFrame()
-
-            def _float(val, default=0.0):
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    return default
-
-            return pd.DataFrame([
-                {
-                    "symbol": p.get("symbol", ""),
-                    "qty": round(float(p.get("qty", 0)), 2),
-                    "avg_price": _float(p.get("avg_entry_price")),
-                    "current_price": _float(p.get("current_price")),
-                    "current_value": _float(p.get("market_value")),
-                    "unrealized_pnl": _float(p.get("unrealized_pl")),
-                    "unrealized_pnl_pct": _float(p.get("unrealized_plpc")),
-                    "asset_class": "crypto",
-                }
-                for p in positions
-            ])
-        except Exception as e:
-            logger.warning(f"Error fetching crypto positions: {e}")
+        resp = _retry_request(request_fn, max_attempts=3, base_delay=2.0, max_delay=30.0)
+        if not resp.ok:
+            logger.warning(f"Failed to fetch crypto positions after retries: {resp.status_code}")
             return pd.DataFrame()
+
+        positions = resp.json()
+        if not positions:
+            return pd.DataFrame()
+
+        def _float(val, default=0.0):
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        return pd.DataFrame([
+            {
+                "symbol": p.get("symbol", ""),
+                "qty": float(p.get("qty", 0)),
+                "avg_price": _float(p.get("avg_entry_price")),
+                "current_price": _float(p.get("current_price")),
+                "current_value": _float(p.get("market_value")),
+                "unrealized_pnl": _float(p.get("unrealized_pl")),
+                "unrealized_pnl_pct": _float(p.get("unrealized_plpc")),
+                "asset_class": "crypto",
+            }
+            for p in positions
+        ])
+
+    def get_crypto_positions(self) -> pd.DataFrame:
+        """Get crypto positions — cached for _CRYPTO_CACHE_TTL_SECONDS."""
+        now = time.monotonic()
+        if (
+            self._crypto_positions_cache
+            and (now - self._crypto_positions_cache_at) < self._CRYPTO_CACHE_TTL_SECONDS
+        ):
+            return self._crypto_positions_cache.copy()
+
+        df = self._get_crypto_positions_fresh()
+
+        if not df.empty:
+            self._crypto_positions_cache = df
+            self._crypto_positions_cache_at = now
+            logger.debug(
+                "Crypto positions cached (%d positions, TTL=%.0fs)",
+                len(df),
+                self._CRYPTO_CACHE_TTL_SECONDS,
+            )
+        return df.copy()
 
     def get_all_positions(self, strict: bool = False) -> pd.DataFrame:
         equity_df = pd.DataFrame()
@@ -226,6 +331,7 @@ class AlpacaLiveNode:
                         "asset_class": "equity",
                     }
                     for p in positions
+                    if not self._is_crypto(str(p.symbol))
                 ])
         except Exception as e:
             if strict:
@@ -279,32 +385,31 @@ class AlpacaLiveNode:
         """Submit a crypto order via direct HTTP (alpaca-py doesn't support crypto orders)."""
         import requests
 
-        api_key = self.config.paper_key or self.config.live_key
-        api_secret = self.config.paper_secret or self.config.live_secret
-        base_url = "https://paper-api.alpaca.markets" if self.config.mode == TradingMode.PAPER else "https://api.alpaca.markets"
-
-        headers = {
-            "APCA-API-KEY-ID": api_key,
-            "APCA-API-SECRET-KEY": api_secret,
-            "Content-Type": "application/json",
-        }
-
         # Normalize symbol: BTCUSD not BTC-USD or BTC/USD
         normalized = symbol.upper().replace("/", "").replace("-", "")
         if not normalized.endswith("USD"):
             normalized = normalized + "USD"
+
+        normalized_tif = time_in_force.lower()
+        if normalized_tif not in {"gtc", "ioc"}:
+            normalized_tif = "gtc"
 
         payload = {
             "symbol": normalized,
             "qty": str(qty),
             "side": side.lower(),
             "type": order_type.lower(),
-            "time_in_force": time_in_force.lower(),
+            "time_in_force": normalized_tif,
         }
         if limit_price is not None:
             payload["limit_price"] = str(limit_price)
 
-        resp = requests.post(f"{base_url}/v2/orders", json=payload, headers=headers, timeout=30)
+        resp = requests.post(
+            f"{self._api_base_url()}/v2/orders",
+            json=payload,
+            headers=self._api_auth_headers(include_json=True),
+            timeout=30,
+        )
         if not resp.ok:
             raise RuntimeError(f"Crypto order failed: {resp.status_code} {resp.text}")
 
@@ -384,16 +489,67 @@ class AlpacaLiveNode:
             return self._submit_crypto_order(symbol, qty, side, order_type, time_in_force, limit_price)
         return self._submit_equity_order(symbol, qty, side, order_type, time_in_force, limit_price)
 
+    def submit_order_notional(
+        self,
+        symbol: str,
+        notional: float,
+        side: str,
+        order_type: str = "market",
+        time_in_force: str = "day",
+    ) -> dict:
+        """Submit an equity order using notional (fractional shares).
+
+        Used by intraday trading when the computed share quantity would round
+        to zero but the notional value is meaningful (e.g. $192 of MSFT at
+        $420/share = 0.46 shares).
+        """
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest
+
+        order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        tif = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.GTC
+
+        order_request = MarketOrderRequest(
+            symbol=symbol,
+            notional=notional,
+            side=order_side,
+            time_in_force=tif,
+        )
+
+        order = self._trading_client.submit_order(order_request)
+
+        filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+        trade_record = {
+            "order_id": str(order.id),
+            "symbol": symbol,
+            "qty": filled_qty,
+            "side": side,
+            "order_type": order_type,
+            "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "mode": self.config.mode.value,
+            "asset_class": "equity",
+            "notional_used": notional,
+            "fractional": True,
+        }
+        self._log_trade(trade_record)
+        return trade_record
+
     def get_order_status(self, order_id: str) -> dict:
         try:
             from alpaca.trading.requests import GetOrderRequest
 
             request = GetOrderRequest(order_id=order_id)
             order = self._trading_client.get_order_by_id(request)
+            symbol = str(getattr(order, "symbol", "") or "")
+            is_crypto = self._is_crypto(symbol)
+            filled_qty = float(order.filled_qty) if order.filled_qty else 0
+            if not is_crypto:
+                filled_qty = int(filled_qty)
             return {
                 "order_id": str(order.id),
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
-                "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
+                "filled_qty": filled_qty,
                 "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
                 "filled_at": order.filled_at.isoformat() if order.filled_at else None,
             }
@@ -401,38 +557,50 @@ class AlpacaLiveNode:
             return {"order_id": order_id, "error": str(e)}
 
     def list_orders(self, status: str = "all", limit: int = 100) -> list[dict]:
+        import requests
+
         try:
-            from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums import QueryOrderStatus
-
-            if status.lower() == "all":
-                query_status = None
-            elif status.lower() == "open":
-                query_status = QueryOrderStatus.OPEN
-            elif status.lower() == "closed":
-                query_status = QueryOrderStatus.CLOSED
-            else:
-                query_status = None
-
-            request = GetOrdersRequest(status=query_status, limit=limit)
-            orders = self._trading_client.get_orders(request)
+            query_status = status.lower()
+            if query_status not in {"all", "open", "closed"}:
+                query_status = "all"
+            resp = requests.get(
+                f"{self._api_base_url()}/v2/orders",
+                params={"status": query_status, "limit": limit},
+                headers=self._api_auth_headers(),
+                timeout=30,
+            )
+            resp.raise_for_status()
+            orders = resp.json()
         except Exception:
             return []
 
         payload = []
         for order in orders:
+            symbol = str(order.get("symbol", ""))
+            is_crypto = self._is_crypto(symbol)
+            if is_crypto:
+                symbol = symbol.upper().replace("/", "").replace("-", "")
+            qty = float(order.get("qty") or 0)
+            filled_qty = float(order.get("filled_qty") or 0)
+            if not is_crypto:
+                qty = int(qty)
+                filled_qty = int(filled_qty)
             payload.append(
                 {
-                    "order_id": str(order.id),
-                    "symbol": order.symbol,
-                    "qty": int(float(order.qty)) if order.qty else 0,
-                    "filled_qty": int(float(order.filled_qty)) if order.filled_qty else 0,
-                    "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
-                    "order_type": order.order_type.value if hasattr(order.order_type, 'value') else str(order.order_type),
-                    "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
-                    "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
-                    "filled_at": order.filled_at.isoformat() if order.filled_at else None,
-                    "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                    "order_id": str(order.get("id", "")),
+                    "symbol": symbol,
+                    "qty": qty,
+                    "filled_qty": filled_qty,
+                    "side": str(order.get("side", "")),
+                    "order_type": str(order.get("order_type") or order.get("type") or ""),
+                    "status": str(order.get("status", "")),
+                    "submitted_at": order.get("submitted_at"),
+                    "filled_at": order.get("filled_at"),
+                    "filled_avg_price": (
+                        float(order.get("filled_avg_price"))
+                        if order.get("filled_avg_price")
+                        else None
+                    ),
                     "mode": self.config.mode.value,
                 }
             )

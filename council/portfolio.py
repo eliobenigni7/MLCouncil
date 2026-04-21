@@ -138,9 +138,11 @@ class PortfolioConstructor:
                 "min_trade_usd": 10.0,
             }
         else:
+            # Reserve ~15% budget for intraday moves by limiting positions
+            # and keeping some headroom below the position cap.
             return {
-                "n_positions": None,
-                "max_position": self.max_position,
+                "n_positions": 12,
+                "max_position": max(self.max_position, 0.13),
                 "min_position": self.min_position,
                 "max_turnover": self.max_turnover,
                 "min_trade_usd": max(1.0, portfolio_value * 0.0005),
@@ -297,6 +299,10 @@ class PortfolioConstructor:
             max_position=effective_max_position,
         )
 
+        # For portfolios >= $100K, reserve ~15% cash for intraday trading
+        # by deploying only 85% of the budget in the nightly optimization.
+        budget_fraction = 0.85 if tier["n_positions"] is not None and tier["n_positions"] <= 12 else 1.0
+
         w = cp.Variable(n, name="weights")
 
         alpha_objective = effective_alpha @ w
@@ -310,7 +316,7 @@ class PortfolioConstructor:
         objective = cp.Maximize(alpha_objective - self.tc_lambda * tc_cost)
 
         constraints: list = [
-            cp.sum(w) == 1.0,
+            cp.sum(w) == budget_fraction,
             w <= effective_max_position,
             cp.quad_form(w, cov) <= max_vol_daily ** 2,
         ]
@@ -358,6 +364,7 @@ class PortfolioConstructor:
             return self._feasible_fallback_weights(
                 alpha_signals=alpha_signals.reindex(tickers).fillna(0.0),
                 sector_cap=effective_sector_cap,
+                budget_fraction=budget_fraction,
             )
 
         weights = np.clip(w.value, 0.0, None)
@@ -367,17 +374,21 @@ class PortfolioConstructor:
         if total < 1e-9:
             weights = np.ones(n) / n
         else:
+            # Normalize to the budget fraction, NOT to 1.0, preserving the
+            # cash reserve for intraday trading.
             weights /= total
+            weights *= budget_fraction
 
         # Re-normalising after zeroing small positions can push surviving
         # weights above effective_max_position, violating the CVXPY constraint.
         # Example: 10 positions at 10% each; zero one → re-norm gives 11.1%.
-        # Fix: clip again and re-normalise a second time.
+        # Fix: clip again and re-normalise a second time to budget_fraction.
         if weights.max() > effective_max_position + 1e-9:
             weights = np.clip(weights, 0.0, effective_max_position)
             total = weights.sum()
             if total > 1e-9:
                 weights /= total
+                weights *= budget_fraction
 
         return pd.Series(weights, index=tickers, name="target_weight")
 
@@ -389,6 +400,7 @@ class PortfolioConstructor:
         returns_covariance: pd.DataFrame,
         market_returns: pd.Series = None,
         prices: pd.Series = None,
+        portfolio_value: float = 100_000,
     ) -> pd.Series:
         """Optimize portfolio handling equity and crypto separately.
 
@@ -412,7 +424,8 @@ class PortfolioConstructor:
             eq_market = market_returns if market_returns is not None else None
             eq_prices = prices.reindex(eq_signals.index) if prices is not None else None
             results = self.optimize(
-                eq_signals, eq_mults, eq_curr, eq_cov, eq_market, eq_prices
+                eq_signals, eq_mults, eq_curr, eq_cov, eq_market, eq_prices,
+                portfolio_value=portfolio_value,
             ).to_dict()
 
         # Crypto optimization
@@ -453,11 +466,12 @@ class PortfolioConstructor:
         *,
         alpha_signals: pd.Series,
         sector_cap: float,
+        budget_fraction: float = 1.0,
     ) -> pd.Series:
         tickers = alpha_signals.sort_values(ascending=False).index.tolist()
         weights = pd.Series(0.0, index=tickers, dtype=float, name="target_weight")
         sector_weights: dict[str, float] = {}
-        remaining = 1.0
+        remaining = budget_fraction
 
         while remaining > 1e-9:
             progress = False

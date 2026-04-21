@@ -523,7 +523,11 @@ def load_regime_history() -> pd.DataFrame:
     hist_pq = _RESULTS_DIR / "regime_history.parquet"
     if hist_pq.exists():
         try:
-            return pd.read_parquet(hist_pq)
+            df = pd.read_parquet(hist_pq)
+            # Normalize column name: pipeline writes "valid_time", dashboard expects "date"
+            if "valid_time" in df.columns:
+                df = df.rename(columns={"valid_time": "date"})
+            return df
         except Exception:
             pass
 

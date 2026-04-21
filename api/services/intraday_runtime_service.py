@@ -73,15 +73,24 @@ def _build_supervisor() -> IntradaySupervisor:
     else:
         agent = FallbackIntradayAgent()
 
+    executor = None
+    if os.getenv("MLCOUNCIL_AUTO_EXECUTE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        executor = lambda payload: trading_service.service.execute_intraday_decision(
+            payload
+        )
+
     return IntradaySupervisor(
         market_data_adapter=adapter,
         agent_orchestrator=agent,
         storage_dir=storage_dir,
         universe=_load_intraday_universe(),
         schedule_minutes=schedule_minutes,
-        executor=lambda payload: trading_service.service.execute_intraday_decision(
-            payload
-        ),
+        executor=executor,
     )
 
 
@@ -127,10 +136,6 @@ def list_decisions(limit: int = 20):
 def run_cycle():
     payload = _supervisor.run_cycle().to_dict()
     _log_decision(payload)
-    try:
-        trading_service.service.execute_intraday_decision(payload)
-    except Exception:
-        pass
     return payload
 
 

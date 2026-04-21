@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 _ROOT = Path(__file__).parents[2]
 TRADE_LOG_DIR = _ROOT / "data" / "paper_trades"
 OPERATIONS_DIR = _ROOT / "data" / "operations"
+INTRADAY_OPERATIONS_DIR = OPERATIONS_DIR / "intraday"
 ORDERS_DIR = _ROOT / "data" / "orders"
 _TRADE_LOG_LOCK = threading.Lock()
 
@@ -146,9 +147,15 @@ class TradingService:
             return False, "No buying power"
 
         symbol = order.get("ticker")
+        is_crypto = self.node._is_crypto(str(symbol))
         direction = str(order.get("direction", "buy")).lower()
-        quantity = int(order.get("share_quantity") or order.get("quantity") or 0)
-        if quantity <= 0:
+        quantity = float(order.get("share_quantity") or order.get("quantity") or 0)
+        if not is_crypto:
+            quantity = int(quantity)
+        # Allow fractional-share equity orders: they'll use notional-based
+        # submission when rounded qty == 0 but notional is >= $1.
+        notional_value = float(order.get("requested_notional", 0) or 0)
+        if quantity <= 0 and notional_value < 1.0:
             return False, f"Invalid quantity for {symbol}"
 
         if direction == "buy":
@@ -214,14 +221,19 @@ class TradingService:
         if not positions_df.empty and "symbol" in positions_df.columns:
             for _, pos in positions_df.iterrows():
                 if pos["symbol"] not in target_tickers:
-                    result = self.node.submit_order(pos["symbol"], int(pos["qty"]), "sell")
+                    liquidation_qty = float(pos["qty"])
+                    if not self.node._is_crypto(str(pos["symbol"])):
+                        liquidation_qty = int(liquidation_qty)
+                    result = self.node.submit_order(pos["symbol"], liquidation_qty, "sell")
                     liquidate_results.append(result)
 
         order_results = []
         for order in normalized_orders:
             symbol = order["ticker"]
             direction = order["direction"]
-            quantity = int(order["share_quantity"])
+            quantity = float(order["share_quantity"])
+            if not self.node._is_crypto(symbol):
+                quantity = int(quantity)
 
             valid, msg = self._validate_order(order, account, positions_df)
             if not valid:
@@ -376,7 +388,8 @@ class TradingService:
             account=account,
         )
 
-        symbols_to_close = reconciliation["symbols_to_close"]
+        if symbols_to_close is None:
+            symbols_to_close = reconciliation["symbols_to_close"]
 
         pretrade = {
             "blocked": False,
@@ -478,6 +491,14 @@ class TradingService:
     def execute_intraday_decision(self, decision: dict[str, Any]) -> dict[str, Any]:
         as_of = str(decision.get("as_of") or datetime.now(timezone.utc).isoformat())
         execution_key = as_of.split("T")[0]
+        decision_id = str(decision.get("decision_id") or "").strip()
+        if decision_id:
+            existing_execution = self._load_intraday_execution_record(decision_id)
+            if existing_execution is not None:
+                return {
+                    **existing_execution,
+                    "error": f"Decision {decision_id} has already been executed",
+                }
         orders = self._orders_from_intraday_decision(decision)
         orders, sizing_warnings = self._risk_adjust_intraday_orders(orders)
         symbols_to_close = decision.get("symbols_to_close", [])
@@ -498,25 +519,35 @@ class TradingService:
             snapshot["pretrade"]["warnings"].extend(sizing_warnings)
 
         if snapshot["pretrade"]["blocked"]:
-            operations_path = self._write_operations(
-                execution_key,
-                self._operation_payload(
-                    snapshot=snapshot,
-                    trade_status="blocked",
-                    orders_submitted=0,
-                    orders_rejected=0,
-                    liquidations=0,
-                    warnings=snapshot["pretrade"].get("warnings", []),
-                    errors=[snapshot["pretrade"]["reason"]],
-                ),
-            )
-            return {
+            blocked_payload = {
                 "error": snapshot["pretrade"]["reason"],
                 "lineage": snapshot["lineage"],
                 "pretrade": snapshot["pretrade"],
                 "reconciliation": snapshot["reconciliation"],
-                "operations_path": str(operations_path),
             }
+            operations = self._operation_payload(
+                snapshot=snapshot,
+                trade_status="blocked",
+                orders_submitted=0,
+                orders_rejected=0,
+                liquidations=0,
+                warnings=snapshot["pretrade"].get("warnings", []),
+                errors=[snapshot["pretrade"]["reason"]],
+            )
+            operations_path = self._write_intraday_operations(
+                decision_id or execution_key,
+                operations,
+            )
+            blocked_payload["operations_path"] = str(operations_path)
+            if decision_id:
+                self._write_intraday_execution_record(
+                    decision_id,
+                    {
+                        **blocked_payload,
+                        "execution_status": "blocked",
+                    },
+                )
+            return blocked_payload
 
         account = context["account"]
         positions_df = context["positions_df"]
@@ -531,17 +562,44 @@ class TradingService:
                 )
                 continue
 
-            result = self.node.submit_order(
-                order["ticker"],
-                int(order["share_quantity"]),
-                order["direction"],
+            is_crypto = self.node._is_crypto(order["ticker"])
+            qty = (
+                float(order["share_quantity"])
+                if is_crypto
+                else int(order["share_quantity"])
             )
+            requested_notional = float(order.get("requested_notional", 0.0))
+
+            # For intraday equity orders, always use notional (fractional shares)
+            # Alpaca supports fractional shares for equities via notional orders
+            if not is_crypto and requested_notional >= 1.0:
+                result = self.node.submit_order_notional(
+                    order["ticker"],
+                    requested_notional,
+                    order["direction"],
+                )
+            elif qty <= 0:
+                order_results.append(
+                    {"symbol": order["ticker"], "status": "rejected",
+                     "reason": f"Rounded qty is 0 (notional ${requested_notional:.0f} < 1 share @ ${order.get('estimated_price', 0):.0f})"}
+                )
+                continue
+            else:
+                result = self.node.submit_order(
+                    order["ticker"],
+                    qty,
+                    order["direction"],
+                )
             order_results.append(
                 {
                     **result,
                     "symbol": order["ticker"],
                     "requested_notional": float(order["requested_notional"]),
-                    "share_quantity": int(order["share_quantity"]),
+                    "share_quantity": (
+                        float(order["share_quantity"])
+                        if self.node._is_crypto(order["ticker"])
+                        else int(order["share_quantity"])
+                    ),
                     "estimated_price": float(order["estimated_price"]),
                 }
             )
@@ -555,21 +613,27 @@ class TradingService:
             order_results=order_results,
         )
         snapshot["reconciliation"] = reconciliation
-        operations_path = self._write_operations(
-            execution_key,
-            self._operation_payload(
-                snapshot=snapshot,
-                trade_status="success",
-                orders_submitted=len(
-                    [result for result in order_results if result.get("status") != "rejected"]
-                ),
-                orders_rejected=len(
-                    [result for result in order_results if result.get("status") == "rejected"]
-                ),
-                liquidations=0,
-                warnings=snapshot["pretrade"].get("warnings", []),
-                errors=[],
+        trade_status = (
+            "degraded"
+            if any(result.get("status") == "rejected" for result in order_results)
+            else "success"
+        )
+        operations = self._operation_payload(
+            snapshot=snapshot,
+            trade_status=trade_status,
+            orders_submitted=len(
+                [result for result in order_results if result.get("status") != "rejected"]
             ),
+            orders_rejected=len(
+                [result for result in order_results if result.get("status") == "rejected"]
+            ),
+            liquidations=0,
+            warnings=snapshot["pretrade"].get("warnings", []),
+            errors=[],
+        )
+        operations_path = self._write_intraday_operations(
+            decision_id or execution_key,
+            operations,
         )
         self._log_trade(
             execution_key,
@@ -581,7 +645,7 @@ class TradingService:
                 "reconciliation": reconciliation,
             },
         )
-        return {
+        result_payload = {
             "date": execution_key,
             "orders_submitted": len(
                 [result for result in order_results if result.get("status") != "rejected"]
@@ -596,6 +660,15 @@ class TradingService:
             "results": order_results,
             "operations_path": str(operations_path),
         }
+        if decision_id:
+            self._write_intraday_execution_record(
+                decision_id,
+                {
+                    **result_payload,
+                    "execution_status": trade_status,
+                },
+            )
+        return result_payload
 
     def _paper_guard_error(self) -> str | None:
         if not self.is_paper:
@@ -616,10 +689,19 @@ class TradingService:
             try:
                 entries = json.loads(payload.read_text())
                 if isinstance(entries, list):
-                    logs.extend(entry for entry in entries if isinstance(entry, dict))
+                    logs.extend(
+                        entry
+                        for entry in entries
+                        if isinstance(entry, dict) and self._is_trade_log_entry(entry)
+                    )
             except Exception:  # noqa: BLE001
                 continue
         return logs
+
+    @staticmethod
+    def _is_trade_log_entry(entry: dict[str, Any]) -> bool:
+        required = {"order_id", "symbol", "side", "status"}
+        return required.issubset(entry)
 
     def _sync_trade_history_with_broker(self, logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         try:
@@ -664,13 +746,13 @@ class TradingService:
         raw_quantity = float(order.get("quantity", 0) or 0)
         target_weight = order.get("target_weight")
 
-        current_position_qty = 0
+        current_position_qty = 0.0
         current_price = 0.0
         if not positions_df.empty and "symbol" in positions_df.columns:
             matches = positions_df.loc[positions_df["symbol"] == symbol]
             if not matches.empty:
                 row = matches.iloc[0]
-                current_position_qty = int(float(row.get("qty", 0) or 0))
+                current_position_qty = float(row.get("qty", 0) or 0)
                 current_price = float(
                     row.get("current_price", row.get("avg_price", 0.0)) or 0.0
                 )
@@ -686,12 +768,18 @@ class TradingService:
 
         if target_weight is not None:
             requested_notional = abs(raw_quantity)
-            share_quantity = int(requested_notional / estimated_price) if estimated_price > 0 else 0
+            share_quantity = (
+                requested_notional / estimated_price if estimated_price > 0 else 0.0
+            )
         else:
-            share_quantity = int(raw_quantity)
+            share_quantity = raw_quantity
             requested_notional = (
                 abs(share_quantity * estimated_price) if estimated_price > 0 else 0.0
             )
+
+        if not self.node._is_crypto(symbol):
+            current_position_qty = int(current_position_qty)
+            share_quantity = int(share_quantity)
 
         return {
             **order,
@@ -933,6 +1021,35 @@ class TradingService:
         path.write_text(json.dumps(data, indent=2, default=str))
         return path
 
+    def _intraday_execution_record_path(self, decision_id: str) -> Path:
+        return INTRADAY_OPERATIONS_DIR / f"{decision_id}_execution.json"
+
+    def _load_intraday_execution_record(self, decision_id: str) -> dict[str, Any] | None:
+        path = self._intraday_execution_record_path(decision_id)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:  # noqa: BLE001
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_intraday_execution_record(
+        self,
+        decision_id: str,
+        data: dict[str, Any],
+    ) -> Path:
+        INTRADAY_OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._intraday_execution_record_path(decision_id)
+        path.write_text(json.dumps(data, indent=2, default=str))
+        return path
+
+    def _write_intraday_operations(self, execution_id: str, data: dict[str, Any]) -> Path:
+        INTRADAY_OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        path = INTRADAY_OPERATIONS_DIR / f"{execution_id}.json"
+        path.write_text(json.dumps(data, indent=2, default=str))
+        return path
+
     def _log_trade(self, date: str, data: dict) -> None:
         TRADE_LOG_DIR.mkdir(parents=True, exist_ok=True)
         path = TRADE_LOG_DIR / f"{date}.json"
@@ -996,14 +1113,39 @@ class TradingService:
 
     def _orders_from_intraday_decision(self, decision: dict[str, Any]) -> list[dict[str, Any]]:
         orders: list[dict[str, Any]] = []
+        # Extract prices from feature snapshot if available
+        feature_prices = {}
+        feature_snapshot = decision.get("feature_snapshot", {})
+        for ticker, feats in feature_snapshot.get("features", {}).items():
+            if isinstance(feats, dict) and "close" in feats:
+                feature_prices[ticker] = float(feats["close"])
+
         for intent in decision.get("execution_intents", []):
+            ticker = str(intent.get("ticker", ""))
+            side = str(intent.get("side", "buy")).lower()
+            quantity_notional = float(intent.get("quantity_notional", 0.0) or 0.0)
+            estimated_price = float(intent.get("estimated_price", 0.0) or 0.0)
+            # Fallback to feature snapshot price if not in intent
+            if estimated_price <= 0 and ticker in feature_prices:
+                estimated_price = feature_prices[ticker]
+            # Convert notional to share count for equities; keep raw qty for crypto
+            if quantity_notional > 0 and estimated_price > 0 and not self.node._is_crypto(ticker):
+                share_quantity = quantity_notional / estimated_price
+                # Round to whole shares for equities
+                if side == "sell":
+                    share_quantity = int(share_quantity)
+                else:
+                    share_quantity = int(round(share_quantity))
+            else:
+                share_quantity = quantity_notional
             orders.append(
                 {
-                    "ticker": str(intent.get("ticker", "")),
-                    "direction": str(intent.get("side", "buy")).lower(),
-                    "quantity": float(intent.get("quantity_notional", 0.0) or 0.0),
+                    "ticker": ticker,
+                    "direction": side,
+                    "quantity": quantity_notional,
+                    "share_quantity": share_quantity,
                     "target_weight": float(intent.get("target_weight", 0.0) or 0.0),
-                    "price": float(intent.get("estimated_price", 0.0) or 0.0),
+                    "price": estimated_price,
                     "decision_id": decision.get("decision_id"),
                     "strategy_version": decision.get("strategy_version", "intraday-v1"),
                 }
@@ -1110,6 +1252,7 @@ class TradingService:
                 f"intraday intents scaled by {scale:.2f} to respect turnover cap {turnover_cap:.2%}"
             )
 
+        # No post-filter needed: fractional shares are supported via notional orders
         return adjusted_orders, warnings
 
     def _public_context(self, context: dict[str, Any]) -> dict[str, Any]:
