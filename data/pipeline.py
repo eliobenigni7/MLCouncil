@@ -242,6 +242,34 @@ def _load_all_ohlcv(extra: pl.DataFrame | None = None) -> pl.DataFrame:
     )
 
 
+def _load_partitioned_parquet(subdir: str, partition_date: str) -> pl.DataFrame:
+    """Load a partitioned parquet written under data/raw/<subdir>/<date>.parquet."""
+    path = _DATA_DIR / "raw" / subdir / f"{partition_date}.parquet"
+    if not path.exists():
+        return pl.DataFrame()
+    try:
+        return _normalize_df(pl.read_parquet(path))
+    except Exception:
+        return pl.DataFrame()
+
+
+def _load_macro_context_from_disk() -> pl.DataFrame:
+    """Load the macro context parquet files saved by download_macro."""
+    macro_dir = _DATA_DIR / "raw" / "macro"
+
+    def _path(name: str) -> str | None:
+        p = macro_dir / f"{name}.parquet"
+        return str(p) if p.exists() else None
+
+    from data.features.alpha158 import build_macro_context
+
+    return build_macro_context(
+        vix_path=_path("vix"),
+        treasuries_path=_path("treasuries"),
+        sp500_path=_path("sp500"),
+    )
+
+
 def _record_asset_metadata(
     context: AssetExecutionContext,
     asset_name: str,
@@ -368,7 +396,7 @@ def _load_live_portfolio_snapshot(
     retry_policy=_RETRY,
     description="OHLCV giornaliero per tutto l'universo (yfinance, schema bi-temporale).",
 )
-def raw_ohlcv(context: AssetExecutionContext) -> pl.DataFrame:
+def raw_ohlcv(context: AssetExecutionContext) -> None:
     """Scarica e salva i dati OHLCV per la data di partizione."""
     from data.ingest.market_data import download_daily
 
@@ -389,7 +417,6 @@ def raw_ohlcv(context: AssetExecutionContext) -> pl.DataFrame:
         f"{df['ticker'].n_unique()} ticker"
     )
     _record_asset_metadata(context, "raw_ohlcv", df, partition_date)
-    return df
 
 
 @dg.asset(
@@ -397,7 +424,7 @@ def raw_ohlcv(context: AssetExecutionContext) -> pl.DataFrame:
     retry_policy=_RETRY,
     description="Headline di notizie finanziarie dal feed RSS Yahoo Finance.",
 )
-def raw_news(context: AssetExecutionContext) -> pl.DataFrame:
+def raw_news(context: AssetExecutionContext) -> None:
     """Scarica le notizie per la data di partizione."""
     from data.ingest.news import download_news
 
@@ -407,7 +434,6 @@ def raw_news(context: AssetExecutionContext) -> pl.DataFrame:
     df = download_news(tickers=tickers, date=partition_date, data_dir=_DATA_DIR)
     context.log.info(f"raw_news [{partition_date}]: {df.shape[0]} headline")
     _record_asset_metadata(context, "raw_news", df, partition_date)
-    return df
 
 
 @dg.asset(
@@ -415,7 +441,7 @@ def raw_news(context: AssetExecutionContext) -> pl.DataFrame:
     retry_policy=_RETRY,
     description="Dati macro (VIX, Treasury spread, S&P500) da FRED.",
 )
-def raw_macro(context: AssetExecutionContext) -> pl.DataFrame:
+def raw_macro(context: AssetExecutionContext) -> None:
     """Scarica e normalizza il contesto macro fino alla data di partizione."""
     from data.ingest.macro import download_macro
     from data.features.alpha158 import build_macro_context
@@ -442,7 +468,6 @@ def raw_macro(context: AssetExecutionContext) -> pl.DataFrame:
 
     context.log.info(f"raw_macro [{partition_date}]: {macro.shape[0]} righe macro")
     _record_asset_metadata(context, "raw_macro", macro, partition_date)
-    return macro
 
 
 # ===========================================================================
@@ -453,11 +478,10 @@ def raw_macro(context: AssetExecutionContext) -> pl.DataFrame:
     partitions_def=_DAILY_PARTITIONS,
     retry_policy=_RETRY,
     description="Feature tecniche + macro look-ahead safe per il modello tecnico.",
+    deps=[raw_ohlcv, raw_macro],
 )
 def alpha158_features(
     context: AssetExecutionContext,
-    raw_ohlcv: pl.DataFrame,
-    raw_macro: pl.DataFrame,
 ) -> pl.DataFrame:
     """Calcola le feature Alpha158 sull'OHLCV storico + contesto macro.
 
@@ -470,11 +494,13 @@ def alpha158_features(
     today = date_type.fromisoformat(partition_date)
 
     # Alpha158 richiede la storia completa per le rolling window
-    all_ohlcv = _load_all_ohlcv(extra=raw_ohlcv)
+    all_ohlcv = _load_all_ohlcv()
     if all_ohlcv.is_empty():
         raise ValueError("Nessun dato OHLCV disponibile per Alpha158")
 
-    macro_ctx = raw_macro if not raw_macro.is_empty() else None
+    macro_ctx = _load_macro_context_from_disk()
+    if macro_ctx.is_empty():
+        macro_ctx = None
     features = compute_alpha158(all_ohlcv, macro_df=macro_ctx)
 
     # Filtra al giorno corrente
@@ -510,10 +536,10 @@ def alpha158_features(
     partitions_def=_DAILY_PARTITIONS,
     retry_policy=_RETRY,
     description="Feature di sentiment per ticker (FinBERT su titoli di news).",
+    deps=[raw_news],
 )
 def sentiment_features(
     context: AssetExecutionContext,
-    raw_news: pl.DataFrame,
 ) -> pl.DataFrame:
     """Aggrega i punteggi di sentiment FinBERT per ticker.
 
@@ -528,6 +554,9 @@ def sentiment_features(
         "valid_time":      pl.Series([], dtype=pl.Date),
         "sentiment_score": pl.Series([], dtype=pl.Float64),
     })
+
+    news_path = _DATA_DIR / "raw" / "news" / f"{partition_date}.parquet"
+    raw_news = pl.read_parquet(news_path) if news_path.exists() else _empty
 
     if raw_news.is_empty():
         context.log.warning(
@@ -736,14 +765,16 @@ def sentiment_signals(
     partitions_def=_DAILY_PARTITIONS,
     retry_policy=_RETRY,
     description="Regime di mercato corrente: 'bull', 'bear', o 'transition' (HMM).",
+    deps=[raw_macro],
 )
 def current_regime(
     context: AssetExecutionContext,
-    raw_macro: pl.DataFrame,
 ) -> str:
     """Rileva il regime di mercato con il modello HMM."""
     partition_date = context.partition_key
     checkpoint = _CHECKPOINTS / "hmm_latest.pkl"
+
+    raw_macro = _load_macro_context_from_disk()
 
     try:
         from models.regime import RegimeModel
@@ -1060,10 +1091,10 @@ def save_council_results(
     partitions_def=_DAILY_PARTITIONS,
     retry_policy=_RETRY,
     description="Salva regime corrente e storia regimi in data/results/.",
+    deps=[raw_macro],
 )
 def save_regime_results(
     context: AssetExecutionContext,
-    raw_macro: pl.DataFrame,
     current_regime: str,
 ) -> None:
     """Scrive current_regime.json e regime_history.parquet in data/results/.
@@ -1075,6 +1106,8 @@ def save_regime_results(
     partition_date = context.partition_key
 
     _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    raw_macro = _load_macro_context_from_disk()
 
     # ------------------------------------------------------------------
     # current_regime.json
@@ -1202,7 +1235,7 @@ def portfolio_weights(
         multipliers = pd.Series(1.0, index=cov_tickers, name="multiplier")
 
     # Pesi correnti: portafoglio live se disponibile, altrimenti bootstrap da zero.
-    current_w, _ = _load_live_portfolio_snapshot(cov_tickers)
+    current_w, portfolio_value = _load_live_portfolio_snapshot(cov_tickers)
 
     constructor = PortfolioConstructor()
     optimize_with_crypto = getattr(constructor, "optimize_with_crypto", None)
@@ -1523,9 +1556,6 @@ def daily_orders_contract(daily_orders: pd.DataFrame) -> dg.AssetCheckResult:
 defs = dg.Definitions(
     assets=_ALL_ASSETS,
     asset_checks=[
-        raw_ohlcv_contract,
-        raw_news_contract,
-        raw_macro_contract,
         alpha158_features_contract,
         sentiment_features_contract,
         daily_orders_contract,
