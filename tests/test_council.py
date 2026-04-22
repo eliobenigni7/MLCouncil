@@ -6,7 +6,7 @@ Coverage
 2. test_regime_shift_changes_weights — bull vs bear produce different weight vectors
 3. test_conformal_coverage           — empirical coverage >= target on held-out data
 4. test_position_multiplier_range    — all multipliers are in [0.2, 2.0]
-5. test_portfolio_budget_constraint  — sum(target_weights) == 1.0
+5. test_portfolio_budget_constraint  — tier policy budget behavior
 6. test_turnover_constraint          — |new_w - old_w|_1 <= max_turnover
 """
 
@@ -349,13 +349,17 @@ class TestPortfolioConstructor:
         return alpha, multipliers, current_w, cov, tickers
 
     def test_portfolio_budget_constraint(self, constructor):
-        """Target weights must sum to 1.0 (budget constraint)."""
+        """Cash reserve should apply only to the large-portfolio tier."""
         alpha, mult, current_w, cov, _ = self._inputs()
-        target = constructor.optimize(alpha, mult, current_w, cov)
+        target_mid = constructor.optimize(alpha, mult, current_w, cov, portfolio_value=50_000)
+        target_large = constructor.optimize(alpha, mult, current_w, cov, portfolio_value=100_000)
 
-        assert isinstance(target, pd.Series), "optimize() must return pd.Series"
-        assert abs(target.sum() - 1.0) < 1e-4, (
-            f"Portfolio weights sum to {target.sum():.6f}, expected 1.0"
+        assert isinstance(target_mid, pd.Series), "optimize() must return pd.Series"
+        assert abs(target_mid.sum() - 1.0) < 1e-4, (
+            f"Mid-tier weights sum to {target_mid.sum():.6f}, expected 1.0"
+        )
+        assert abs(target_large.sum() - 0.85) < 1e-4, (
+            f"Large-tier weights sum to {target_large.sum():.6f}, expected 0.85"
         )
 
     def test_turnover_constraint(self, constructor):
@@ -389,10 +393,11 @@ class TestPortfolioConstructor:
         )
 
     def test_portfolio_index_matches_alpha(self, constructor):
-        """Output index must match the alpha_signals index."""
+        """Output tickers must be selected from the alpha universe."""
         alpha, mult, current_w, cov, tickers = self._inputs()
         target = constructor.optimize(alpha, mult, current_w, cov)
-        assert set(target.index) == set(tickers)
+        assert set(target.index).issubset(set(tickers))
+        assert len(target.index) > 0
 
     def test_compute_orders_direction(self, constructor):
         """compute_orders must correctly classify buy/sell directions."""
@@ -418,6 +423,21 @@ class TestPortfolioConstructor:
         orders = constructor.compute_orders(target, current, portfolio_value=50_000.0)
         assert (orders["quantity"] > 0).all(), "All quantities must be positive"
 
+    def test_drawdown_scale_reduces_exposure_without_renormalization(self, constructor):
+        """Drawdown scaling should reduce gross exposure (cash increases)."""
+        target = pd.Series(
+            [0.40, 0.30, 0.15],
+            index=["AAPL", "MSFT", "GOOGL"],
+            name="target_weight",
+        )
+        scaled = constructor.apply_drawdown_scale(
+            target_weights=target,
+            portfolio_return_5d=-0.14,
+        )
+
+        assert scaled.sum() < target.sum()
+        assert scaled.sum() == pytest.approx(target.sum() * 0.25, rel=1e-6)
+
     def test_compute_orders_empty_on_no_change(self, constructor):
         """compute_orders returns empty DataFrame when no meaningful trades exist."""
         tickers = ["A", "B"]
@@ -428,7 +448,10 @@ class TestPortfolioConstructor:
     def test_sector_aware_fallback_respects_dynamic_sector_cap(self, constructor):
         """Il fallback deve restare investibile senza concentrare tutto nel tech."""
         import builtins
-        from data.features.sector_exposure import compute_sector_exposures
+        from data.features.sector_exposure import (
+            compute_effective_sector_cap,
+            compute_sector_exposures,
+        )
 
         tickers = [
             "AAPL", "MSFT", "GOOGL", "NVDA", "META",
@@ -450,6 +473,11 @@ class TestPortfolioConstructor:
             target = constructor.optimize(alpha, multipliers, current_w, cov)
 
         sector_weights = compute_sector_exposures(target)
-        assert abs(target.sum() - 1.0) < 1e-6
-        assert sector_weights["Technology"] <= 0.5 + 1e-6
-        assert sector_weights["Consumer Discretionary"] <= 0.4 + 1e-6
+        effective_sector_cap = compute_effective_sector_cap(
+            tickers,
+            base_sector_cap=constructor.sector_cap,
+            max_position=max(constructor.max_position, 0.13),
+        )
+        assert abs(target.sum() - 0.85) < 1e-6
+        assert sector_weights["Technology"] <= effective_sector_cap + 1e-6
+        assert sector_weights["Consumer Discretionary"] <= effective_sector_cap + 1e-6

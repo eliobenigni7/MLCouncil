@@ -2,17 +2,46 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
+
+DEFAULT_COMMISSION_BPS = 0.0
+DEFAULT_SLIPPAGE_BPS = 3.0
+
+
+def _read_bps_env(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw is None or not raw.strip():
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+def get_default_commission_bps() -> float:
+    return _read_bps_env("MLCOUNCIL_COMMISSION_BPS", DEFAULT_COMMISSION_BPS)
+
+
+def get_default_slippage_bps() -> float:
+    return _read_bps_env("MLCOUNCIL_SLIPPAGE_BPS", DEFAULT_SLIPPAGE_BPS)
 
 
 @dataclass(frozen=True)
 class TransactionCostModel:
     """Estimate transaction costs from either weights or traded notional."""
 
-    commission_bps: float = 1.0
-    slippage_bps: float = 3.0
+    commission_bps: float = DEFAULT_COMMISSION_BPS
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS
+
+    @classmethod
+    def from_env(cls) -> "TransactionCostModel":
+        return cls(
+            commission_bps=get_default_commission_bps(),
+            slippage_bps=get_default_slippage_bps(),
+        )
 
     @property
     def total_cost_bps(self) -> float:

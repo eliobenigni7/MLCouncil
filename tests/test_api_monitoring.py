@@ -1,14 +1,20 @@
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 
 @pytest.fixture(scope="module")
 def client():
     from api.main import create_app
 
-    app = create_app()
-    with TestClient(app) as c:
-        yield c
+    with patch.dict(
+        "os.environ",
+        {"MLCOUNCIL_ENV_PROFILE": "local", "MLCOUNCIL_REQUIRE_API_KEY": "false"},
+        clear=False,
+    ):
+        app = create_app()
+        with TestClient(app) as c:
+            yield c
 
 
 def test_get_alerts(client):
@@ -52,10 +58,11 @@ def test_get_runtime_settings(client, tmp_path, monkeypatch):
 
     body = resp.json()
     keys = {item["key"]: item for item in body["settings"]}
-    assert keys["OPENAI_API_KEY"]["value"] == "sk-test"
-    assert keys["POLYGON_API_KEY"]["value"] == "polygon-test"
-    assert keys["ALPACA_PAPER_KEY"]["value"] == "legacy-paper-key"
-    assert keys["ALPACA_PAPER_SECRET"]["value"] == "legacy-paper-secret"
+    assert keys["OPENAI_API_KEY"]["value"] == monitoring_service.MASKED_SECRET_VALUE
+    assert keys["POLYGON_API_KEY"]["value"] == monitoring_service.MASKED_SECRET_VALUE
+    assert keys["ALPACA_PAPER_KEY"]["value"] == monitoring_service.MASKED_SECRET_VALUE
+    assert keys["ALPACA_PAPER_SECRET"]["value"] == monitoring_service.MASKED_SECRET_VALUE
+    assert keys["OPENAI_API_KEY"]["configured"] is True
 
 
 def test_get_runtime_settings_prefers_env_over_placeholder_file_values(
@@ -81,8 +88,8 @@ def test_get_runtime_settings_prefers_env_over_placeholder_file_values(
 
     body = resp.json()
     keys = {item["key"]: item for item in body["settings"]}
-    assert keys["ALPACA_PAPER_KEY"]["value"] == "runtime-paper-key"
-    assert keys["ALPACA_PAPER_SECRET"]["value"] == "runtime-paper-secret"
+    assert keys["ALPACA_PAPER_KEY"]["value"] == monitoring_service.MASKED_SECRET_VALUE
+    assert keys["ALPACA_PAPER_SECRET"]["value"] == monitoring_service.MASKED_SECRET_VALUE
     assert keys["MLCOUNCIL_AUTO_EXECUTE"]["value"] == "true"
 
 
@@ -107,7 +114,37 @@ def test_update_runtime_settings_persists_shared_env(client, tmp_path, monkeypat
 
     payload = resp.json()
     keys = {item["key"]: item for item in payload["settings"]}
-    assert keys["OPENAI_API_KEY"]["value"] == "sk-updated"
+    assert keys["OPENAI_API_KEY"]["value"] == monitoring_service.MASKED_SECRET_VALUE
     assert keys["ALPACA_BASE_URL"]["value"] == "https://paper-api.alpaca.markets"
     assert "OPENAI_API_KEY=sk-updated" in runtime_env.read_text()
     assert "ALPACA_BASE_URL=https://paper-api.alpaca.markets" in runtime_env.read_text()
+
+
+def test_update_runtime_settings_ignores_masked_secret_placeholder(client, tmp_path, monkeypatch):
+    from api.services import monitoring_service
+
+    runtime_env = tmp_path / "runtime.env"
+    runtime_env.write_text(
+        "OPENAI_API_KEY=sk-existing\n"
+        "MLCOUNCIL_AUTO_EXECUTE=false\n"
+    )
+    monkeypatch.setattr(monitoring_service, "RUNTIME_ENV_PATH", runtime_env)
+
+    resp = client.put(
+        "/api/monitoring/settings",
+        json={
+            "values": {
+                "OPENAI_API_KEY": monitoring_service.MASKED_SECRET_VALUE,
+                "MLCOUNCIL_AUTO_EXECUTE": "true",
+            }
+        },
+    )
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    keys = {item["key"]: item for item in payload["settings"]}
+    assert keys["OPENAI_API_KEY"]["value"] == monitoring_service.MASKED_SECRET_VALUE
+    assert keys["MLCOUNCIL_AUTO_EXECUTE"]["value"] == "true"
+    contents = runtime_env.read_text()
+    assert "OPENAI_API_KEY=sk-existing" in contents
+    assert "MLCOUNCIL_AUTO_EXECUTE=true" in contents

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import warnings
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -9,11 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from loguru import logger
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 from runtime_env import load_runtime_env
 
-from api.auth import ensure_request_api_key, is_public_api_path
+from api.auth import ensure_request_api_key, is_api_key_required, is_public_api_path
 from api.rate_limit import limiter
 
 API_PREFIX = "/api"
@@ -26,13 +26,6 @@ load_runtime_env()
 def get_allowed_origins() -> list[str]:
     origins = os.getenv("MLCOUNCIL_ALLOWED_ORIGINS", "http://localhost:8501")
     return [o.strip() for o in origins.split(",") if o.strip()]
-
-
-def is_api_key_required() -> bool:
-    explicit = os.getenv("MLCOUNCIL_REQUIRE_API_KEY")
-    if explicit is not None:
-        return explicit.strip().lower() in {"1", "true", "yes", "on"}
-    return os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower() == "paper"
 
 
 def create_app() -> FastAPI:
@@ -61,9 +54,21 @@ def create_app() -> FastAPI:
                 return await call_next(request)
             try:
                 ensure_request_api_key(request)
+                logger.info(
+                    "Admin API auth success path={} client={}",
+                    request.url.path,
+                    request.client.host if request.client else "unknown",
+                )
             except Exception as exc:  # noqa: BLE001
                 from fastapi.responses import JSONResponse
 
+                logger.warning(
+                    "Admin API auth failure path={} client={} status={} detail={}",
+                    request.url.path,
+                    request.client.host if request.client else "unknown",
+                    getattr(exc, "status_code", 500),
+                    getattr(exc, "detail", str(exc)),
+                )
                 return JSONResponse(
                     status_code=getattr(exc, "status_code", 500),
                     content={"detail": getattr(exc, "detail", str(exc))},
@@ -73,9 +78,9 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def validate_environment():
         if is_api_key_required() and not os.getenv("MLCOUNCIL_API_KEY"):
-            warnings.warn(
-                "MLCOUNCIL_API_KEY is required for this runtime profile but is not configured. "
-                "API endpoints will remain unauthenticated until it is set."
+            raise RuntimeError(
+                "MLCOUNCIL_API_KEY is required for this runtime profile. "
+                "Refusing startup to avoid unauthenticated admin access."
             )
 
     from api.routers import health, pipeline, portfolio, config, monitoring, trading, intraday

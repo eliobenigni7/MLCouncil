@@ -162,7 +162,7 @@ subject to
     sector[w] ≤ 25%              (sector exposure cap)
 ```
 
-**Transaction cost model:** 3 bps slippage + 1 bps commission = 4 bps total, estimated on one-way turnover. Both gross and net equity curves are reported.
+**Transaction cost model:** defaults are 3 bps slippage + 0 bps commission = 3 bps total (configurable via `MLCOUNCIL_SLIPPAGE_BPS` and `MLCOUNCIL_COMMISSION_BPS`), estimated on one-way turnover. Both gross and net equity curves are reported.
 
 Post-processing: positions below 1% weight are zeroed and the remainder renormalized to satisfy the budget constraint.
 
@@ -258,8 +258,8 @@ Candidates are rejected if gross/net metrics diverge implausibly from the estima
 |-----------|-------|
 | Fill model | Next-open (order at EOD → fill at T+1 open) |
 | Slippage | 3 bps probabilistic |
-| Commission | 1 bps |
-| Total transaction cost | 4 bps per one-way trade |
+| Commission | 0 bps (default, configurable) |
+| Total transaction cost | 3 bps per one-way trade (default) |
 | Capital assumption | Long-only, fully invested |
 
 ### Alpha Decay Thresholds

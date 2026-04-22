@@ -88,7 +88,7 @@ if _NT_AVAILABLE:
         """Slippage atteso in basis-point (usato per analisi e fill price
         attribution; il FillModel del runner applica lo slippage effettivo)."""
 
-        commission_bps: float = 1.0
+        commission_bps: float = 0.0
         """Commissioni in basis-point per analisi costi."""
 
         min_order_usd: float = 100.0

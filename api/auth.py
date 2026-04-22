@@ -20,9 +20,21 @@ def get_configured_api_key() -> str:
     return os.getenv("MLCOUNCIL_API_KEY", "")
 
 
+def is_api_key_required() -> bool:
+    explicit = os.getenv("MLCOUNCIL_REQUIRE_API_KEY")
+    if explicit is not None:
+        return explicit.strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower() == "paper"
+
+
 def ensure_request_api_key(request: Request) -> None:
     valid_key = get_configured_api_key()
     if not valid_key:
+        if is_api_key_required():
+            raise HTTPException(
+                status_code=503,
+                detail="MLCOUNCIL_API_KEY is required but not configured",
+            )
         return
 
     api_key = request.headers.get("X-API-Key")

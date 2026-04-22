@@ -42,7 +42,11 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from council.transaction_costs import TransactionCostModel
+from council.transaction_costs import (
+    TransactionCostModel,
+    get_default_commission_bps,
+    get_default_slippage_bps,
+)
 
 
 # ===========================================================================
@@ -76,17 +80,23 @@ class BacktestReport:
         initial_capital: float = 100_000.0,
         risk_free_rate: float = 0.05,
         equity_curve: Optional[pd.Series] = None,
-        commission_bps: float = 1.0,
-        slippage_bps: float = 3.0,
+        commission_bps: float | None = None,
+        slippage_bps: float | None = None,
         cost_model: Optional[TransactionCostModel] = None,
     ) -> None:
         self.fills = fills.copy() if not fills.empty else pd.DataFrame()
         self.prices = prices.copy() if not prices.empty else pd.DataFrame()
         self.initial_capital = initial_capital
         self.risk_free_rate = risk_free_rate
+        resolved_commission_bps = (
+            get_default_commission_bps() if commission_bps is None else float(commission_bps)
+        )
+        resolved_slippage_bps = (
+            get_default_slippage_bps() if slippage_bps is None else float(slippage_bps)
+        )
         self.cost_model = cost_model or TransactionCostModel(
-            commission_bps=commission_bps,
-            slippage_bps=slippage_bps,
+            commission_bps=resolved_commission_bps,
+            slippage_bps=resolved_slippage_bps,
         )
         self._turnover_cache: Optional[pd.DataFrame] = None
 

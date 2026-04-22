@@ -6,6 +6,11 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from api.services.secret_utils import (
+    MASKED_SECRET_VALUE,
+    is_masked_secret_value,
+    mask_secret_value,
+)
 from runtime_env import (
     LEGACY_ENV_ALIASES,
     get_runtime_env_path,
@@ -178,11 +183,13 @@ def get_runtime_settings() -> dict:
 
     for field in SETTINGS_FIELDS:
         value = _resolve_setting_value(field["key"], values)
+        configured = not is_placeholder_env_value(value)
+        rendered_value = mask_secret_value(value) if field.get("secret") else value
         settings.append(
             {
                 **field,
-                "value": value,
-                "configured": not is_placeholder_env_value(value),
+                "value": rendered_value,
+                "configured": configured,
             }
         )
 
@@ -199,6 +206,7 @@ _IMMUTABLE_KEYS = frozenset({"MLCOUNCIL_API_KEY"})
 
 def update_runtime_settings(updates: dict[str, str | None]) -> dict:
     current = _read_runtime_env_file()
+    secret_keys = {field["key"] for field in SETTINGS_FIELDS if field.get("secret")}
 
     for field in SETTINGS_FIELDS:
         key = field["key"]
@@ -208,6 +216,10 @@ def update_runtime_settings(updates: dict[str, str | None]) -> dict:
             continue  # Silently skip — callers should not change auth keys at runtime.
 
         value = (updates.get(key) or "").strip()
+        if key in secret_keys and is_masked_secret_value(value):
+            # Client sent back the UI mask placeholder without changing the value.
+            # Keep the existing secret untouched.
+            continue
         if value:
             current[key] = value
             os.environ[key] = value

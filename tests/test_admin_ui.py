@@ -2,6 +2,7 @@ import sys
 import types
 import warnings
 
+import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 
@@ -39,9 +40,14 @@ def test_admin_root_renders_html():
     _install_slowapi_stub()
     from api.main import create_app
 
-    app = create_app()
-    with TestClient(app, raise_server_exceptions=False) as client:
-        resp = client.get("/")
+    with patch.dict(
+        "os.environ",
+        {"MLCOUNCIL_ENV_PROFILE": "local", "MLCOUNCIL_REQUIRE_API_KEY": "false"},
+        clear=False,
+    ):
+        app = create_app()
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.get("/")
 
     assert resp.status_code == 200
     assert "MLCouncil Admin" in resp.text
@@ -101,16 +107,23 @@ def test_admin_api_does_not_warn_when_key_is_optional():
     assert not [w for w in caught if "MLCOUNCIL_API_KEY" in str(w.message)]
 
 
-def test_admin_api_warns_when_required_key_is_missing():
+def test_admin_api_fails_closed_when_required_key_is_missing():
     _install_slowapi_stub()
     from api.main import create_app
 
     with patch.dict("os.environ", {"MLCOUNCIL_REQUIRE_API_KEY": "true"}, clear=True):
         app = create_app()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with pytest.raises(RuntimeError, match="MLCOUNCIL_API_KEY is required"):
             with TestClient(app, raise_server_exceptions=False):
                 pass
 
-    messages = [str(w.message) for w in caught]
-    assert any("MLCOUNCIL_API_KEY is required" in message for message in messages)
+
+def test_admin_api_fails_closed_in_paper_profile_without_key():
+    _install_slowapi_stub()
+    from api.main import create_app
+
+    with patch.dict("os.environ", {"MLCOUNCIL_ENV_PROFILE": "paper"}, clear=True):
+        app = create_app()
+        with pytest.raises(RuntimeError, match="MLCOUNCIL_API_KEY is required"):
+            with TestClient(app, raise_server_exceptions=False):
+                pass

@@ -6,7 +6,7 @@ Utilizza NautilusTrader ``BacktestEngine`` per simulare la CouncilStrategy
 su dati storici OHLCV con:
   - Fill model: next-open (ordine EOD → fill su apertura T+1)
   - Slippage:   3 bps probabilistico + aggiustamento diretto in strategy
-  - Commission: 1 bps fee-model
+  - Commission: default 0 bps (configurabile da env)
   - Venue:      SimulatedExchange (SIM) cash account, long-only
 
 Paper Trading
@@ -90,6 +90,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _DATA_DIR = _ROOT / "data" / "raw"
+
+from council.transaction_costs import (
+    get_default_commission_bps,
+    get_default_slippage_bps,
+)
 
 
 # ===========================================================================
@@ -326,8 +331,8 @@ def run_backtest(
     end_date: str = "2023-12-31",
     initial_capital: float = 100_000.0,
     universe: Optional[list[str]] = None,
-    slippage_bps: float = 3.0,
-    commission_bps: float = 1.0,
+    slippage_bps: float | None = None,
+    commission_bps: float | None = None,
     verbose: bool = False,
     skip_lookahead_check: bool = False,
 ) -> BacktestResult:
@@ -344,9 +349,9 @@ def run_backtest(
     universe : list[str], optional
         Override lista ticker. Default da config/universe.yaml.
     slippage_bps : float
-        Slippage in basis-point per side (default 3 bps).
+        Slippage in basis-point per side (default da MLCOUNCIL_SLIPPAGE_BPS).
     commission_bps : float
-        Commissioni in basis-point (default 1 bps).
+        Commissioni in basis-point (default da MLCOUNCIL_COMMISSION_BPS).
     verbose : bool
         Se True, abilita il logging NautilusTrader.
     skip_lookahead_check : bool
@@ -361,6 +366,11 @@ def run_backtest(
             "NautilusTrader non è installato. "
             "Esegui: pip install nautilus_trader"
         )
+
+    if slippage_bps is None:
+        slippage_bps = get_default_slippage_bps()
+    if commission_bps is None:
+        commission_bps = get_default_commission_bps()
 
     # Carica universo (survivorship-bias-aware when history file exists)
     if universe is None:
@@ -782,14 +792,21 @@ def _compute_stats(
     fills_df: pd.DataFrame,
     initial_capital: float,
     risk_free_rate: float = 0.05,
-    commission_bps: float = 1.0,
-    slippage_bps: float = 3.0,
+    commission_bps: float | None = None,
+    slippage_bps: float | None = None,
 ) -> dict:
     """Calcola metriche nette e lorde del backtest da un'unica reportistica."""
     stats: dict = {}
 
     if equity.empty or len(equity) < 2:
         return stats
+
+    resolved_commission_bps = (
+        get_default_commission_bps() if commission_bps is None else float(commission_bps)
+    )
+    resolved_slippage_bps = (
+        get_default_slippage_bps() if slippage_bps is None else float(slippage_bps)
+    )
 
     from backtest.report import BacktestReport
 
@@ -799,8 +816,8 @@ def _compute_stats(
         initial_capital=initial_capital,
         risk_free_rate=risk_free_rate,
         equity_curve=equity,
-        commission_bps=commission_bps,
-        slippage_bps=slippage_bps,
+        commission_bps=resolved_commission_bps,
+        slippage_bps=resolved_slippage_bps,
     )
     turnover_df = report.turnover_analysis()
     net_equity = report.equity_curve

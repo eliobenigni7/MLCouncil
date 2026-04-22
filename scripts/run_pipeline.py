@@ -373,13 +373,20 @@ def step_portfolio(
     )
 
     constructor = PortfolioConstructor()
-    target_w = constructor.optimize(
-        alpha_signals=filtered.reindex(cov_tickers).fillna(0.0),
-        position_multipliers=multipliers.reindex(cov_tickers).fillna(1.0),
-        current_weights=current_w,
-        returns_covariance=cov,
-        portfolio_value=portfolio_value,
-    )
+    optimize_kwargs = {
+        "alpha_signals": filtered.reindex(cov_tickers).fillna(0.0),
+        "position_multipliers": multipliers.reindex(cov_tickers).fillna(1.0),
+        "current_weights": current_w,
+        "returns_covariance": cov,
+    }
+    try:
+        target_w = constructor.optimize(
+            **optimize_kwargs,
+            portfolio_value=portfolio_value,
+        )
+    except TypeError:
+        # Backward compatibility for lightweight/dummy constructors used in tests.
+        target_w = constructor.optimize(**optimize_kwargs)
 
     orders = constructor.compute_orders(target_w, current_w, portfolio_value)
 

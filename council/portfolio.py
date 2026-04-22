@@ -27,7 +27,11 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from council.transaction_costs import TransactionCostModel
+from council.transaction_costs import (
+    TransactionCostModel,
+    get_default_commission_bps,
+    get_default_slippage_bps,
+)
 from data.features.sector_exposure import (
     SECTOR_MAP,
     UNIQUE_SECTORS,
@@ -60,9 +64,9 @@ class PortfolioConstructor:
     max_beta_exposure : float
         Maximum absolute portfolio beta if beta_neutral (default 0.3).
     commission_bps : float
-        Commission in basis points (default 1.0 bps).
+        Commission in basis points (default from MLCOUNCIL_COMMISSION_BPS, 0.0 bps).
     slippage_bps : float
-        Slippage in basis points (default 3.0 bps).
+        Slippage in basis points (default from MLCOUNCIL_SLIPPAGE_BPS, 3.0 bps).
     tc_lambda : float
         Transaction cost penalty weight (default 1.0).
     """
@@ -82,9 +86,9 @@ class PortfolioConstructor:
         # market_returns is provided to optimize(); no-op otherwise.
         self.beta_neutral: bool = True
         self.max_beta_exposure: float = 0.30
-        # Alpaca charges 0 commission on equities; only slippage applies.
-        self.commission_bps: float = 0.0
-        self.slippage_bps: float = 3.0
+        # Defaults come from runtime env for parity with backtests.
+        self.commission_bps: float = get_default_commission_bps()
+        self.slippage_bps: float = get_default_slippage_bps()
         self.tc_lambda: float = 1.0
         # Minimum absolute z-score to enter a position (filters noise).
         self.min_signal_strength: float = float(os.getenv("MLCOUNCIL_MIN_SIGNAL_STRENGTH", "0.20"))
@@ -120,6 +124,7 @@ class PortfolioConstructor:
                 "min_position": 0.05,
                 "max_turnover": 0.50,
                 "min_trade_usd": 50.0,
+                "budget_fraction": 1.0,
             }
         elif portfolio_value < 25_000:
             return {
@@ -128,6 +133,7 @@ class PortfolioConstructor:
                 "min_position": 0.03,
                 "max_turnover": 0.40,
                 "min_trade_usd": 25.0,
+                "budget_fraction": 1.0,
             }
         elif portfolio_value < 100_000:
             return {
@@ -136,6 +142,7 @@ class PortfolioConstructor:
                 "min_position": 0.02,
                 "max_turnover": 0.35,
                 "min_trade_usd": 10.0,
+                "budget_fraction": 1.0,
             }
         else:
             # Reserve ~15% budget for intraday moves by limiting positions
@@ -146,7 +153,17 @@ class PortfolioConstructor:
                 "min_position": self.min_position,
                 "max_turnover": self.max_turnover,
                 "min_trade_usd": max(1.0, portfolio_value * 0.0005),
+                "budget_fraction": 0.85,
             }
+
+    @staticmethod
+    def _get_budget_fraction(tier: dict) -> float:
+        fraction = float(tier.get("budget_fraction", 1.0))
+        if fraction < 0.0:
+            return 0.0
+        if fraction > 1.0:
+            return 1.0
+        return fraction
 
     def apply_drawdown_scale(
         self,
@@ -168,7 +185,7 @@ class PortfolioConstructor:
 
         Returns
         -------
-        Scaled weights, re-normalised to sum to 1.
+        Scaled weights (no re-normalisation).
         """
         if portfolio_return_5d >= -self.max_drawdown_threshold:
             return target_weights
@@ -180,11 +197,7 @@ class PortfolioConstructor:
             f"Drawdown circuit breaker: 5d return={portfolio_return_5d:.2%}, "
             f"scaling exposure to {scale:.0%}"
         )
-        scaled = target_weights * scale
-        total = scaled.sum()
-        if total > 1e-9:
-            return (scaled / total).rename("target_weight")
-        return target_weights
+        return (target_weights * scale).rename("target_weight")
 
     def compute_transaction_cost(
         self,
@@ -271,13 +284,49 @@ class PortfolioConstructor:
         tickers = alpha_signals.index.tolist()
         n = len(tickers)
 
+        budget_fraction = self._get_budget_fraction(tier)
+        if n > 0:
+            # Ensure the optimization remains feasible on narrow universes.
+            # When only a few tickers survive filtering, strict max_position
+            # plus reserved cash can make the budget impossible to deploy.
+            min_required_position = budget_fraction / n
+            if min_required_position > effective_max_position + 1e-9:
+                if n < 12:
+                    budget_fraction = 1.0
+                    min_required_position = budget_fraction / n
+                effective_max_position = min(
+                    1.0,
+                    max(effective_max_position, min_required_position),
+                )
+
+        effective_sector_cap = compute_effective_sector_cap(
+            tickers,
+            base_sector_cap=self.sector_cap,
+            max_position=effective_max_position,
+        )
+
         try:
             import cvxpy as cp
         except ModuleNotFoundError:
             logger.warning(
-                "cvxpy not installed. Returning equal-weight fallback."
+                "cvxpy not installed. Returning sector-aware fallback."
             )
-            return pd.Series(np.ones(n) / n, index=tickers, name="target_weight")
+            current_fallback = self._fallback_from_current_weights(
+                tickers=tickers,
+                current_weights=current_weights,
+                budget_fraction=budget_fraction,
+                max_position=effective_max_position,
+                sector_cap=effective_sector_cap,
+                max_turnover=effective_max_turnover,
+            )
+            if current_fallback is not None:
+                return current_fallback
+            return self._feasible_fallback_weights(
+                alpha_signals=alpha_signals.reindex(tickers).fillna(0.0),
+                sector_cap=effective_sector_cap,
+                budget_fraction=budget_fraction,
+                max_position=effective_max_position,
+            )
 
         mults = position_multipliers.reindex(alpha_signals.index).fillna(1.0)
         effective_alpha = (alpha_signals * mults).reindex(tickers).fillna(0.0).values
@@ -293,15 +342,6 @@ class PortfolioConstructor:
         cov = (cov_raw + cov_raw.T) / 2 + np.eye(n) * 1e-6
 
         max_vol_daily = self.max_vol_ann / np.sqrt(252)
-        effective_sector_cap = compute_effective_sector_cap(
-            tickers,
-            base_sector_cap=self.sector_cap,
-            max_position=effective_max_position,
-        )
-
-        # For portfolios >= $100K, reserve ~15% cash for intraday trading
-        # by deploying only 85% of the budget in the nightly optimization.
-        budget_fraction = 0.85 if tier["n_positions"] is not None and tier["n_positions"] <= 12 else 1.0
 
         w = cp.Variable(n, name="weights")
 
@@ -365,6 +405,7 @@ class PortfolioConstructor:
                 alpha_signals=alpha_signals.reindex(tickers).fillna(0.0),
                 sector_cap=effective_sector_cap,
                 budget_fraction=budget_fraction,
+                max_position=effective_max_position,
             )
 
         weights = np.clip(w.value, 0.0, None)
@@ -467,17 +508,19 @@ class PortfolioConstructor:
         alpha_signals: pd.Series,
         sector_cap: float,
         budget_fraction: float = 1.0,
+        max_position: float | None = None,
     ) -> pd.Series:
         tickers = alpha_signals.sort_values(ascending=False).index.tolist()
         weights = pd.Series(0.0, index=tickers, dtype=float, name="target_weight")
         sector_weights: dict[str, float] = {}
         remaining = budget_fraction
+        position_cap = self.max_position if max_position is None else max_position
 
         while remaining > 1e-9:
             progress = False
             for ticker in tickers:
                 current_weight = float(weights[ticker])
-                ticker_room = self.max_position - current_weight
+                ticker_room = position_cap - current_weight
                 if ticker_room <= 1e-9:
                     continue
 
@@ -508,9 +551,48 @@ class PortfolioConstructor:
 
         total = weights.sum()
         if total <= 1e-9:
-            return pd.Series(np.ones(len(tickers)) / len(tickers), index=tickers, name="target_weight")
+            fallback = np.ones(len(tickers)) / len(tickers)
+            return pd.Series(fallback * budget_fraction, index=tickers, name="target_weight")
 
-        return (weights / total).rename("target_weight")
+        return weights.rename("target_weight")
+
+    def _fallback_from_current_weights(
+        self,
+        *,
+        tickers: list[str],
+        current_weights: pd.Series,
+        budget_fraction: float,
+        max_position: float,
+        sector_cap: float,
+        max_turnover: float,
+    ) -> pd.Series | None:
+        aligned = current_weights.reindex(tickers).fillna(0.0).astype(float)
+        if self.long_only:
+            aligned = aligned.clip(lower=0.0)
+
+        total = float(aligned.sum())
+        if total <= 1e-9:
+            return None
+
+        weights = aligned / total * budget_fraction
+        if float(weights.max()) > max_position + 1e-9:
+            weights = weights.clip(upper=max_position)
+            clipped_total = float(weights.sum())
+            if clipped_total <= 1e-9:
+                return None
+            weights = weights / clipped_total * budget_fraction
+
+        if sector_cap < 1.0:
+            exposures = compute_sector_exposures(weights)
+            if bool((exposures > sector_cap + 1e-9).any()):
+                return None
+
+        turnover = float((weights - aligned).abs().sum())
+        if turnover > max_turnover and turnover > 1e-9:
+            blend = max(0.0, min(1.0, max_turnover / turnover))
+            weights = aligned + (weights - aligned) * blend
+
+        return weights.rename("target_weight")
 
     def compute_orders(
         self,
