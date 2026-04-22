@@ -27,6 +27,8 @@ import numpy as np
 import pandas as pd
 from runtime_env import load_runtime_env
 
+from council.artifacts import write_artifact_manifest
+from data.contracts import validate_asset_contract
 from backtest.validation import (
     build_purged_walk_forward_splits,
     compute_strategy_returns,
@@ -309,6 +311,25 @@ class ModelRegistry:
         except Exception:
             with open(path, "wb") as f:
                 pickle.dump(model, f)
+
+        if metrics:
+            validate_asset_contract("model_evaluation_metrics", metrics)
+
+        write_artifact_manifest(
+            path,
+            artifact_type="model_checkpoint",
+            lineage={
+                "pipeline_run_id": pipeline_run_id,
+                "data_version": data_version,
+                "feature_version": feature_version,
+                "model_version": version,
+            },
+            metadata={
+                "model_name": name,
+                "environment": environment,
+                "metrics_present": bool(metrics),
+            },
+        )
 
         if self.tracker and metrics:
             try:
@@ -679,6 +700,7 @@ class RetrainingPipeline:
                 validation_window=validation_window,
             )
         )
+        validate_asset_contract("model_evaluation_metrics", metrics)
 
         return model, metrics
 

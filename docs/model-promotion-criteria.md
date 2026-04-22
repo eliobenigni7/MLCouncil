@@ -49,3 +49,11 @@ Prima della promozione verificare:
 - promotion gate verde
 - documentazione del candidato aggiornata
 - nessun blocker aperto nei controlli operativi Fase 3-4
+
+## Workflow di promozione (Fase 5)
+
+1. aprire issue `Model promotion review` con metriche e prove richieste
+2. aprire PR con template completo (`.github/pull_request_template.md`)
+3. verificare presenza sidecar `.manifest` per artifact critici (checkpoint, backtest/report operativi)
+4. ottenere review su superfici sensibili secondo `CODEOWNERS`
+5. registrare eventuale decisione architetturale in ADR se cambia policy/gate

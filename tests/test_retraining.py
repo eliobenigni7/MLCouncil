@@ -122,3 +122,18 @@ def test_train_candidate_model_emits_phase3_breakdowns(monkeypatch):
     assert "equal_weight_sharpe_delta" in metrics
     assert "equal_weight_cagr_delta" in metrics
     assert "regime_count" in metrics
+
+
+def test_model_registry_save_model_writes_manifest(tmp_path):
+    from data.retraining import ModelRegistry
+
+    registry = ModelRegistry(checkpoints_dir=tmp_path)
+    saved = registry.save_model(
+        model={"coef": [1.0, 2.0], "bias": 0.5},
+        name="lgbm",
+        version="20260422_120000",
+        metrics=None,
+    )
+
+    assert saved.exists()
+    assert (tmp_path / "lgbm_20260422_120000.pkl.manifest").exists()

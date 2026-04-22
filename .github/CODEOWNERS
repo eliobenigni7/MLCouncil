@@ -1,0 +1,13 @@
+# Default ownership
+* @eliob
+
+# Sensitive surfaces require explicit review ownership
+/api/auth.py @eliob
+/api/main.py @eliob
+/api/services/trading_service.py @eliob
+/council/portfolio.py @eliob
+/council/risk_engine.py @eliob
+/execution/ @eliob
+/data/pipeline.py @eliob
+/data/contracts.py @eliob
+/runtime_env.py @eliob

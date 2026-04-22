@@ -779,3 +779,38 @@ class TestTradingService:
         assert submitted_qty == pytest.approx(5500.0 / 70000.0)
         assert submitted_qty > 0
         assert result["orders_submitted"] == 1
+
+    def test_write_operations_persists_manifest_sidecar(self):
+        from api.services import trading_service as ts
+
+        svc = _make_service()
+        payload = {
+            "date": "2026-04-22",
+            "trade_status": "success",
+            "runtime_profile": "paper",
+            "paused": False,
+            "paper": True,
+            "paper_guard_ok": True,
+            "orders_generated": 1,
+            "orders_submitted": 1,
+            "orders_rejected": 0,
+            "liquidations": 0,
+            "lineage": {"pipeline_run_id": "run-001"},
+            "pretrade": {"blocked": False, "order_count": 1},
+            "reconciliation": {"date": "2026-04-22"},
+            "warnings": [],
+            "errors": [],
+            "started_at": "2026-04-22T12:00:00+00:00",
+            "completed_at": "2026-04-22T12:00:01+00:00",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_ops_dir = ts.OPERATIONS_DIR
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            try:
+                written = svc._write_operations("2026-04-22", payload)
+                assert written.exists()
+                assert Path(str(written) + ".manifest").exists()
+            finally:
+                ts.OPERATIONS_DIR = original_ops_dir

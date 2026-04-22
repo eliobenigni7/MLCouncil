@@ -1,5 +1,6 @@
 const API_BASE = '/api';
 let refreshInterval;
+let latestHealth = null;
 
 async function fetchAPI(endpoint) {
     const resp = await fetch(`${API_BASE}${endpoint}`);
@@ -68,6 +69,7 @@ document.querySelectorAll('.sidebar nav a').forEach(link => {
 async function refreshOverview() {
     try {
         const health = await fetchAPI('/health');
+        latestHealth = health;
         const kpis = [];
         
         kpis.push(`
@@ -90,13 +92,57 @@ async function refreshOverview() {
                     <div class="kpi-value ${health.components.arctic_store === 'ok' ? 'ok' : 'warning'}">${health.components.arctic_store || '--'}</div>
                 </div>
             `);
+            kpis.push(`
+                <div class="kpi-card">
+                    <div class="kpi-label">Runtime Profile</div>
+                    <div class="kpi-value ${health.runtime_env?.status === 'valid' ? 'ok' : 'error'}">${(health.runtime_env?.profile || '--').toUpperCase()}</div>
+                </div>
+            `);
+            kpis.push(`
+                <div class="kpi-card">
+                    <div class="kpi-label">Trading Ops</div>
+                    <div class="kpi-value ${health.trading_operations?.status === 'success' ? 'ok' : 'warning'}">${health.trading_operations?.status || '--'}</div>
+                </div>
+            `);
         }
-        
+
         document.getElementById('status-kpis').innerHTML = kpis.join('');
+        renderOperatorBanner(health);
     } catch (e) {
         console.error('Failed to refresh overview:', e);
         document.getElementById('status-kpis').innerHTML = '<div class="kpi-card"><div class="kpi-value error">Connection Error</div></div>';
     }
+}
+
+function renderOperatorBanner(health) {
+    const banner = document.getElementById('operator-banner');
+    if (!banner) return;
+
+    const runtimeInvalid = health.runtime_env?.status === 'invalid';
+    const opsStatus = String(health.trading_operations?.status || '').toLowerCase();
+    const opsRisk = ['blocked', 'degraded', 'error'].includes(opsStatus);
+    const paused = Boolean(health.trading_operations?.paused);
+
+    if (runtimeInvalid) {
+        banner.className = 'operator-banner error';
+        banner.textContent = 'Runtime profile is invalid. Fix config/runtime.env mismatches before running pipeline or trading actions.';
+        return;
+    }
+
+    if (opsRisk) {
+        banner.className = 'operator-banner warning';
+        banner.textContent = `Last trading operation status is ${opsStatus || 'unknown'}. Review Trading and Monitoring panels before new executions.`;
+        return;
+    }
+
+    if (paused) {
+        banner.className = 'operator-banner warning';
+        banner.textContent = 'Kill switch is active: trading automation is paused.';
+        return;
+    }
+
+    banner.className = 'operator-banner hidden';
+    banner.textContent = '';
 }
 
 async function refreshPipelineStatus() {
@@ -123,6 +169,12 @@ async function refreshPipelinePartitionDefault() {
 
 document.getElementById('trigger-btn').addEventListener('click', async () => {
     const partition = document.getElementById('run-partition').value || null;
+    const profile = latestHealth?.runtime_env?.profile || 'unknown';
+    const partitionLabel = partition || 'latest available partition';
+    const confirmMessage = `Confirm pipeline run for ${partitionLabel} (runtime profile: ${profile})?`;
+    if (!window.confirm(confirmMessage)) {
+        return;
+    }
     const btn = document.getElementById('trigger-btn');
     btn.disabled = true;
     btn.textContent = 'Starting...';
@@ -420,6 +472,11 @@ async function loadPendingOrders(date) {
 document.getElementById('execute-btn').addEventListener('click', async () => {
     const date = document.getElementById('trading-order-date').value;
     if (!date) return;
+    const profile = latestHealth?.runtime_env?.profile || 'unknown';
+    const confirmMessage = `Execute pending orders for ${date} (runtime profile: ${profile})?`;
+    if (!window.confirm(confirmMessage)) {
+        return;
+    }
     
     const btn = document.getElementById('execute-btn');
     if (btn.disabled) return;

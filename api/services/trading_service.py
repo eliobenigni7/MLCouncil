@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
 
+from council.artifacts import write_artifact_manifest
+from data.contracts import validate_asset_contract
 from runtime_env import get_runtime_profile, get_trading_settings
 
 if TYPE_CHECKING:
@@ -903,8 +905,16 @@ class TradingService:
             returns=returns,
             portfolio_value=portfolio_value,
         )
+        risk_payload = report.to_dict()
+        validate_asset_contract("risk_report", risk_payload)
         risk_mod.RISK_DIR.mkdir(parents=True, exist_ok=True)
         path = self.risk_engine.save_report(report, date=date)
+        write_artifact_manifest(
+            path,
+            artifact_type="risk_report",
+            lineage={"execution_date": date},
+            metadata={"breach_count": len(report.breaches)},
+        )
         breaches = [
             {
                 "limit_name": breach.limit_name,
@@ -997,9 +1007,19 @@ class TradingService:
         }
 
     def _write_operations(self, date: str, data: dict[str, Any]) -> Path:
+        validate_asset_contract("operations_report", data)
         OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = OPERATIONS_DIR / f"{date}.json"
         path.write_text(json.dumps(data, indent=2, default=str))
+        write_artifact_manifest(
+            path,
+            artifact_type="operations_report",
+            lineage=data.get("lineage") if isinstance(data.get("lineage"), dict) else {},
+            metadata={
+                "trade_status": data.get("trade_status", "unknown"),
+                "date": data.get("date", date),
+            },
+        )
         return path
 
     def _execution_record_path(self, date: str) -> Path:
@@ -1016,10 +1036,20 @@ class TradingService:
         return payload if isinstance(payload, dict) else None
 
     def _write_execution_record(self, date: str, data: dict[str, Any]) -> Path:
+        validate_asset_contract("operations_report", data)
         OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = self._execution_record_path(date)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, default=str))
+        write_artifact_manifest(
+            path,
+            artifact_type="execution_record",
+            lineage=data.get("lineage") if isinstance(data.get("lineage"), dict) else {},
+            metadata={
+                "trade_status": data.get("trade_status", "unknown"),
+                "date": data.get("date", date),
+            },
+        )
         return path
 
     def _intraday_execution_record_path(self, decision_id: str) -> Path:
@@ -1044,12 +1074,31 @@ class TradingService:
         path = self._intraday_execution_record_path(decision_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, default=str))
+        write_artifact_manifest(
+            path,
+            artifact_type="intraday_execution_record",
+            lineage=data.get("lineage") if isinstance(data.get("lineage"), dict) else {},
+            metadata={
+                "decision_id": decision_id,
+                "execution_status": data.get("execution_status", "unknown"),
+            },
+        )
         return path
 
     def _write_intraday_operations(self, execution_id: str, data: dict[str, Any]) -> Path:
+        validate_asset_contract("operations_report", data)
         INTRADAY_OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = INTRADAY_OPERATIONS_DIR / f"{execution_id}.json"
         path.write_text(json.dumps(data, indent=2, default=str))
+        write_artifact_manifest(
+            path,
+            artifact_type="intraday_operations_report",
+            lineage=data.get("lineage") if isinstance(data.get("lineage"), dict) else {},
+            metadata={
+                "trade_status": data.get("trade_status", "unknown"),
+                "date": data.get("date", execution_id),
+            },
+        )
         return path
 
     def _log_trade(self, date: str, data: dict) -> None:

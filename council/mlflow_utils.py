@@ -24,6 +24,8 @@ from typing import Mapping, Optional
 import pandas as pd
 from runtime_env import load_runtime_env
 
+from data.contracts import validate_asset_contract
+
 load_runtime_env()
 
 _MLFLOW_AVAILABLE = True
@@ -429,4 +431,5 @@ def log_backtest_result(
             "gross_final_equity": float(getattr(result, "stats", {}).get("gross_final_equity", 0.0)),
             "net_final_equity": float(getattr(result, "stats", {}).get("final_equity", 0.0)),
         }
+        validate_asset_contract("backtest_metrics", metrics)
         mlflow.log_metrics(metrics)

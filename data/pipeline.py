@@ -30,7 +30,8 @@ import yaml
 import dagster as dg
 from dagster import AssetExecutionContext, RunFailureSensorContext
 
-from data.contracts import validate_asset_contract, version_payload
+from council.artifacts import write_artifact_manifest
+from data.contracts import LINEAGE_COLUMNS, validate_asset_contract, version_payload
 from data.lineage import (
     attach_lineage,
     build_feature_lineage,
@@ -880,6 +881,14 @@ def train_hmm(context: AssetExecutionContext) -> dict:
     # Salva checkpoint con hash
     checkpoint_path = _CHECKPOINTS / "hmm_latest.pkl"
     regime_model.save(str(checkpoint_path))
+    write_artifact_manifest(
+        checkpoint_path,
+        artifact_type="model_checkpoint",
+        metadata={
+            "model_name": "hmm",
+            "n_observations": int(macro.shape[0]),
+        },
+    )
     context.log.info(f"train_hmm: checkpoint salvato in {checkpoint_path}")
 
     # Genera regime history per la dashboard
@@ -888,6 +897,11 @@ def train_hmm(context: AssetExecutionContext) -> dict:
         history_path = _RESULTS_DIR / "regime_history.parquet"
         _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         history_df.to_parquet(history_path, index=False)
+        write_artifact_manifest(
+            history_path,
+            artifact_type="regime_history",
+            metadata={"row_count": int(len(history_df))},
+        )
         context.log.info(
             f"train_hmm: regime_history salvato in {history_path} "
             f"({len(history_df)} righe)"
@@ -990,6 +1004,15 @@ def council_signal(
         model_version=hmm_version,
     )
     combined = attach_lineage(combined, **lineage)
+    signal_payload = pd.DataFrame(
+        {
+            "ticker": list(combined.index),
+            "council_signal": combined.values,
+        }
+    )
+    for key, values in dataframe_lineage_columns(lineage, len(signal_payload)).items():
+        signal_payload[key] = values
+    _record_asset_metadata(context, "council_signal", signal_payload, partition_date, lineage)
     context.log.info(
         f"council_signal [{partition_date}]: {len(combined)} ticker | "
         f"regime={current_regime}"
@@ -1040,7 +1063,13 @@ def save_council_results(
 
     # Salva stato aggregator
     _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    aggregator.save(str(_RESULTS_DIR / "aggregator.pkl"))
+    aggregator_path = _RESULTS_DIR / "aggregator.pkl"
+    aggregator.save(str(aggregator_path))
+    write_artifact_manifest(
+        aggregator_path,
+        artifact_type="aggregator_state",
+        metadata={"partition_date": partition_date},
+    )
 
     # Salva attribution parquet
     if not aggregator._weights_log:
@@ -1079,6 +1108,14 @@ def save_council_results(
                 "ic_rolling_30d", "sharpe_rolling_60d", "pnl_contribution",
             ])
             attr_df.to_parquet(_RESULTS_DIR / "attribution.parquet", index=False)
+            write_artifact_manifest(
+                _RESULTS_DIR / "attribution.parquet",
+                artifact_type="model_attribution",
+                metadata={
+                    "partition_date": partition_date,
+                    "row_count": int(len(attr_df)),
+                },
+            )
             context.log.info(
                 f"save_council_results [{partition_date}]: "
                 f"attribution.parquet scritto ({len(attr_df)} righe)"
@@ -1140,6 +1177,11 @@ def save_regime_results(
     import json
     with open(_RESULTS_DIR / "current_regime.json", "w") as f:
         json.dump(regime_payload, f, indent=2, default=str)
+    write_artifact_manifest(
+        _RESULTS_DIR / "current_regime.json",
+        artifact_type="regime_snapshot",
+        metadata={"partition_date": partition_date},
+    )
     context.log.info(
         f"save_regime_results [{partition_date}]: "
         f"current_regime.json written (regime={current_regime})"
@@ -1162,6 +1204,14 @@ def save_regime_results(
                 if "date" in hist_df.columns:
                     hist_df["date"] = pd.to_datetime(hist_df["date"])
                 hist_df.to_parquet(_RESULTS_DIR / "regime_history.parquet", index=False)
+                write_artifact_manifest(
+                    _RESULTS_DIR / "regime_history.parquet",
+                    artifact_type="regime_history",
+                    metadata={
+                        "partition_date": partition_date,
+                        "row_count": int(len(hist_df)),
+                    },
+                )
                 context.log.info(
                     f"save_regime_results [{partition_date}]: "
                     f"regime_history.parquet written ({len(hist_df)} righe)"
@@ -1198,8 +1248,19 @@ def portfolio_weights(
         )
         empty = pd.Series(dtype=float, name="target_weight")
         lineage = extract_lineage(council_signal)
+        empty = attach_lineage(empty, **lineage)
+        empty_payload = pd.DataFrame(
+            columns=["ticker", "target_weight", *LINEAGE_COLUMNS]
+        )
+        _record_asset_metadata(
+            context,
+            "portfolio_weights",
+            empty_payload,
+            partition_date,
+            lineage,
+        )
         context.add_output_metadata(lineage_artifact_payload(lineage, position_count=0))
-        return attach_lineage(empty, **lineage)
+        return empty
 
     tickers = council_signal.index.tolist()
 
@@ -1257,12 +1318,28 @@ def portfolio_weights(
         )
 
     weights = attach_lineage(weights.rename("target_weight"), **extract_lineage(council_signal))
+    weights_lineage = extract_lineage(weights)
+    weights_payload = pd.DataFrame(
+        {
+            "ticker": list(weights.index),
+            "target_weight": weights.values,
+        }
+    )
+    for key, values in dataframe_lineage_columns(weights_lineage, len(weights_payload)).items():
+        weights_payload[key] = values
+    _record_asset_metadata(
+        context,
+        "portfolio_weights",
+        weights_payload,
+        partition_date,
+        weights_lineage,
+    )
     context.log.info(
         f"portfolio_weights [{partition_date}]: {len(weights)} posizioni | "
         f"top3={weights.nlargest(3).round(3).to_dict()}"
     )
     context.add_output_metadata(
-        lineage_artifact_payload(extract_lineage(weights), position_count=len(weights))
+        lineage_artifact_payload(weights_lineage, position_count=len(weights))
     )
     return weights
 
@@ -1299,7 +1376,15 @@ def daily_orders(
         empty_orders = pd.DataFrame(
             columns=["ticker", "direction", "quantity", "target_weight", *dataframe_lineage_columns(lineage, 0).keys()]
         )
-        empty_orders.to_parquet(_ORDERS_DIR / f"{partition_date}.parquet", index=False)
+        empty_path = _ORDERS_DIR / f"{partition_date}.parquet"
+        empty_orders.to_parquet(empty_path, index=False)
+        if empty_path.exists():
+            write_artifact_manifest(
+                empty_path,
+                artifact_type="daily_orders",
+                lineage=lineage,
+                metadata={"partition_date": partition_date, "row_count": 0},
+            )
         _record_asset_metadata(context, "daily_orders", empty_orders, partition_date, lineage)
         return empty_orders
 
@@ -1320,6 +1405,13 @@ def daily_orders(
     out_path = _ORDERS_DIR / f"{partition_date}.parquet"
     _record_asset_metadata(context, "daily_orders", orders, partition_date, lineage)
     orders.to_parquet(out_path, index=False)
+    if out_path.exists():
+        write_artifact_manifest(
+            out_path,
+            artifact_type="daily_orders",
+            lineage=lineage,
+            metadata={"partition_date": partition_date, "row_count": int(len(orders))},
+        )
     if not orders.empty:
         context.log.info(
             f"daily_orders [{partition_date}]: "
@@ -1542,6 +1634,50 @@ def sentiment_features_contract(sentiment_features: pl.DataFrame) -> dg.AssetChe
 
 
 @dg.asset_check(
+    asset=council_signal,
+    name="council_signal_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
+def council_signal_contract(council_signal: pd.Series) -> dg.AssetCheckResult:
+    lineage = extract_lineage(council_signal)
+    if council_signal.empty:
+        payload = pd.DataFrame(columns=["ticker", "council_signal", *LINEAGE_COLUMNS])
+    else:
+        payload = pd.DataFrame(
+            {
+                "ticker": list(council_signal.index),
+                "council_signal": council_signal.values,
+            }
+        )
+        for key, values in dataframe_lineage_columns(lineage, len(payload)).items():
+            payload[key] = values
+    return _contract_check_result("council_signal", payload)
+
+
+@dg.asset_check(
+    asset=portfolio_weights,
+    name="portfolio_weights_contract",
+    blocking=True,
+    partitions_def=_DAILY_PARTITIONS,
+)
+def portfolio_weights_contract(portfolio_weights: pd.Series) -> dg.AssetCheckResult:
+    lineage = extract_lineage(portfolio_weights)
+    if portfolio_weights.empty:
+        payload = pd.DataFrame(columns=["ticker", "target_weight", *LINEAGE_COLUMNS])
+    else:
+        payload = pd.DataFrame(
+            {
+                "ticker": list(portfolio_weights.index),
+                "target_weight": portfolio_weights.values,
+            }
+        )
+        for key, values in dataframe_lineage_columns(lineage, len(payload)).items():
+            payload[key] = values
+    return _contract_check_result("portfolio_weights", payload)
+
+
+@dg.asset_check(
     asset=daily_orders,
     name="daily_orders_contract",
     blocking=True,
@@ -1558,6 +1694,8 @@ defs = dg.Definitions(
     asset_checks=[
         alpha158_features_contract,
         sentiment_features_contract,
+        council_signal_contract,
+        portfolio_weights_contract,
         daily_orders_contract,
     ],
     jobs=[daily_job, train_hmm_job],

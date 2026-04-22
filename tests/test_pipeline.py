@@ -137,6 +137,21 @@ def test_contract_registry_covers_phase1_assets():
     assert expected.issubset(ASSET_CONTRACTS.keys())
 
 
+def test_contract_registry_covers_phase5_governance_payloads():
+    """I contratti includono anche payload operativi/governance della Fase 5."""
+    from data.contracts import ASSET_CONTRACTS
+
+    expected = {
+        "council_signal",
+        "portfolio_weights",
+        "operations_report",
+        "risk_report",
+        "backtest_metrics",
+        "model_evaluation_metrics",
+    }
+    assert expected.issubset(ASSET_CONTRACTS.keys())
+
+
 def test_raw_ohlcv_contract_rejects_duplicate_rows():
     """Il contratto raw_ohlcv rifiuta chiavi duplicate ticker+valid_time."""
     from data.contracts import validate_asset_contract
@@ -177,6 +192,21 @@ def test_daily_orders_contract_requires_lineage_columns():
 
     with pytest.raises(ValueError, match="pipeline_run_id"):
         validate_asset_contract("daily_orders", df, partition_date="2024-01-15")
+
+
+def test_portfolio_weights_contract_requires_lineage_columns():
+    """I pesi devono includere il lineage obbligatorio per audit/rollback."""
+    from data.contracts import validate_asset_contract
+
+    df = pd.DataFrame(
+        {
+            "ticker": ["AAPL"],
+            "target_weight": [0.25],
+        }
+    )
+
+    with pytest.raises(ValueError, match="pipeline_run_id"):
+        validate_asset_contract("portfolio_weights", df, partition_date="2024-01-15")
 
 
 def test_raw_macro_contract_accepts_latest_available_before_partition():
@@ -476,6 +506,7 @@ class TestQualityChecks:
 
         stored = pd.read_parquet(tmp_path / "2024-01-15.parquet")
         assert expected_cols.issubset(stored.columns)
+        assert (tmp_path / "2024-01-15.parquet.manifest").exists()
 
     def test_insufficient_features_fails(self):
         """AssertionError se il builder produce meno delle feature minime richieste."""

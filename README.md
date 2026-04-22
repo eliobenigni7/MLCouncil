@@ -629,10 +629,12 @@ MLCouncil/
 - [docs/fase2-realism.md](docs/fase2-realism.md) — Transaction cost model, gross/net metrics, walk-forward + PBO gate
 - [docs/fase3-operational-controls.md](docs/fase3-operational-controls.md) — Pre-trade controls, kill switch, risk artifacts
 - [docs/fase4-hardening.md](docs/fase4-hardening.md) — Runtime profile validation, health surface, test coverage
+- [docs/fase5-governance.md](docs/fase5-governance.md) — Artifact manifests, expanded contracts, review/process governance, safer operator UX
 
 ### Operations
 - [docs/paper-trading-runbook.md](docs/paper-trading-runbook.md) — Daily operator workflow, triage guide
 - [docs/model-promotion-criteria.md](docs/model-promotion-criteria.md) — Promotion gates and qualitative checklist
+- [docs/adr/README.md](docs/adr/README.md) — ADR workflow and template for major design/process decisions
 
 ---
 
