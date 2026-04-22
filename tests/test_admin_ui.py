@@ -1,6 +1,7 @@
 import sys
 import types
 import warnings
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,3 +128,44 @@ def test_admin_api_fails_closed_in_paper_profile_without_key():
         with pytest.raises(RuntimeError, match="MLCOUNCIL_API_KEY is required"):
             with TestClient(app, raise_server_exceptions=False):
                 pass
+
+
+def test_admin_js_no_legacy_unsafe_interpolation_in_high_risk_sections():
+    admin_js = Path(__file__).resolve().parents[1] / "api" / "static" / "js" / "admin.js"
+    text = admin_js.read_text(encoding="utf-8")
+
+    assert "tbody.innerHTML = orders.map" not in text
+    assert "histBody.innerHTML = history.trades.map" not in text
+    assert "tbody.innerHTML = resp.orders.map" not in text
+    assert "div.innerHTML = `" not in text
+
+
+def test_admin_js_disables_execute_when_trading_paused_or_nonpaper_runtime():
+    admin_js = Path(__file__).resolve().parents[1] / "api" / "static" / "js" / "admin.js"
+    text = admin_js.read_text(encoding="utf-8")
+
+    assert "status.paused || status.kill_switch_active" in text
+    assert "Execute Orders is only available in paper runtime profile" in text
+
+
+def test_admin_ui_includes_api_key_storage_and_sends_header():
+    admin_html = Path(__file__).resolve().parents[1] / "api" / "templates" / "admin.html"
+    admin_js = Path(__file__).resolve().parents[1] / "api" / "static" / "js" / "admin.js"
+
+    html_text = admin_html.read_text(encoding="utf-8")
+    js_text = admin_js.read_text(encoding="utf-8")
+
+    assert "id=\"api-key\"" in html_text
+    assert "localStorage.getItem('mlcouncil_api_key')" in js_text
+    assert "X-API-Key" in js_text
+    assert "localStorage.setItem('mlcouncil_api_key'" in js_text
+
+
+def test_admin_js_update_single_setting_uses_supplied_value():
+    admin_js = Path(__file__).resolve().parents[1] / "api" / "static" / "js" / "admin.js"
+    text = admin_js.read_text(encoding="utf-8")
+
+    assert "async function updateSingleSetting(key, value)" in text
+    assert "const values = {};" in text
+    assert "values[key] = value;" in text
+    assert "JSON.stringify({values})" in text

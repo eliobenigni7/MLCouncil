@@ -100,6 +100,11 @@
                     <p class="section-copy">
                         Shared credentials and endpoints saved in <code>config/runtime.env</code> for the local system.
                     </p>
+                    <div class="settings-field" style="margin-bottom: 1rem;">
+                        <label for="api-key">Admin API Key</label>
+                        <input id="api-key" type="password" autocomplete="off" placeholder="Optional; stored in this browser">
+                        <div class="settings-help">Used as <code>X-API-Key</code> on admin API calls when set.</div>
+                    </div>
                     <form id="settings-form-shell">
                         <div id="settings-form" class="settings-grid"></div>
                         <div class="settings-actions">

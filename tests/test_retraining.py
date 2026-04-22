@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 def test_model_validator_rejects_candidate_with_high_pbo():
@@ -165,6 +166,23 @@ def test_model_registry_save_model_writes_manifest(tmp_path):
     assert (tmp_path / "lgbm_20260422_120000.pkl.manifest").exists()
 
 
+def test_model_registry_save_model_defaults_environment_from_runtime_profile(tmp_path, monkeypatch):
+    from data.retraining import ModelRegistry
+    import json
+
+    monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "local")
+
+    registry = ModelRegistry(checkpoints_dir=tmp_path)
+    registry.save_model(
+        model={"coef": [1.0]},
+        name="lgbm",
+        version="20260422_120000",
+    )
+
+    manifest = json.loads((tmp_path / "lgbm_20260422_120000.pkl.manifest").read_text(encoding="utf-8"))
+    assert manifest["metadata"]["environment"] == "local"
+
+
 def test_model_registry_deploy_latest_creates_latest_copy(tmp_path):
     from data.retraining import ModelRegistry
 
@@ -182,6 +200,24 @@ def test_model_registry_deploy_latest_creates_latest_copy(tmp_path):
 
     loaded = registry.load_latest("lgbm")
     assert loaded == {"version": 2}
+    assert (tmp_path / "lgbm_latest.pkl.manifest").exists()
+
+
+def test_model_registry_deploy_latest_manifest_points_to_alias_artifact(tmp_path):
+    from data.retraining import ModelRegistry
+    import json
+
+    registry = ModelRegistry(checkpoints_dir=tmp_path)
+    registry.save_model(model={"version": 3}, name="lgbm", version="20260422_140000")
+
+    assert registry.deploy_latest("lgbm")
+
+    manifest = json.loads((tmp_path / "lgbm_latest.pkl.manifest").read_text(encoding="utf-8"))
+    assert manifest["artifact_type"] == "model_alias"
+    assert manifest["lineage"]["source_artifact"] == "lgbm_20260422_140000.pkl"
+    assert manifest["metadata"]["alias_target"] == "lgbm_20260422_140000.pkl"
+    assert "sha256" in manifest
+    assert "config_hash" in manifest
 
 
 def test_model_registry_deploy_latest_ignores_existing_latest_alias(tmp_path):
@@ -200,3 +236,18 @@ def test_model_registry_deploy_latest_ignores_existing_latest_alias(tmp_path):
 
     loaded = registry.load_latest("lgbm")
     assert loaded == {"version": 2}
+
+
+def test_model_registry_deploy_latest_raises_when_alias_manifest_fails(tmp_path, monkeypatch):
+    from data.retraining import ModelRegistry
+
+    registry = ModelRegistry(checkpoints_dir=tmp_path)
+    registry.save_model(model={"version": 3}, name="lgbm", version="20260422_140000")
+
+    monkeypatch.setattr("data.retraining.write_artifact_manifest", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="Failed to write alias manifest"):
+        registry.deploy_latest("lgbm")
+
+    assert not (tmp_path / "lgbm_latest.pkl").exists()
+    assert not (tmp_path / "lgbm_latest.pkl.manifest").exists()

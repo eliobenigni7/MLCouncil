@@ -2,8 +2,30 @@ const API_BASE = '/api';
 let refreshInterval;
 let latestHealth = null;
 
+function getApiKey() {
+    return localStorage.getItem('mlcouncil_api_key') || '';
+}
+
+function setApiKey(value) {
+    const apiKey = (value || '').trim();
+    if (apiKey) {
+        localStorage.setItem('mlcouncil_api_key', apiKey);
+    } else {
+        localStorage.removeItem('mlcouncil_api_key');
+    }
+}
+
+function buildApiHeaders(extraHeaders = {}) {
+    const headers = {...extraHeaders};
+    const apiKey = getApiKey();
+    if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+    }
+    return headers;
+}
+
 async function fetchAPI(endpoint) {
-    const resp = await fetch(`${API_BASE}${endpoint}`);
+    const resp = await fetch(`${API_BASE}${endpoint}`, {headers: buildApiHeaders()});
     if (!resp.ok) throw new Error(`API error: ${resp.status}`);
     return resp.json();
 }
@@ -11,7 +33,7 @@ async function fetchAPI(endpoint) {
 async function postAPI(endpoint, data) {
     const resp = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: buildApiHeaders({'Content-Type': 'application/json'}),
         body: JSON.stringify(data)
     });
     if (!resp.ok) {
@@ -39,7 +61,21 @@ function statusBadge(status) {
         'unreachable': 'badge-error',
         'no_runs': 'badge-warning'
     };
-    return `<span class="badge ${map[status] || ''}">${status}</span>`;
+    return `<span class="badge ${map[status] || ''}">${escapeHtml(status)}</span>`;
+}
+
+function setTableRows(tbody, rows) {
+    tbody.replaceChildren(...rows);
+}
+
+function makeEmptyRow(colspan, message) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = colspan;
+    td.style.color = 'var(--text-secondary)';
+    td.textContent = message;
+    tr.appendChild(td);
+    return tr;
 }
 
 function showToast(message, type = 'success') {
@@ -97,6 +133,12 @@ document.querySelectorAll('.sidebar nav a').forEach(link => {
         document.getElementById(link.dataset.page).classList.add('active');
     });
 });
+
+const apiKeyInput = document.getElementById('api-key');
+if (apiKeyInput) {
+    apiKeyInput.value = getApiKey();
+    apiKeyInput.addEventListener('input', (e) => setApiKey(e.target.value));
+}
 
 async function refreshOverview() {
     try {
@@ -232,20 +274,27 @@ async function refreshPortfolio() {
         const entries = Object.entries(weights);
         
         if (entries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="2" style="color: var(--text-secondary);">No weights data</td></tr>';
+            setTableRows(tbody, [makeEmptyRow(2, 'No weights data')]);
         } else {
-            tbody.innerHTML = entries
-                .map(([ticker, weight]) => `<tr><td>${ticker}</td><td>${(weight * 100).toFixed(1)}%</td></tr>`)
-                .join('');
+            const rows = entries.map(([ticker, weight]) => {
+                const tr = document.createElement('tr');
+                const tdTicker = document.createElement('td');
+                tdTicker.textContent = ticker;
+                const tdWeight = document.createElement('td');
+                tdWeight.textContent = `${(weight * 100).toFixed(1)}%`;
+                tr.append(tdTicker, tdWeight);
+                return tr;
+            });
+            setTableRows(tbody, rows);
         }
         
         const dates = await fetchAPI('/portfolio/orders/dates');
         const select = document.getElementById('order-date-select');
         
         if (dates.length === 0) {
-            select.innerHTML = '<option value="">No orders</option>';
+            select.replaceChildren(Object.assign(document.createElement('option'), {value: '', textContent: 'No orders'}));
         } else {
-            select.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
+            select.replaceChildren(...dates.map(d => Object.assign(document.createElement('option'), {value: d, textContent: d})));
             if (dates.length > 0) {
                 loadOrdersForDate(dates[dates.length - 1]);
             }
@@ -261,16 +310,17 @@ async function loadOrdersForDate(date) {
         const tbody = document.querySelector('#orders-table tbody');
         
         if (orders.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="color: var(--text-secondary);">No orders</td></tr>';
+            setTableRows(tbody, [makeEmptyRow(4, 'No orders')]);
         } else {
-            tbody.innerHTML = orders.map(o => `
-                <tr>
-                    <td>${o.ticker}</td>
-                    <td>${o.direction}</td>
-                    <td>$${(o.quantity || 0).toFixed(0)}</td>
-                    <td>${((o.target_weight || 0) * 100).toFixed(1)}%</td>
-                </tr>
-            `).join('');
+            setTableRows(tbody, orders.map(o => {
+                const tr = document.createElement('tr');
+                [o.ticker, o.direction, `$${(o.quantity || 0).toFixed(0)}`, `${((o.target_weight || 0) * 100).toFixed(1)}%`].forEach(value => {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+                return tr;
+            }));
         }
     } catch (e) {
         console.error('Failed to load orders:', e);
@@ -293,17 +343,21 @@ async function refreshMonitoring() {
         const settingsForm = document.getElementById('settings-form');
         
         if (alerts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="color: var(--text-secondary);">No active alerts</td></tr>';
+            setTableRows(tbody, [makeEmptyRow(5, 'No active alerts')]);
         } else {
-            tbody.innerHTML = alerts.map(a => `
-                <tr>
-                    <td>${statusBadge(a.severity)}</td>
-                    <td>${a.model_name}</td>
-                    <td>${a.check_type}</td>
-                    <td>${a.message}</td>
-                    <td>${a.timestamp || '--'}</td>
-                </tr>
-            `).join('');
+            setTableRows(tbody, alerts.map(a => {
+                const tr = document.createElement('tr');
+                const cells = [null, a.model_name, a.check_type, a.message, a.timestamp || '--'];
+                const severityCell = document.createElement('td');
+                severityCell.innerHTML = statusBadge(a.severity);
+                tr.appendChild(severityCell);
+                cells.slice(1).forEach(value => {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+                return tr;
+            }));
         }
 
         settingsForm.innerHTML = settingsPayload.settings.map(setting => `
@@ -339,10 +393,12 @@ async function refreshMonitoring() {
 }
 
 async function updateSingleSetting(key, value) {
+    const values = {};
+    values[key] = value;
     const response = await fetch(`${API_BASE}/monitoring/settings`, {
         method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({values: {[key]: value}})
+        headers: buildApiHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({values})
     });
     if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
@@ -369,7 +425,7 @@ async function saveMonitoringSettings(event) {
     try {
         const response = await fetch(`${API_BASE}/monitoring/settings`, {
             method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
+            headers: buildApiHeaders({'Content-Type': 'application/json'}),
             body: JSON.stringify({values})
         });
         if (!response.ok) {
@@ -407,25 +463,44 @@ async function refreshTrading() {
         const statusKpis = document.getElementById('trading-status-kpis');
         const executeBtn = document.getElementById('execute-btn');
         let executeDisabledReason = '';
+        const runtimeStatus = String(status.runtime_profile || '').toLowerCase();
         
         if (!status.connected) {
-            statusKpis.innerHTML = `<div class="kpi-card"><div class="kpi-value error">Disconnected</div><div class="kpi-label">${status.error || 'Check Alpaca config'}</div></div>`;
+            statusKpis.innerHTML = '';
+            const card = document.createElement('div');
+            card.className = 'kpi-card';
+            card.innerHTML = '<div class="kpi-value error">Disconnected</div>';
+            const label = document.createElement('div');
+            label.className = 'kpi-label';
+            label.textContent = status.error || 'Check Alpaca config';
+            card.appendChild(label);
+            statusKpis.appendChild(card);
             executeDisabledReason = status.error || 'Trading connection unavailable';
         } else {
-            statusKpis.innerHTML = `
-                <div class="kpi-card">
-                    <div class="kpi-label">Status</div>
-                    <div class="kpi-value ok">${status.paper ? 'Paper Trading' : 'Live'}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Buying Power</div>
-                    <div class="kpi-value">$${parseFloat(status.account?.buying_power || 0).toLocaleString()}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Portfolio Value</div>
-                    <div class="kpi-value">$${parseFloat(status.account?.portfolio_value || 0).toLocaleString()}</div>
-                </div>
-            `;
+            statusKpis.innerHTML = '';
+            const values = [
+                ['Status', status.paper ? 'Paper Trading' : 'Live'],
+                ['Buying Power', `$${parseFloat(status.account?.buying_power || 0).toLocaleString()}`],
+                ['Portfolio Value', `$${parseFloat(status.account?.portfolio_value || 0).toLocaleString()}`],
+            ];
+            values.forEach(([labelText, valueText], idx) => {
+                const card = document.createElement('div');
+                card.className = 'kpi-card';
+                const label = document.createElement('div');
+                label.className = 'kpi-label';
+                label.textContent = labelText;
+                const value = document.createElement('div');
+                value.className = idx === 0 ? 'kpi-value ok' : 'kpi-value';
+                value.textContent = valueText;
+                card.append(label, value);
+                statusKpis.appendChild(card);
+            });
+        }
+
+        if (status.paused || status.kill_switch_active || (runtimeStatus && runtimeStatus !== 'paper')) {
+            executeDisabledReason = executeDisabledReason || (status.paused || status.kill_switch_active
+                ? 'Trading is paused'
+                : 'Execute Orders is only available in paper runtime profile');
         }
 
         executeBtn.disabled = Boolean(executeDisabledReason);
@@ -433,23 +508,24 @@ async function refreshTrading() {
         
         const posBody = document.querySelector('#positions-table tbody');
         if (status.positions && status.positions.length > 0) {
-            posBody.innerHTML = status.positions.map(p => `
-                <tr>
-                    <td>${p.symbol}</td>
-                    <td>${p.qty}</td>
-                    <td>$${parseFloat(p.avg_price || 0).toFixed(2)}</td>
-                    <td>$${parseFloat(p.current_price || 0).toFixed(2)}</td>
-                    <td style="color: ${parseFloat(p.unrealized_pl || 0) >= 0 ? 'var(--ok)' : 'var(--error)'}">$${parseFloat(p.unrealized_pl || 0).toFixed(2)} (${parseFloat(p.unrealized_pl_pc || 0).toFixed(1)}%)</td>
-                </tr>
-            `).join('');
+            setTableRows(posBody, status.positions.map(p => {
+                const tr = document.createElement('tr');
+                const values = [p.symbol, p.qty, `$${parseFloat(p.avg_price || 0).toFixed(2)}`, `$${parseFloat(p.current_price || 0).toFixed(2)}`];
+                values.forEach(value => { const td = document.createElement('td'); td.textContent = value; tr.appendChild(td); });
+                const td = document.createElement('td');
+                td.style.color = parseFloat(p.unrealized_pl || 0) >= 0 ? 'var(--ok)' : 'var(--error)';
+                td.textContent = `$${parseFloat(p.unrealized_pl || 0).toFixed(2)} (${parseFloat(p.unrealized_pl_pc || 0).toFixed(1)}%)`;
+                tr.appendChild(td);
+                return tr;
+            }));
         } else {
-            posBody.innerHTML = '<tr><td colspan="5" style="color: var(--text-secondary);">No open positions</td></tr>';
+            setTableRows(posBody, [Object.assign(document.createElement('tr'), {innerHTML: '<td colspan="5" style="color: var(--text-secondary);">No open positions</td>'})]);
         }
         
         try {
             const latest = await fetchAPI('/trading/orders/latest');
             const select = document.getElementById('trading-order-date');
-            select.innerHTML = `<option value="${latest.date}">${latest.date}</option>`;
+            select.replaceChildren(Object.assign(document.createElement('option'), {value: latest.date, textContent: latest.date}));
             if (!executeDisabledReason) {
                 executeBtn.disabled = false;
                 executeBtn.title = '';
@@ -458,23 +534,21 @@ async function refreshTrading() {
         } catch (e) {
             executeBtn.disabled = true;
             executeBtn.title = 'No pending orders available';
-            document.querySelector('#pending-orders-table tbody').innerHTML = '<tr><td colspan="4" style="color: var(--text-secondary);">No orders found</td></tr>';
+            setTableRows(document.querySelector('#pending-orders-table tbody'), [makeEmptyRow(4, 'No orders found')]);
         }
         
         const history = await fetchAPI('/trading/history?days=7');
         const histBody = document.querySelector('#trade-history-table tbody');
         if (history.trades && history.trades.length > 0) {
-            histBody.innerHTML = history.trades.map(t => `
-                <tr>
-                    <td>${t.symbol || '--'}</td>
-                    <td>${t.side || '--'}</td>
-                    <td>${t.qty || '--'}</td>
-                    <td>${t.status || '--'}</td>
-                    <td>${t.submitted_at || '--'}</td>
-                </tr>
-            `).join('');
+            setTableRows(histBody, history.trades.map(t => {
+                const tr = document.createElement('tr');
+                [t.symbol || '--', t.side || '--', t.qty || '--', t.status || '--', t.submitted_at || '--'].forEach(value => {
+                    const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
+                });
+                return tr;
+            }));
         } else {
-            histBody.innerHTML = '<tr><td colspan="5" style="color: var(--text-secondary);">No trade history</td></tr>';
+            setTableRows(histBody, [makeEmptyRow(5, 'No trade history')]);
         }
     } catch (e) {
         console.error('Failed to refresh trading:', e);
@@ -487,16 +561,15 @@ async function loadPendingOrders(date) {
         const tbody = document.querySelector('#pending-orders-table tbody');
         
         if (resp.orders && resp.orders.length > 0) {
-            tbody.innerHTML = resp.orders.map(o => `
-                <tr>
-                    <td>${o.ticker}</td>
-                    <td>${(o.direction || 'buy').toUpperCase()}</td>
-                    <td>${((o.target_weight || 0) * 100).toFixed(1)}%</td>
-                    <td>$${((o.quantity || 0) * (o.price || 0)).toFixed(0)}</td>
-                </tr>
-            `).join('');
+            setTableRows(tbody, resp.orders.map(o => {
+                const tr = document.createElement('tr');
+                [o.ticker, (o.direction || 'buy').toUpperCase(), `${((o.target_weight || 0) * 100).toFixed(1)}%`, `$${((o.quantity || 0) * (o.price || 0)).toFixed(0)}`].forEach(value => {
+                    const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
+                });
+                return tr;
+            }));
         } else {
-            tbody.innerHTML = '<tr><td colspan="4" style="color: var(--text-secondary);">No pending orders</td></tr>';
+            setTableRows(tbody, [makeEmptyRow(4, 'No pending orders')]);
         }
     } catch (e) {
         console.error('Failed to load pending orders:', e);
@@ -520,14 +593,21 @@ document.getElementById('execute-btn').addEventListener('click', async () => {
     try {
         const result = await postAPI('/trading/execute', {date});
         const div = document.getElementById('execution-result');
-        div.innerHTML = `
-            <div style="padding: 1rem; background: var(--bg-secondary); border-radius: 4px;">
-                <strong>Execution complete:</strong><br>
-                Orders submitted: ${result.orders_submitted}<br>
-                Orders rejected: ${result.orders_rejected}<br>
-                Liquidations: ${result.liquidations}
-            </div>
-        `;
+        div.replaceChildren();
+        const box = document.createElement('div');
+        box.style.padding = '1rem';
+        box.style.background = 'var(--bg-secondary)';
+        box.style.borderRadius = '4px';
+        const title = document.createElement('strong');
+        title.textContent = 'Execution complete:';
+        box.appendChild(title);
+        box.appendChild(document.createElement('br'));
+        [['Orders submitted', result.orders_submitted], ['Orders rejected', result.orders_rejected], ['Liquidations', result.liquidations]].forEach(([label, value]) => {
+            const line = document.createElement('div');
+            line.textContent = `${label}: ${value}`;
+            box.appendChild(line);
+        });
+        div.appendChild(box);
         showToast('Orders executed successfully');
         await refreshTrading();
     } catch (e) {

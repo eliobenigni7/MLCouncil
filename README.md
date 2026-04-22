@@ -339,7 +339,7 @@ These are **design-level targets** from the constraint and monitoring setup. Liv
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-pip install -r requirements_lock.txt # reproducible baseline install
+pip install -r requirements_lock.txt # pinned snapshot; keep aligned with requirements.txt floors
 pip install -r requirements_api.txt   # for API / admin only
 ```
 
@@ -352,6 +352,7 @@ Copy `.env.example` to `.env` in the project root and fill in the real secrets:
 ALPACA_API_KEY=your_alpaca_key
 ALPACA_SECRET_KEY=your_alpaca_secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
+MLCOUNCIL_API_KEY=your_admin_api_key
 
 # Storage and tracking
 ARCTICDB_URI=lmdb://data/arctic/
@@ -396,7 +397,9 @@ secrets/smtp_password
 
 The application reads `/run/secrets/*` first, then falls back to environment variables.
 
-**Dependency note:** Keep `yfinance` on `0.2.x`. The repo pins `yfinance>=0.2.40,<1.0` for compatibility with `alpaca-trade-api`.
+For paper profile deployments, `MLCOUNCIL_API_KEY` is required to keep the admin/API surface secured.
+
+**Dependency note:** The current runtime floor is `yfinance>=1.0` and the pinned snapshot uses `yfinance==1.0.0`. Keep `requirements_lock.txt` aligned with `requirements.txt` when updating market-data dependencies.
 
 ---
 

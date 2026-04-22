@@ -25,7 +25,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from runtime_env import load_runtime_env
+from runtime_env import get_runtime_profile, load_runtime_env
 
 from council.artifacts import write_artifact_manifest
 from data.contracts import validate_asset_contract
@@ -301,8 +301,9 @@ class ModelRegistry:
         pipeline_run_id: str = "retraining-manual",
         data_version: str = "unknown",
         feature_version: str = "unknown",
-        environment: str = "paper",
+        environment: str | None = None,
     ) -> Path:
+        environment = environment or get_runtime_profile()
         path = self.checkpoints_dir / f"{name}_{version}.pkl"
 
         try:
@@ -380,6 +381,27 @@ class ModelRegistry:
         import shutil
         latest_path = self.checkpoints_dir / f"{name}_latest.pkl"
         shutil.copy2(latest, latest_path)
+
+        try:
+            write_artifact_manifest(
+                latest_path,
+                artifact_type="model_alias",
+                lineage={
+                    "source_artifact": latest.name,
+                    "alias_for": latest_path.name,
+                },
+                metadata={
+                    "alias_target": latest.name,
+                    "artifact_name": latest_path.name,
+                },
+            )
+        except Exception as exc:
+            if latest_path.exists():
+                latest_path.unlink()
+            manifest_path = self.checkpoints_dir / f"{name}_latest.pkl.manifest"
+            if manifest_path.exists():
+                manifest_path.unlink()
+            raise RuntimeError(f"Failed to write alias manifest for {latest_path.name}") from exc
 
         return True
 

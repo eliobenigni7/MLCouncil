@@ -52,8 +52,10 @@ _SECRET_FILE_NAMES: dict[str, str] = {
     "SMTP_PASSWORD": "smtp_password",
 }
 
+_LOADED_ENV_VALUES: dict[str, str] = {}
 
-def get_secret(env_name: str, default: str = "") -> str:
+
+def get_secret(env_name: str, default: str = "", *, ignore_loaded_env: bool = False) -> str:
     """Read a secret, preferring Docker secret files over env vars.
 
     Lookup order:
@@ -68,7 +70,10 @@ def get_secret(env_name: str, default: str = "") -> str:
     secret_path = _DOCKER_SECRETS_DIR / secret_filename
     if secret_path.is_file():
         return secret_path.read_text().strip()
-    return os.environ.get(env_name, default)
+    value = os.environ.get(env_name, default)
+    if ignore_loaded_env and env_name in _LOADED_ENV_VALUES and value == _LOADED_ENV_VALUES.get(env_name):
+        return default
+    return value
 
 
 @dataclass(frozen=True)
@@ -101,10 +106,114 @@ def get_config_hash() -> str:
     digest = hashlib.sha256()
     digest.update(get_runtime_profile().encode("utf-8"))
     digest.update(b"\n")
-    env_path = get_runtime_env_path()
-    if env_path.exists():
-        digest.update(env_path.read_bytes())
+
+    resolved_config = _resolve_effective_runtime_config()
+    for key, value in resolved_config.items():
+        digest.update(key.encode("utf-8"))
+        digest.update(b"=")
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\n")
     return digest.hexdigest()[:16]
+
+
+def _resolve_effective_runtime_config() -> dict[str, str]:
+    project_path = get_project_dotenv_path()
+    runtime_path = get_runtime_env_path()
+
+    project_values = _read_dotenv_values(project_path)
+    runtime_values = _read_dotenv_values(runtime_path)
+
+    relevant_keys = {
+        "MLCOUNCIL_ENV_PROFILE",
+        "ALPACA_BASE_URL",
+        "ALPACA_API_KEY",
+        "ALPACA_SECRET_KEY",
+        "ALPACA_PAPER_KEY",
+        "ALPACA_PAPER_SECRET",
+        "MLCOUNCIL_MAX_DAILY_ORDERS",
+        "MLCOUNCIL_MAX_TURNOVER",
+        "MLCOUNCIL_MAX_POSITION_SIZE",
+        "MLCOUNCIL_MAX_SECTOR_EXPOSURE",
+        "MLCOUNCIL_AUTOMATION_PAUSED",
+    }
+    relevant_keys.update(LEGACY_ENV_ALIASES.keys())
+    relevant_keys.update(LEGACY_ENV_ALIASES.values())
+    relevant_keys.update(_SECRET_FILE_NAMES)
+
+    resolved: dict[str, str] = {}
+    for key in sorted(relevant_keys):
+        value = _resolve_env_value(
+            key,
+            project_values=project_values,
+            runtime_values=runtime_values,
+            ignore_loaded_env=True,
+        )
+        if value is not None:
+            resolved[key] = str(value).strip()
+
+    normalized: dict[str, str] = {}
+    for legacy_key, canonical_key in LEGACY_ENV_ALIASES.items():
+        alias_value = resolved.get(canonical_key)
+        if alias_value is None:
+            alias_value = resolved.get(legacy_key)
+        if alias_value is not None:
+            normalized[canonical_key] = alias_value
+    for key, value in resolved.items():
+        if key in LEGACY_ENV_ALIASES or key in LEGACY_ENV_ALIASES.values():
+            continue
+        normalized[key] = value
+
+    return normalized
+
+
+def _read_dotenv_values(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return {
+        key: value
+        for key, value in dotenv_values(path).items()
+        if value is not None
+    }
+
+
+def _resolve_env_value(
+    key: str,
+    *,
+    project_values: dict[str, str],
+    runtime_values: dict[str, str],
+    ignore_loaded_env: bool = False,
+) -> str | None:
+    if key in LEGACY_ENV_ALIASES.values():
+        legacy_key = next(legacy for legacy, canon in LEGACY_ENV_ALIASES.items() if canon == key)
+        preferred = _resolve_env_value(
+            legacy_key,
+            project_values=project_values,
+            runtime_values=runtime_values,
+            ignore_loaded_env=ignore_loaded_env,
+        )
+        if preferred is not None:
+            return preferred
+
+    if key in _SECRET_FILE_NAMES:
+        secret_value = get_secret(key, default="", ignore_loaded_env=ignore_loaded_env)
+        if secret_value:
+            return secret_value
+
+    process_value = os.getenv(key)
+    if ignore_loaded_env and process_value is not None and key in _LOADED_ENV_VALUES:
+        process_value = None
+    if process_value is not None and process_value not in {project_values.get(key), runtime_values.get(key)}:
+        return process_value
+
+    runtime_value = runtime_values.get(key)
+    if runtime_value is not None:
+        return runtime_value
+
+    project_value = project_values.get(key)
+    if project_value is not None:
+        return project_value
+
+    return None
 
 
 def get_project_dotenv_path() -> Path:
@@ -129,6 +238,7 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
                 override=override,
             ):
                 os.environ[key] = value
+                _LOADED_ENV_VALUES[key] = value
         _apply_legacy_aliases()
 
     if path.exists():
@@ -140,13 +250,20 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
         for key, value in loaded.items():
             if _should_set_env_value(key=key, value=value, override=override):
                 os.environ[key] = value
+                _LOADED_ENV_VALUES[key] = value
 
     _apply_legacy_aliases()
     return loaded
 
 
 def validate_required_env(*keys: str) -> list[str]:
-    missing = [key for key in keys if is_placeholder_env_value(os.getenv(key))]
+    missing = [
+        key
+        for key in keys
+        if is_placeholder_env_value(
+            _resolve_env_value(key, project_values={}, runtime_values={}, ignore_loaded_env=False)
+        )
+    ]
     return missing
 
 
@@ -207,14 +324,21 @@ def get_trading_settings() -> TradingSettings:
 
 
 def _apply_legacy_aliases() -> None:
-    for canonical_key, legacy_key in LEGACY_ENV_ALIASES.items():
+    for legacy_key, canonical_key in LEGACY_ENV_ALIASES.items():
         canonical_value = os.getenv(canonical_key)
         legacy_value = os.getenv(legacy_key)
-        if (
-            is_placeholder_env_value(canonical_value)
-            and not is_placeholder_env_value(legacy_value)
-        ):
+        canonical_is_real = not is_placeholder_env_value(canonical_value)
+        legacy_is_real = not is_placeholder_env_value(legacy_value)
+
+        if legacy_is_real and not canonical_is_real:
             os.environ[canonical_key] = os.environ[legacy_key]
+            _LOADED_ENV_VALUES[canonical_key] = os.environ[legacy_key]
+            canonical_value = os.getenv(canonical_key)
+            canonical_is_real = True
+
+        if canonical_is_real and not legacy_is_real:
+            os.environ[legacy_key] = os.environ[canonical_key]
+            _LOADED_ENV_VALUES[legacy_key] = os.environ[canonical_key]
 
 
 def is_placeholder_env_value(value: str | None) -> bool:
@@ -235,7 +359,7 @@ def _should_set_env_value(*, key: str, value: str, override: bool) -> bool:
         return True
 
     if override:
-        return True
+        return current_is_placeholder or current_value is None
 
     return current_value is None or current_is_placeholder
 
