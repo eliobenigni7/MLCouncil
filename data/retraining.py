@@ -205,8 +205,8 @@ class ModelValidator:
         production_sharpe = production_metrics.get("sharpe", 0)
         sharpe_degradation = production_sharpe - candidate_sharpe
 
-        candidate_max_dd = abs(candidate_metrics.get("max_drawdown", 0))
-        production_max_dd = abs(production_metrics.get("max_drawdown", 0))
+        candidate_max_dd = abs(candidate_metrics.get("oos_max_drawdown", candidate_metrics.get("max_drawdown", 0)))
+        production_max_dd = abs(production_metrics.get("oos_max_drawdown", production_metrics.get("max_drawdown", 0)))
         dd_worsened = candidate_max_dd > (production_max_dd + self.max_dd_worsening)
 
         ic_positive = candidate_metrics.get("ic_mean", 0) > self.min_ic
@@ -362,8 +362,13 @@ class ModelRegistry:
         return path
 
     def deploy_latest(self, name: str) -> bool:
+        candidates = [
+            path
+            for path in self.checkpoints_dir.glob(f"{name}_*.pkl")
+            if path.name != f"{name}_latest.pkl"
+        ]
         candidates = sorted(
-            self.checkpoints_dir.glob(f"{name}_*.pkl"),
+            candidates,
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -372,11 +377,9 @@ class ModelRegistry:
             return False
 
         latest = candidates[0]
-        latest_stem = latest.stem
-        latest_path = self.checkpoints_dir / f"{latest_stem.replace(f'{name}_', 'latest_')}.pkl"
-
         import shutil
-        shutil.copy(latest, latest_path.replace(f"_{name}_", "_latest."))
+        latest_path = self.checkpoints_dir / f"{name}_latest.pkl"
+        shutil.copy2(latest, latest_path)
 
         return True
 
@@ -451,19 +454,26 @@ class RetrainingPipeline:
             else 0.0
         )
 
-        aligned_returns = actuals.loc[common_dates]
-        if isinstance(aligned_returns, pd.DataFrame):
-            daily_returns = aligned_returns.mean(axis=1).fillna(0.0)
+        if isinstance(predictions, pd.DataFrame) and isinstance(actuals, pd.DataFrame):
+            pred_frame = predictions.loc[common_dates]
+            actual_frame = actuals.loc[common_dates]
+            strategy_returns = compute_strategy_returns(pred_frame, actual_frame)
+            max_dd = self._returns_max_drawdown(strategy_returns)
         else:
-            daily_returns = pd.Series(aligned_returns, index=common_dates, dtype=float).fillna(0.0)
-        equity = (1 + daily_returns).cumprod()
-        peak = equity.cummax()
-        max_dd = float(((equity - peak) / peak).min()) if not equity.empty else 0.0
+            aligned_returns = actuals.loc[common_dates]
+            if isinstance(aligned_returns, pd.DataFrame):
+                daily_returns = aligned_returns.mean(axis=1).fillna(0.0)
+            else:
+                daily_returns = pd.Series(aligned_returns, index=common_dates, dtype=float).fillna(0.0)
+            equity = (1 + daily_returns).cumprod()
+            peak = equity.cummax()
+            max_dd = float(((equity - peak) / peak).min()) if not equity.empty else 0.0
 
         return {
             "ic_mean": ic_mean,
             "sharpe": sharpe,
             "max_drawdown": max_dd,
+            "oos_max_drawdown": max_dd,
             "turnover": 0.0,
             "n_validation_days": len(ic_values),
         }

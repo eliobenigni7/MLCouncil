@@ -9,12 +9,14 @@ import sys
 from typing import Any, Mapping
 
 from runtime_env import get_runtime_profile
+from runtime_env import get_config_hash
 
 _ROOT = Path(__file__).resolve().parents[1]
 _REQUIREMENT_FILES = (
     _ROOT / "requirements.txt",
     _ROOT / "requirements_api.txt",
     _ROOT / "requirements_ci.txt",
+    _ROOT / "requirements_lock.txt",
 )
 
 
@@ -96,6 +98,7 @@ def build_artifact_manifest(
         "size_bytes": int(artifact_path.stat().st_size),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "runtime_profile": get_runtime_profile(),
+        "config_hash": get_config_hash(),
         "python_version": sys.version.split()[0],
         "git_sha": _git_sha(),
         "dependency_fingerprint": dependency_fingerprint(),

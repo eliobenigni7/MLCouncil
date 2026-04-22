@@ -339,6 +339,7 @@ These are **design-level targets** from the constraint and monitoring setup. Liv
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements_lock.txt # reproducible baseline install
 pip install -r requirements_api.txt   # for API / admin only
 ```
 

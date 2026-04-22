@@ -28,6 +28,9 @@ function statusBadge(status) {
         'RUNNING': 'badge-warning',
         'FAILED': 'badge-error',
         'ok': 'badge-ok',
+        'consistent': 'badge-ok',
+        'inconsistent': 'badge-warning',
+        'error': 'badge-error',
         'degraded': 'badge-warning',
         'unhealthy': 'badge-error',
         'fresh': 'badge-ok',
@@ -54,6 +57,35 @@ function escapeHtml(value) {
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
+}
+
+function renderValidationSummary(summary) {
+    const el = document.getElementById('validation-backtest-summary');
+    if (!el) return;
+    const latest = summary?.latest;
+    if (!latest) {
+        el.textContent = 'No validation/backtest artifacts found.';
+        return;
+    }
+    el.innerHTML = `Status: ${statusBadge(summary.status || 'no_data')}<br>
+        Latest: ${escapeHtml(latest.date || '--')}<br>
+        Windows: ${escapeHtml(latest.walk_forward_window_count ?? '--')}<br>
+        OOS Sharpe: ${escapeHtml(latest.oos_sharpe ?? '--')}<br>
+        PBO: ${escapeHtml(latest.pbo ?? '--')}`;
+}
+
+function renderRuntimeConsistency(summary) {
+    const el = document.getElementById('runtime-consistency-summary');
+    if (!el) return;
+    if (!summary) {
+        el.textContent = '--';
+        return;
+    }
+    const issues = (summary.issues || []).slice(0, 3).join('; ') || 'None';
+    el.innerHTML = `Status: ${statusBadge(summary.status || 'inconsistent')}<br>
+        Profile: ${escapeHtml(summary.profile || '--')}<br>
+        Config hash: ${escapeHtml(summary.config_hash || '--')}<br>
+        Issues: ${escapeHtml(issues)}`;
 }
 
 document.querySelectorAll('.sidebar nav a').forEach(link => {
@@ -107,6 +139,8 @@ async function refreshOverview() {
         }
 
         document.getElementById('status-kpis').innerHTML = kpis.join('');
+        renderValidationSummary(health.validation_backtest_summary);
+        renderRuntimeConsistency(health.config_runtime_summary);
         renderOperatorBanner(health);
     } catch (e) {
         console.error('Failed to refresh overview:', e);

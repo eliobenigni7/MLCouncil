@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +95,16 @@ def get_runtime_env_path() -> Path:
     if profile_path.exists():
         return profile_path
     return _DEFAULT_RUNTIME_ENV_PATH
+
+
+def get_config_hash() -> str:
+    digest = hashlib.sha256()
+    digest.update(get_runtime_profile().encode("utf-8"))
+    digest.update(b"\n")
+    env_path = get_runtime_env_path()
+    if env_path.exists():
+        digest.update(env_path.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def get_project_dotenv_path() -> Path:

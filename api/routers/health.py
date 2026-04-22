@@ -9,12 +9,14 @@ from fastapi import APIRouter
 
 from api.services.dagster_client import DagsterClient
 from api.services import intraday_runtime_service
-from runtime_env import load_runtime_env, validate_runtime_profile
+from runtime_env import get_config_hash, load_runtime_env, validate_runtime_profile
 
 router = APIRouter(tags=["health"])
 
 load_runtime_env()
 _dagster_client = DagsterClient()
+DATA_DIR = Path("data")
+VALIDATION_DIRS = [DATA_DIR / "validation", DATA_DIR / "backtests"]
 
 
 def _data_freshness() -> dict:
@@ -80,6 +82,54 @@ def _latest_operations_status() -> dict:
     }
 
 
+def _latest_validation_backtest_summary() -> dict:
+    candidates: list[Path] = []
+    for directory in VALIDATION_DIRS:
+        if directory.exists():
+            candidates.extend(sorted(directory.glob("*.json")))
+
+    if not candidates:
+        return {"status": "no_data", "latest": None}
+
+    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    try:
+        payload = json.loads(latest.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"status": "error", "latest": {"path": str(latest)}}
+
+    metric_keys = {"walk_forward_window_count", "oos_sharpe", "pbo"}
+    if not metric_keys.intersection(payload.keys()):
+        return {"status": "no_data", "latest": None}
+
+    summary = {
+        "path": str(latest),
+        "date": payload.get("date") or latest.stem,
+        "walk_forward_window_count": payload.get("walk_forward_window_count"),
+        "oos_sharpe": payload.get("oos_sharpe"),
+        "pbo": payload.get("pbo"),
+    }
+    return {"status": "ok", "latest": summary}
+
+
+def _config_runtime_summary(runtime: dict) -> dict:
+    issues = []
+    if runtime.get("status") != "valid":
+        issues.extend(runtime.get("errors", []))
+        issues.extend([f"Missing: {key}" for key in runtime.get("missing", [])])
+
+    profile = runtime.get("profile")
+    env_path = runtime.get("env_path")
+    config_hash = get_config_hash()
+    status = "consistent" if runtime.get("valid") else "inconsistent"
+    return {
+        "status": status,
+        "profile": profile,
+        "env_path": env_path,
+        "config_hash": config_hash,
+        "issues": issues,
+    }
+
+
 @router.get("/health")
 async def health():
     data_fresh = _data_freshness()
@@ -87,6 +137,8 @@ async def health():
     monitoring = _monitoring_status()
     runtime = _runtime_env_status()
     operations = _latest_operations_status()
+    validation_summary = _latest_validation_backtest_summary()
+    config_runtime = _config_runtime_summary(runtime)
 
     components = {
         "data_freshness": data_fresh["status"],
@@ -102,6 +154,7 @@ async def health():
         data_fresh["status"] in ("stale", "no_data")
         or arctic in ("unavailable", "error")
         or runtime["status"] == "invalid"
+        or config_runtime["status"] == "inconsistent"
         or operations["status"] in ("blocked", "degraded", "error")
     ):
         overall = "degraded"
@@ -111,7 +164,9 @@ async def health():
         "version": "0.1.0",
         "components": components,
         "data_freshness": data_fresh,
+        "validation_backtest_summary": validation_summary,
         "runtime_env": runtime,
+        "config_runtime_summary": config_runtime,
         "trading_operations": operations,
         "intraday_supervisor": intraday_runtime_service.get_health(),
     }

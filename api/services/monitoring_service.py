@@ -14,8 +14,10 @@ from api.services.secret_utils import (
 from runtime_env import (
     LEGACY_ENV_ALIASES,
     get_runtime_env_path,
+    get_config_hash,
     is_placeholder_env_value,
     load_runtime_env,
+    validate_runtime_profile,
 )
 
 ALERTS_DIR = Path("data/alerts")
@@ -196,6 +198,22 @@ def get_runtime_settings() -> dict:
     return {
         "path": str(RUNTIME_ENV_PATH),
         "settings": settings,
+    }
+
+
+def get_config_runtime_summary() -> dict:
+    runtime = validate_runtime_profile()
+    issues = []
+    if runtime.get("status") != "valid":
+        issues.extend(runtime.get("errors", []))
+        issues.extend([f"Missing: {key}" for key in runtime.get("missing", [])])
+
+    return {
+        "status": "consistent" if runtime.get("valid") else "inconsistent",
+        "profile": runtime.get("profile"),
+        "env_path": runtime.get("env_path"),
+        "config_hash": get_config_hash(),
+        "issues": issues,
     }
 
 

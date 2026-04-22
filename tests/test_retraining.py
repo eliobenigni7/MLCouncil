@@ -32,6 +32,32 @@ def test_model_validator_rejects_candidate_with_high_pbo():
     assert any("pbo" in message.lower() for message in result.messages)
 
 
+def test_model_validator_uses_oos_drawdown_when_available():
+    from data.retraining import ModelValidator
+
+    validator = ModelValidator(max_dd_worsening=0.02, min_oos_sharpe=-10.0)
+    candidate_metrics = {
+        "ic_mean": 0.08,
+        "sharpe": 1.10,
+        "max_drawdown": -0.01,
+        "oos_max_drawdown": -0.20,
+        "oos_sharpe": 0.35,
+        "walk_forward_window_count": 3,
+        "pbo": 0.10,
+    }
+    production_metrics = {
+        "ic_mean": 0.07,
+        "sharpe": 1.00,
+        "max_drawdown": -0.09,
+    }
+
+    result = validator.validate(candidate_metrics, production_metrics)
+
+    assert not result.is_valid
+    assert result.candidate_max_dd == 0.20
+    assert any("drawdown" in message.lower() for message in result.messages)
+
+
 def test_train_candidate_model_emits_walk_forward_metrics(monkeypatch):
     from data.retraining import RetrainingPipeline
 
@@ -137,3 +163,40 @@ def test_model_registry_save_model_writes_manifest(tmp_path):
 
     assert saved.exists()
     assert (tmp_path / "lgbm_20260422_120000.pkl.manifest").exists()
+
+
+def test_model_registry_deploy_latest_creates_latest_copy(tmp_path):
+    from data.retraining import ModelRegistry
+
+    registry = ModelRegistry(checkpoints_dir=tmp_path)
+    first = registry.save_model(model={"version": 1}, name="lgbm", version="20260422_120000")
+    second = registry.save_model(model={"version": 2}, name="lgbm", version="20260422_130000")
+
+    assert first.exists()
+    assert second.exists()
+
+    assert registry.deploy_latest("lgbm")
+
+    latest = tmp_path / "lgbm_latest.pkl"
+    assert latest.exists()
+
+    loaded = registry.load_latest("lgbm")
+    assert loaded == {"version": 2}
+
+
+def test_model_registry_deploy_latest_ignores_existing_latest_alias(tmp_path):
+    from data.retraining import ModelRegistry
+
+    registry = ModelRegistry(checkpoints_dir=tmp_path)
+    older = registry.save_model(model={"version": 1}, name="lgbm", version="20260422_120000")
+    newer = registry.save_model(model={"version": 2}, name="lgbm", version="20260422_130000")
+    alias = registry.save_model(model={"version": 99}, name="lgbm", version="latest")
+
+    assert older.exists()
+    assert newer.exists()
+    assert alias.exists()
+
+    assert registry.deploy_latest("lgbm")
+
+    loaded = registry.load_latest("lgbm")
+    assert loaded == {"version": 2}
