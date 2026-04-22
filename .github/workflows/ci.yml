@@ -7,8 +7,11 @@ on:
       - master
       - "codex/**"
 
+permissions:
+  contents: read
+
 jobs:
-  test-and-build:
+  tests-and-coverage:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,15 +26,105 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r requirements_ci.txt
+
+      - name: Run test suite with coverage gate
+        run: |
+          python -m pytest \
+            --cov=. \
+            --cov-report=xml \
+            --cov-report=term \
+            --cov-fail-under=68
+
+      - name: Smoke import Dagster definitions
+        run: python -c "from data.pipeline import defs; print(defs.get_job_def('daily_pipeline').name)"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_ci.txt
+
+      - name: Ruff (critical modules)
+        run: |
+          python -m ruff check \
+            api/main.py \
+            api/auth.py \
+            api/services/trading_service.py \
+            runtime_env.py \
+            council/portfolio.py
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install type-check dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements_ci.txt
+
+      - name: Mypy (incremental strict scope)
+        run: |
+          python -m mypy --config-file mypy.ini \
+            api/main.py \
+            api/auth.py \
+            api/services/trading_service.py \
+            runtime_env.py \
+            council/portfolio.py
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install security dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_ci.txt
 
       - name: Secret scan (static patterns)
         run: python scripts/check_no_plaintext_secrets.py
 
-      - name: Run test suite
-        run: python -m pytest
+      - name: Dependency vulnerability scan
+        run: python -m pip_audit -r requirements.txt --progress-spinner off
 
-      - name: Smoke import Dagster definitions
-        run: python -c "from data.pipeline import defs; print(defs.get_job_def('daily_pipeline').name)"
+      - name: Bandit high-severity scan (critical modules)
+        run: python -m bandit -q -r api council execution runtime_env.py -lll
+
+  docker-build:
+    needs:
+      - tests-and-coverage
+      - lint
+      - typecheck
+      - security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Build Docker image
         run: docker build -t mlcouncil-ci .

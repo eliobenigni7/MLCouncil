@@ -646,6 +646,13 @@ python -m pytest tests/test_trading_service.py -v  # trading service
 python -m pytest tests/test_alpaca_adapter.py -v   # adapter (mocked)
 python -m pytest tests/test_arctic_store.py -v     # feature store (fake backend)
 python -m pytest tests/ -k "test_aggregator"       # single test by name
+
+# Phase 4 quality gates (incremental scope)
+python -m pytest --cov=. --cov-report=term --cov-fail-under=68
+python -m ruff check api/main.py api/auth.py api/services/trading_service.py runtime_env.py council/portfolio.py
+python -m mypy --config-file mypy.ini
+python -m pip_audit -r requirements.txt --progress-spinner off
+python -m bandit -q -r api council execution runtime_env.py -lll
 ```
 
 `tests/conftest.py` installs a `slowapi` stub so rate-limiting tests run without the package installed.
