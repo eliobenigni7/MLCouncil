@@ -27,7 +27,15 @@ import numpy as np
 import pandas as pd
 from runtime_env import load_runtime_env
 
-from backtest.validation import build_walk_forward_splits, summarize_walk_forward_metrics
+from backtest.validation import (
+    build_purged_walk_forward_splits,
+    compute_strategy_returns,
+    derive_regime_labels,
+    estimate_turnover_from_signals,
+    summarize_benchmark_comparison,
+    summarize_regime_performance,
+    summarize_walk_forward_metrics,
+)
 from council.mlflow_utils import MLflowTracker, build_run_tags, validate_promotion_gate
 
 _ROOT = Path(__file__).parents[1]
@@ -439,6 +447,48 @@ class RetrainingPipeline:
             "n_validation_days": len(ic_values),
         }
 
+    @staticmethod
+    def _to_cross_sectional_frame(payload) -> pd.DataFrame:
+        """Best-effort conversion to date-indexed cross-sectional DataFrame."""
+        if isinstance(payload, pd.DataFrame):
+            frame = payload.copy()
+        elif isinstance(payload, pd.Series):
+            frame = payload.to_frame(name="value")
+        else:
+            try:
+                frame = pd.DataFrame(payload)
+            except Exception:
+                return pd.DataFrame()
+
+        if frame.empty:
+            return frame
+
+        try:
+            frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index))
+        except Exception:
+            return pd.DataFrame()
+        return frame.sort_index()
+
+    @staticmethod
+    def _returns_sharpe(returns: pd.Series) -> float:
+        clean = returns.dropna()
+        if len(clean) < 2:
+            return 0.0
+        std = float(clean.std())
+        if std < 1e-12:
+            return 0.0
+        return float(clean.mean() / std * np.sqrt(252))
+
+    @staticmethod
+    def _returns_max_drawdown(returns: pd.Series) -> float:
+        clean = returns.fillna(0.0)
+        if clean.empty:
+            return 0.0
+        equity = (1.0 + clean).cumprod()
+        peak = equity.cummax()
+        drawdown = equity / peak - 1.0
+        return float(drawdown.min())
+
     def _compute_walk_forward_diagnostics(
         self,
         model_name: str,
@@ -455,14 +505,18 @@ class RetrainingPipeline:
         if train_window + test_window > len(unique_dates):
             train_window = max(2, len(unique_dates) - test_window)
 
-        splits = build_walk_forward_splits(
+        splits = build_purged_walk_forward_splits(
             unique_dates,
             train_window=train_window,
             test_window=test_window,
             step=test_window,
+            purge_period=1,
+            embargo_period=1,
         )
 
         rows = []
+        oos_signal_frames: list[pd.DataFrame] = []
+        oos_target_frames: list[pd.DataFrame] = []
         for window_id, split in enumerate(splits):
             train_mask = (
                 (pd.to_datetime(features.index) >= split.train_start)
@@ -485,19 +539,80 @@ class RetrainingPipeline:
             train_predictions = wf_model.predict(train_features)
             test_predictions = wf_model.predict(test_features)
 
-            train_metrics = self._score_predictions(train_predictions, train_targets)
-            test_metrics = self._score_predictions(test_predictions, test_targets)
+            train_pred_frame = self._to_cross_sectional_frame(train_predictions)
+            test_pred_frame = self._to_cross_sectional_frame(test_predictions)
+            train_target_frame = self._to_cross_sectional_frame(train_targets)
+            test_target_frame = self._to_cross_sectional_frame(test_targets)
+
+            # Fallback for model outputs that cannot be interpreted as
+            # date-indexed cross-sectional matrices.
+            if (
+                train_pred_frame.empty
+                or test_pred_frame.empty
+                or train_target_frame.empty
+                or test_target_frame.empty
+            ):
+                train_metrics = self._score_predictions(train_predictions, train_targets)
+                test_metrics = self._score_predictions(test_predictions, test_targets)
+                rows.append(
+                    {
+                        "window_id": window_id,
+                        "train_sharpe": train_metrics["sharpe"],
+                        "test_sharpe": test_metrics["sharpe"],
+                        "test_max_drawdown": test_metrics["max_drawdown"],
+                        "test_turnover": test_metrics["turnover"],
+                    }
+                )
+                continue
+
+            train_strategy_returns = compute_strategy_returns(
+                train_pred_frame,
+                train_target_frame,
+            )
+            test_strategy_returns = compute_strategy_returns(
+                test_pred_frame,
+                test_target_frame,
+            )
             rows.append(
                 {
                     "window_id": window_id,
-                    "train_sharpe": train_metrics["sharpe"],
-                    "test_sharpe": test_metrics["sharpe"],
-                    "test_max_drawdown": test_metrics["max_drawdown"],
-                    "test_turnover": test_metrics["turnover"],
+                    "train_sharpe": self._returns_sharpe(train_strategy_returns),
+                    "test_sharpe": self._returns_sharpe(test_strategy_returns),
+                    "test_max_drawdown": self._returns_max_drawdown(test_strategy_returns),
+                    "test_turnover": estimate_turnover_from_signals(test_pred_frame),
                 }
             )
 
-        return summarize_walk_forward_metrics(pd.DataFrame(rows))
+            if not test_pred_frame.empty and not test_target_frame.empty:
+                oos_signal_frames.append(test_pred_frame)
+                oos_target_frames.append(test_target_frame)
+
+        summary = summarize_walk_forward_metrics(pd.DataFrame(rows))
+
+        if oos_signal_frames and oos_target_frames:
+            oos_signals = pd.concat(oos_signal_frames).sort_index()
+            oos_targets = pd.concat(oos_target_frames).sort_index()
+            if oos_signals.index.has_duplicates:
+                oos_signals = oos_signals.groupby(level=0).mean()
+            if oos_targets.index.has_duplicates:
+                oos_targets = oos_targets.groupby(level=0).mean()
+
+            oos_returns = compute_strategy_returns(oos_signals, oos_targets)
+            benchmark_input = {"equal_weight": oos_targets.mean(axis=1).astype(float)}
+            benchmark_df = summarize_benchmark_comparison(oos_returns, benchmark_input)
+            regime_labels = derive_regime_labels(benchmark_input["equal_weight"])
+            regime_df = summarize_regime_performance(oos_returns, regime_labels)
+
+            if not benchmark_df.empty:
+                eq_row = benchmark_df.loc[
+                    benchmark_df["benchmark"] == "equal_weight"
+                ]
+                if not eq_row.empty:
+                    summary["equal_weight_sharpe_delta"] = float(eq_row.iloc[0]["sharpe_delta"])
+                    summary["equal_weight_cagr_delta"] = float(eq_row.iloc[0]["cagr_delta"])
+            summary["regime_count"] = int(regime_df["regime"].nunique()) if not regime_df.empty else 0
+
+        return summary
 
     def load_state(self) -> None:
         state_file = MODELS_DIR / "retraining_state.json"

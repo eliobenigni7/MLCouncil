@@ -240,6 +240,9 @@ A model candidate is promoted to production only if all of the following gates a
 | MLflow lineage | `pipeline_run_id`, `data_version`, `feature_version`, `model_version` all present |
 | Metrics logged | `sharpe`, `max_drawdown`, `turnover`, `oos_sharpe`, `oos_max_drawdown`, `oos_turnover` |
 
+For validation-depth monitoring, retraining also tracks `equal_weight_sharpe_delta`, `equal_weight_cagr_delta`, and `regime_count` from walk-forward diagnostics.
+When component signals are available, walk-forward diagnostics also expose `ablation_analysis` with marginal Sharpe contribution per component.
+
 Candidates are rejected if gross/net metrics diverge implausibly from the estimated transaction costs, or if manual overrides were required to pass any gate.
 
 ### Portfolio Risk Targets (hard constraints enforced at runtime)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -96,6 +96,550 @@ def summarize_walk_forward_metrics(metrics_df: pd.DataFrame) -> dict[str, float]
             metrics_df["train_sharpe"] if "train_sharpe" in metrics_df else [],
             metrics_df["test_sharpe"] if "test_sharpe" in metrics_df else [],
         ),
+    }
+
+
+def build_purged_walk_forward_splits(
+    dates: Sequence[pd.Timestamp],
+    train_window: int,
+    test_window: int,
+    step: int | None = None,
+    purge_period: int = 0,
+    embargo_period: int = 0,
+) -> list[WalkForwardSplit]:
+    """Build rolling splits with explicit purge/embargo guards.
+
+    ``purge_period`` removes the most recent dates from the training slice.
+    ``embargo_period`` inserts a gap between train and test windows.
+    """
+    if train_window <= 0 or test_window <= 0:
+        raise ValueError("train_window and test_window must be positive")
+    if purge_period < 0 or embargo_period < 0:
+        raise ValueError("purge_period and embargo_period must be non-negative")
+
+    index = pd.DatetimeIndex(pd.to_datetime(list(dates))).sort_values().unique()
+    if index.empty:
+        return []
+
+    step_size = step or test_window
+    splits: list[WalkForwardSplit] = []
+    start = 0
+
+    while True:
+        train_start_idx = start
+        train_end_idx = start + train_window - 1
+        purged_train_end_idx = train_end_idx - purge_period
+        test_start_idx = train_end_idx + 1 + embargo_period
+        test_end_idx = test_start_idx + test_window - 1
+
+        if test_end_idx >= len(index):
+            break
+
+        if purged_train_end_idx >= train_start_idx:
+            train_slice = index[train_start_idx : purged_train_end_idx + 1]
+            test_slice = index[test_start_idx : test_end_idx + 1]
+            if len(train_slice) > 0 and len(test_slice) > 0:
+                splits.append(
+                    WalkForwardSplit(
+                        train_start=pd.Timestamp(train_slice[0]),
+                        train_end=pd.Timestamp(train_slice[-1]),
+                        test_start=pd.Timestamp(test_slice[0]),
+                        test_end=pd.Timestamp(test_slice[-1]),
+                    )
+                )
+
+        start += step_size
+
+    return splits
+
+
+def _normalize_cross_sectional_weights(signal_row: pd.Series) -> pd.Series:
+    raw = signal_row.astype(float).fillna(0.0)
+    centered = raw - raw.mean()
+    gross = float(centered.abs().sum())
+    if gross > 1e-12:
+        return centered / gross
+
+    gross_raw = float(raw.abs().sum())
+    if gross_raw > 1e-12:
+        return raw / gross_raw
+    return raw * 0.0
+
+
+def compute_strategy_returns(
+    signals: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+) -> pd.Series:
+    """Compute a deterministic daily strategy return series."""
+    if signals.empty or forward_returns.empty:
+        return pd.Series(dtype=float, name="strategy_return")
+
+    common_index = pd.DatetimeIndex(signals.index).intersection(pd.DatetimeIndex(forward_returns.index))
+    common_cols = signals.columns.intersection(forward_returns.columns)
+    if len(common_index) == 0 or len(common_cols) == 0:
+        return pd.Series(dtype=float, name="strategy_return")
+
+    sig = signals.loc[common_index, common_cols].astype(float)
+    fwd = forward_returns.loc[common_index, common_cols].astype(float)
+
+    rows: list[tuple[pd.Timestamp, float]] = []
+    for d in common_index:
+        weights = _normalize_cross_sectional_weights(sig.loc[d])
+        daily_ret = float((weights * fwd.loc[d].fillna(0.0)).sum())
+        rows.append((pd.Timestamp(d), daily_ret))
+
+    if not rows:
+        return pd.Series(dtype=float, name="strategy_return")
+
+    result = pd.Series(
+        [r for _, r in rows],
+        index=pd.DatetimeIndex([d for d, _ in rows]),
+        name="strategy_return",
+        dtype=float,
+    ).sort_index()
+    return result
+
+
+def estimate_turnover_from_signals(signals: pd.DataFrame) -> float:
+    """Estimate one-way turnover from daily normalized signal weights."""
+    if signals.empty or len(signals) < 2:
+        return 0.0
+
+    normalized = signals.astype(float).apply(_normalize_cross_sectional_weights, axis=1)
+    if not isinstance(normalized, pd.DataFrame) or normalized.empty:
+        return 0.0
+
+    turnover = normalized.diff().abs().sum(axis=1) * 0.5
+    if turnover.empty:
+        return 0.0
+    return float(turnover.iloc[1:].mean()) if len(turnover) > 1 else 0.0
+
+
+def _annualized_sharpe(returns: pd.Series) -> float:
+    clean = returns.dropna()
+    if len(clean) < 2:
+        return 0.0
+    std = float(clean.std())
+    if std < 1e-12:
+        return 0.0
+    return float(clean.mean() / std * np.sqrt(252))
+
+
+def _max_drawdown_from_returns(returns: pd.Series) -> float:
+    clean = returns.fillna(0.0)
+    if clean.empty:
+        return 0.0
+    equity = (1.0 + clean).cumprod()
+    peak = equity.cummax()
+    drawdown = equity / peak - 1.0
+    return float(drawdown.min())
+
+
+def _cagr_from_returns(returns: pd.Series) -> float:
+    clean = returns.fillna(0.0)
+    if clean.empty:
+        return 0.0
+    years = len(clean) / 252.0
+    if years <= 0:
+        return 0.0
+    final_equity = float((1.0 + clean).cumprod().iloc[-1])
+    if final_equity <= 0:
+        return -1.0
+    return float(final_equity ** (1.0 / years) - 1.0)
+
+
+def build_benchmark_suite(
+    forward_returns: pd.DataFrame,
+    momentum_lookback: int = 5,
+    vol_lookback: int = 20,
+    target_vol_annual: float = 0.15,
+) -> dict[str, pd.Series]:
+    """Build a compact benchmark suite from forward-return data."""
+    if forward_returns.empty:
+        return {}
+
+    returns = forward_returns.astype(float).fillna(0.0).sort_index()
+    index = returns.index
+
+    equal_weight = returns.mean(axis=1).rename("equal_weight")
+
+    # Momentum long-only: select top half by trailing lookback return.
+    trailing = (
+        (1.0 + returns)
+        .rolling(momentum_lookback, min_periods=max(2, momentum_lookback // 2))
+        .apply(np.prod, raw=True)
+        - 1.0
+    ).shift(1)
+    momentum_rows: list[tuple[pd.Timestamp, float]] = []
+    for d in index:
+        score = trailing.loc[d].replace([np.inf, -np.inf], np.nan).dropna()
+        if score.empty:
+            momentum_rows.append((pd.Timestamp(d), 0.0))
+            continue
+        cutoff = float(score.quantile(0.5))
+        selected = score[score >= cutoff].index.tolist()
+        if not selected:
+            selected = score.nlargest(max(1, len(score) // 2)).index.tolist()
+        w = pd.Series(1.0 / len(selected), index=selected, dtype=float)
+        r = returns.loc[d, selected].fillna(0.0)
+        momentum_rows.append((pd.Timestamp(d), float((w * r).sum())))
+    momentum_long_only = pd.Series(
+        [v for _, v in momentum_rows],
+        index=pd.DatetimeIndex([d for d, _ in momentum_rows]),
+        name="momentum_long_only",
+        dtype=float,
+    )
+
+    # Inverse-volatility heuristic benchmark.
+    rolling_vol = returns.rolling(vol_lookback, min_periods=max(3, vol_lookback // 4)).std().shift(1)
+    inv_vol_rows: list[tuple[pd.Timestamp, float]] = []
+    for d in index:
+        vol_row = rolling_vol.loc[d].replace(0.0, np.nan).replace([np.inf, -np.inf], np.nan).dropna()
+        if vol_row.empty:
+            inv_vol_rows.append((pd.Timestamp(d), float(equal_weight.loc[d])))
+            continue
+        w = (1.0 / vol_row).astype(float)
+        w = w / w.sum()
+        r = returns.loc[d, w.index].fillna(0.0)
+        inv_vol_rows.append((pd.Timestamp(d), float((w * r).sum())))
+    inverse_volatility = pd.Series(
+        [v for _, v in inv_vol_rows],
+        index=pd.DatetimeIndex([d for d, _ in inv_vol_rows]),
+        name="inverse_volatility",
+        dtype=float,
+    )
+
+    # Vol-target equal-weight benchmark.
+    target_daily_vol = float(target_vol_annual) / np.sqrt(252.0)
+    realized_vol = equal_weight.rolling(vol_lookback, min_periods=max(5, vol_lookback // 4)).std().shift(1)
+    leverage = (target_daily_vol / (realized_vol + 1e-12)).clip(lower=0.0, upper=3.0).fillna(1.0)
+    vol_target_equal_weight = (equal_weight * leverage).rename("vol_target_equal_weight")
+
+    return {
+        "equal_weight": equal_weight,
+        "momentum_long_only": momentum_long_only.reindex(index, fill_value=0.0),
+        "inverse_volatility": inverse_volatility.reindex(index, fill_value=0.0),
+        "vol_target_equal_weight": vol_target_equal_weight.reindex(index, fill_value=0.0),
+    }
+
+
+def summarize_benchmark_comparison(
+    strategy_returns: pd.Series,
+    benchmark_returns: Mapping[str, pd.Series] | None,
+) -> pd.DataFrame:
+    """Compare OOS strategy returns against benchmark return series."""
+    columns = [
+        "benchmark",
+        "strategy_sharpe",
+        "benchmark_sharpe",
+        "sharpe_delta",
+        "strategy_cagr",
+        "benchmark_cagr",
+        "cagr_delta",
+        "strategy_max_drawdown",
+        "benchmark_max_drawdown",
+    ]
+    if strategy_returns.empty or not benchmark_returns:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, float | str]] = []
+    strategy = strategy_returns.sort_index()
+    for name, benchmark in benchmark_returns.items():
+        bench = benchmark.sort_index().astype(float)
+        common = strategy.index.intersection(bench.index)
+        if len(common) < 2:
+            continue
+
+        strat_slice = strategy.loc[common]
+        bench_slice = bench.loc[common]
+        rows.append(
+            {
+                "benchmark": str(name),
+                "strategy_sharpe": _annualized_sharpe(strat_slice),
+                "benchmark_sharpe": _annualized_sharpe(bench_slice),
+                "sharpe_delta": _annualized_sharpe(strat_slice) - _annualized_sharpe(bench_slice),
+                "strategy_cagr": _cagr_from_returns(strat_slice),
+                "benchmark_cagr": _cagr_from_returns(bench_slice),
+                "cagr_delta": _cagr_from_returns(strat_slice) - _cagr_from_returns(bench_slice),
+                "strategy_max_drawdown": _max_drawdown_from_returns(strat_slice),
+                "benchmark_max_drawdown": _max_drawdown_from_returns(bench_slice),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values("sharpe_delta", ascending=False).reset_index(drop=True)
+
+
+def _combine_component_signals(
+    component_signals: Mapping[str, pd.DataFrame],
+) -> pd.DataFrame:
+    combined: pd.DataFrame | None = None
+    n_components = 0
+    for frame in component_signals.values():
+        if frame is None or frame.empty:
+            continue
+        current = frame.astype(float).sort_index()
+        if combined is None:
+            combined = current.copy()
+        else:
+            combined = combined.add(current, fill_value=0.0)
+        n_components += 1
+
+    if combined is None or n_components == 0:
+        return pd.DataFrame()
+    return combined / float(n_components)
+
+
+def compute_ablation_contributions(
+    *,
+    component_signals: Mapping[str, pd.DataFrame],
+    forward_returns: pd.DataFrame,
+) -> pd.DataFrame:
+    """Estimate standalone and marginal contributions for each component."""
+    columns = [
+        "component",
+        "standalone_sharpe",
+        "standalone_cagr",
+        "standalone_max_drawdown",
+        "marginal_sharpe_delta",
+        "ensemble_sharpe",
+    ]
+    usable = {k: v for k, v in component_signals.items() if v is not None and not v.empty}
+    if not usable or forward_returns.empty:
+        return pd.DataFrame(columns=columns)
+
+    ensemble_signal = _combine_component_signals(usable)
+    ensemble_returns = compute_strategy_returns(ensemble_signal, forward_returns)
+    ensemble_sharpe = _annualized_sharpe(ensemble_returns)
+
+    rows: list[dict[str, float | str]] = []
+    for name, signal in usable.items():
+        standalone_returns = compute_strategy_returns(signal, forward_returns)
+        without = {k: v for k, v in usable.items() if k != name}
+        without_signal = _combine_component_signals(without)
+        without_returns = compute_strategy_returns(without_signal, forward_returns) if not without_signal.empty else pd.Series(dtype=float)
+        marginal_delta = ensemble_sharpe - _annualized_sharpe(without_returns)
+
+        rows.append(
+            {
+                "component": str(name),
+                "standalone_sharpe": _annualized_sharpe(standalone_returns),
+                "standalone_cagr": _cagr_from_returns(standalone_returns),
+                "standalone_max_drawdown": _max_drawdown_from_returns(standalone_returns),
+                "marginal_sharpe_delta": float(marginal_delta),
+                "ensemble_sharpe": float(ensemble_sharpe),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        "marginal_sharpe_delta",
+        ascending=False,
+    ).reset_index(drop=True)
+
+
+def derive_regime_labels(
+    market_returns: pd.Series,
+    lookback: int = 20,
+) -> pd.Series:
+    """Derive coarse bull/bear/transition labels from market return/volatility."""
+    series = market_returns.astype(float).fillna(0.0).sort_index()
+    if series.empty:
+        return pd.Series(dtype=object, name="regime")
+
+    min_periods = max(3, lookback // 4)
+    roll_ret = series.rolling(lookback, min_periods=min_periods).mean()
+    roll_vol = series.rolling(lookback, min_periods=min_periods).std()
+    vol_cutoff = float(roll_vol.median(skipna=True)) if not roll_vol.dropna().empty else 0.0
+
+    labels = pd.Series("transition", index=series.index, dtype=object, name="regime")
+    labels[(roll_ret > 0.0) & (roll_vol <= vol_cutoff)] = "bull"
+    labels[(roll_ret < 0.0) & (roll_vol > vol_cutoff)] = "bear"
+    return labels.ffill().fillna("transition")
+
+
+def summarize_regime_performance(
+    strategy_returns: pd.Series,
+    regime_labels: pd.Series,
+) -> pd.DataFrame:
+    """Summarize strategy behavior by market regime."""
+    columns = ["regime", "n_obs", "mean_return", "volatility", "sharpe", "max_drawdown", "cagr"]
+    if strategy_returns.empty or regime_labels.empty:
+        return pd.DataFrame(columns=columns)
+
+    common = strategy_returns.index.intersection(regime_labels.index)
+    if len(common) == 0:
+        return pd.DataFrame(columns=columns)
+
+    ret = strategy_returns.loc[common].astype(float)
+    reg = regime_labels.loc[common].astype(str)
+    rows: list[dict[str, float | str | int]] = []
+    for regime, grp in ret.groupby(reg):
+        rows.append(
+            {
+                "regime": str(regime),
+                "n_obs": int(len(grp)),
+                "mean_return": float(grp.mean()) if len(grp) else 0.0,
+                "volatility": float(grp.std()) if len(grp) > 1 else 0.0,
+                "sharpe": _annualized_sharpe(grp),
+                "max_drawdown": _max_drawdown_from_returns(grp),
+                "cagr": _cagr_from_returns(grp),
+            }
+        )
+
+    all_regimes = sorted(pd.Index(regime_labels.dropna().astype(str).unique()).tolist())
+    present = {str(row["regime"]) for row in rows}
+    for regime in all_regimes:
+        if regime in present:
+            continue
+        rows.append(
+            {
+                "regime": regime,
+                "n_obs": 0,
+                "mean_return": 0.0,
+                "volatility": 0.0,
+                "sharpe": 0.0,
+                "max_drawdown": 0.0,
+                "cagr": 0.0,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values("n_obs", ascending=False).reset_index(drop=True)
+
+
+def run_walk_forward_analysis(
+    *,
+    signals: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+    train_window: int,
+    test_window: int,
+    step: int | None = None,
+    purge_period: int = 0,
+    embargo_period: int = 0,
+    benchmark_returns: Mapping[str, pd.Series] | None = None,
+    regime_labels: pd.Series | None = None,
+    component_signals: Mapping[str, pd.DataFrame] | None = None,
+) -> dict[str, pd.DataFrame | pd.Series | dict[str, float]]:
+    """Run deterministic walk-forward diagnostics plus benchmark/regime reports."""
+    splits = build_purged_walk_forward_splits(
+        dates=signals.index,
+        train_window=train_window,
+        test_window=test_window,
+        step=step,
+        purge_period=purge_period,
+        embargo_period=embargo_period,
+    )
+
+    rows: list[dict[str, float | int | str]] = []
+    oos_chunks: list[pd.Series] = []
+    for window_id, split in enumerate(splits):
+        train_signals = signals.loc[split.train_start : split.train_end]
+        train_returns = forward_returns.loc[split.train_start : split.train_end]
+        test_signals = signals.loc[split.test_start : split.test_end]
+        test_returns = forward_returns.loc[split.test_start : split.test_end]
+
+        train_strategy = compute_strategy_returns(train_signals, train_returns)
+        test_strategy = compute_strategy_returns(test_signals, test_returns)
+
+        rows.append(
+            {
+                "window_id": int(window_id),
+                "train_start": split.train_start.isoformat(),
+                "train_end": split.train_end.isoformat(),
+                "test_start": split.test_start.isoformat(),
+                "test_end": split.test_end.isoformat(),
+                "train_sharpe": _annualized_sharpe(train_strategy),
+                "test_sharpe": _annualized_sharpe(test_strategy),
+                "test_max_drawdown": _max_drawdown_from_returns(test_strategy),
+                "test_turnover": estimate_turnover_from_signals(test_signals),
+            }
+        )
+        if not test_strategy.empty:
+            oos_chunks.append(test_strategy)
+
+    window_metrics = pd.DataFrame(rows)
+    summary = summarize_walk_forward_metrics(window_metrics)
+
+    if oos_chunks:
+        oos_returns = pd.concat(oos_chunks).sort_index()
+        if oos_returns.index.has_duplicates:
+            oos_returns = oos_returns.groupby(level=0).mean()
+    else:
+        oos_returns = pd.Series(dtype=float, name="strategy_return")
+
+    if benchmark_returns:
+        benchmark_map = dict(benchmark_returns)
+    else:
+        benchmark_map = build_benchmark_suite(forward_returns)
+        if "SPY" in forward_returns.columns:
+            benchmark_map["spy"] = forward_returns["SPY"].astype(float)
+
+    benchmark_df = summarize_benchmark_comparison(oos_returns, benchmark_map)
+
+    resolved_regimes = regime_labels
+    if resolved_regimes is None:
+        if "equal_weight" in benchmark_map:
+            resolved_regimes = derive_regime_labels(benchmark_map["equal_weight"])
+        elif not forward_returns.empty:
+            resolved_regimes = derive_regime_labels(forward_returns.mean(axis=1).astype(float))
+        else:
+            resolved_regimes = pd.Series(dtype=object)
+
+    regime_df = summarize_regime_performance(
+        oos_returns,
+        resolved_regimes if resolved_regimes is not None else pd.Series(dtype=object),
+    )
+
+    if not benchmark_df.empty and "equal_weight" in set(benchmark_df["benchmark"]):
+        row = benchmark_df.loc[benchmark_df["benchmark"] == "equal_weight"].iloc[0]
+        summary["equal_weight_sharpe_delta"] = float(row["sharpe_delta"])
+        summary["equal_weight_cagr_delta"] = float(row["cagr_delta"])
+    summary["regime_count"] = int(regime_df["regime"].nunique()) if not regime_df.empty else 0
+
+    if component_signals and not oos_returns.empty:
+        if oos_returns.index.empty:
+            component_oos = {}
+            fwd_oos = pd.DataFrame()
+        else:
+            start = oos_returns.index.min()
+            end = oos_returns.index.max()
+            component_oos = {
+                name: frame.loc[start:end].copy()
+                for name, frame in component_signals.items()
+                if frame is not None and not frame.empty
+            }
+            fwd_oos = forward_returns.loc[start:end].copy()
+        ablation_df = compute_ablation_contributions(
+            component_signals=component_oos,
+            forward_returns=fwd_oos,
+        )
+    else:
+        ablation_df = pd.DataFrame(
+            columns=[
+                "component",
+                "standalone_sharpe",
+                "standalone_cagr",
+                "standalone_max_drawdown",
+                "marginal_sharpe_delta",
+                "ensemble_sharpe",
+            ]
+        )
+
+    if not ablation_df.empty:
+        summary["ablation_component_count"] = int(len(ablation_df))
+        summary["best_component_marginal_sharpe"] = float(
+            ablation_df.iloc[0]["marginal_sharpe_delta"]
+        )
+
+    return {
+        "window_metrics": window_metrics,
+        "summary": summary,
+        "oos_returns": oos_returns,
+        "benchmark_comparison": benchmark_df,
+        "regime_performance": regime_df,
+        "ablation_analysis": ablation_df,
     }
 
 

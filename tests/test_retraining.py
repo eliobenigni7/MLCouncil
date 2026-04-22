@@ -77,3 +77,48 @@ def test_train_candidate_model_emits_walk_forward_metrics(monkeypatch):
     assert "oos_turnover" in metrics
     assert "walk_forward_window_count" in metrics
     assert "pbo" in metrics
+
+
+def test_train_candidate_model_emits_phase3_breakdowns(monkeypatch):
+    from data.retraining import RetrainingPipeline
+
+    class DummyModel:
+        def fit(self, features, targets):
+            return self
+
+        def predict(self, features):
+            dates = pd.Index(features.index)
+            base = pd.Series(np.linspace(0.05, 0.25, len(dates)), index=dates)
+            return pd.DataFrame(
+                {
+                    "AAA": base + 0.02,
+                    "BBB": base,
+                    "CCC": base - 0.02,
+                },
+                index=dates,
+            )
+
+    pipeline = RetrainingPipeline()
+    monkeypatch.setattr(pipeline, "_build_model", lambda model_name: DummyModel())
+
+    dates = pd.bdate_range("2024-01-02", periods=18)
+    features = pd.DataFrame({"feature": np.arange(len(dates), dtype=float)}, index=dates)
+    targets = pd.DataFrame(
+        {
+            "AAA": np.linspace(0.03, 0.01, len(dates)),
+            "BBB": np.linspace(0.015, 0.005, len(dates)),
+            "CCC": np.linspace(-0.01, 0.0, len(dates)),
+        },
+        index=dates,
+    )
+
+    _, metrics = pipeline.train_candidate_model(
+        "lgbm",
+        features,
+        targets,
+        validation_window=4,
+    )
+
+    assert "equal_weight_sharpe_delta" in metrics
+    assert "equal_weight_cagr_delta" in metrics
+    assert "regime_count" in metrics

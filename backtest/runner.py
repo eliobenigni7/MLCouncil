@@ -35,6 +35,7 @@ Nota PoC
 from __future__ import annotations
 
 import os
+import platform
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -526,6 +527,51 @@ def run_backtest(
     except Exception:
         pass
 
+    return result
+
+
+def _collect_environment_metadata() -> dict[str, str]:
+    """Capture reproducibility metadata for retrospective validation runs."""
+    return {
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "numpy_version": np.__version__,
+        "pandas_version": pd.__version__,
+        "runtime_profile": os.getenv("MLCOUNCIL_ENV_PROFILE", "unknown"),
+        "slippage_bps_default": str(get_default_slippage_bps()),
+        "commission_bps_default": str(get_default_commission_bps()),
+    }
+
+
+def run_walk_forward_backtest(
+    *,
+    signals: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+    train_window: int = 252,
+    test_window: int = 63,
+    step: int | None = None,
+    purge_period: int = 1,
+    embargo_period: int = 1,
+    benchmark_returns: dict[str, pd.Series] | None = None,
+    regime_labels: pd.Series | None = None,
+    component_signals: dict[str, pd.DataFrame] | None = None,
+) -> dict[str, object]:
+    """Run deterministic walk-forward validation with benchmark/regime diagnostics."""
+    from backtest.validation import run_walk_forward_analysis
+
+    result = run_walk_forward_analysis(
+        signals=signals,
+        forward_returns=forward_returns,
+        train_window=train_window,
+        test_window=test_window,
+        step=step,
+        purge_period=purge_period,
+        embargo_period=embargo_period,
+        benchmark_returns=benchmark_returns,
+        regime_labels=regime_labels,
+        component_signals=component_signals,
+    )
+    result["environment_metadata"] = _collect_environment_metadata()
     return result
 
 

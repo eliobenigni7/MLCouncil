@@ -446,3 +446,52 @@ class TestTransactionCostRealism:
         assert stats["estimated_costs_usd"] == pytest.approx(15.0)
         assert "gross_sharpe" in stats
         assert "gross_max_drawdown" in stats
+
+
+class TestWalkForwardRunner:
+    def test_run_walk_forward_backtest_returns_validation_bundle(self):
+        from backtest.runner import run_walk_forward_backtest
+
+        dates = pd.bdate_range("2024-01-02", periods=24)
+        signals = pd.DataFrame(
+            {
+                "AAA": np.linspace(0.2, 1.2, len(dates)),
+                "BBB": np.linspace(-0.1, 0.3, len(dates)),
+                "CCC": np.linspace(-0.4, -0.2, len(dates)),
+            },
+            index=dates,
+        )
+        forward_returns = pd.DataFrame(
+            {
+                "AAA": np.linspace(0.001, 0.004, len(dates)),
+                "BBB": np.linspace(0.0002, 0.001, len(dates)),
+                "CCC": np.linspace(-0.0006, -0.0002, len(dates)),
+            },
+            index=dates,
+        )
+        components = {
+            "technical": signals,
+            "sentiment": signals * 0.4,
+            "regime": signals * 0.2,
+        }
+
+        result = run_walk_forward_backtest(
+            signals=signals,
+            forward_returns=forward_returns,
+            train_window=8,
+            test_window=4,
+            step=4,
+            purge_period=1,
+            embargo_period=1,
+            component_signals=components,
+        )
+
+        assert "summary" in result
+        assert "window_metrics" in result
+        assert "benchmark_comparison" in result
+        assert "regime_performance" in result
+        assert "ablation_analysis" in result
+        assert "environment_metadata" in result
+        assert result["environment_metadata"]["python_version"]
+        assert result["summary"]["walk_forward_window_count"] >= 1
+        assert not result["ablation_analysis"].empty
