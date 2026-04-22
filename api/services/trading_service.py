@@ -1018,6 +1018,7 @@ class TradingService:
     def _write_execution_record(self, date: str, data: dict[str, Any]) -> Path:
         OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = self._execution_record_path(date)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, default=str))
         return path
 
@@ -1041,6 +1042,7 @@ class TradingService:
     ) -> Path:
         INTRADAY_OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = self._intraday_execution_record_path(decision_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, default=str))
         return path
 
