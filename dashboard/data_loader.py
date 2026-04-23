@@ -72,6 +72,28 @@ def _empty_portfolio_snapshot() -> pd.DataFrame:
     return pd.DataFrame(columns=_PORTFOLIO_SNAPSHOT_COLUMNS)
 
 
+def _densify_business_days(series: pd.Series) -> pd.Series:
+    """Reindex a time series to business days and forward-fill gaps.
+
+    Dashboard artifacts are expected to be daily equity curves. Some sources
+    persist only sparse rebalance snapshots; filling the missing business days
+    keeps the chart continuous and makes rolling-window metrics usable.
+    """
+    if series is None or series.empty:
+        return series
+
+    out = series.copy()
+    out.index = pd.to_datetime(out.index)
+    out = out.sort_index()
+    if len(out) < 2:
+        return out
+
+    full_index = pd.bdate_range(out.index.min(), out.index.max())
+    out = out.reindex(full_index).ffill()
+    out.name = series.name
+    return out
+
+
 def _load_json(path: Path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
@@ -163,6 +185,7 @@ def load_equity_curve(mode: str = "Paper Trading") -> pd.Series:
     # Normalize to 100 — hides actual capital from public view
     if equity.iloc[0] > 0:
         equity = equity / equity.iloc[0] * 100.0
+    equity = _densify_business_days(equity)
     equity.name = "equity_normalized"
     return equity
 
@@ -263,7 +286,12 @@ def load_benchmark(mode: str = "Paper Trading") -> pd.Series:
                     spy.index = pd.to_datetime(spy.index)
                     spy = spy[(spy.index >= start) & (spy.index <= end)]
                     if not spy.empty:
-                        return spy / spy.iloc[0] * 100.0
+                        spy = spy / spy.iloc[0] * 100.0
+                        spy = spy.reindex(equity.index, method="ffill").dropna()
+                        if not spy.empty:
+                            spy = _densify_business_days(spy)
+                            spy.name = "SPY"
+                            return spy
         except Exception:
             pass
 

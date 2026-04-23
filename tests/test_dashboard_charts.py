@@ -23,6 +23,26 @@ def test_weight_evolution_chart_uses_valid_fillcolor():
     ]
 
 
+def test_equity_curve_chart_omits_drawdown_overlay_and_handles_gaps():
+    from dashboard.charts import equity_curve_chart
+
+    equity = pd.Series(
+        [100.0, 102.0, 104.0, 120.0],
+        index=pd.to_datetime(["2026-04-01", "2026-04-02", "2026-04-03", "2026-04-14"]),
+    )
+    benchmark = pd.Series(
+        [100.0, 100.5, 101.0, 102.0],
+        index=equity.index,
+    )
+
+    fig = equity_curve_chart(equity, benchmark)
+
+    assert fig.layout.title.text == "Equity Curve vs SPY (normalized to 100)"
+    assert len(fig.data) == 4
+    assert {trace.name for trace in fig.data if trace.name is not None} == {"ML Council", "SPY"}
+    assert any("Gap detected in equity curve" in ann.text for ann in fig.layout.annotations)
+
+
 def test_regime_timeline_uses_valid_annotation_colors():
     assert _annotation_color("rgba(44, 160, 44, 0.25)") == "rgb(44, 160, 44)"
 

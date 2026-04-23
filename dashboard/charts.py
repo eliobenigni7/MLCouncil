@@ -114,34 +114,6 @@ def equity_curve_chart(
             text=f"<span style='color:#ffb703'>Gap detected in equity curve: {segment_count} segments shown</span>",
         )
 
-    # Drawdown band per continuous segment
-    for seg_id in range(segment_count):
-        seg = equity[segment_ids == seg_id]
-        if seg.empty:
-            continue
-        rolling_peak = seg.cummax()
-        in_dd = seg < rolling_peak
-        if in_dd.any():
-            fig.add_trace(go.Scatter(
-                x=seg.index,
-                y=rolling_peak.values,
-                fill=None,
-                mode="lines",
-                line=dict(width=0),
-                showlegend=False,
-                hoverinfo="skip",
-            ))
-            fig.add_trace(go.Scatter(
-                x=seg.index,
-                y=seg.values,
-                fill="tonexty",
-                mode="none",
-                fillcolor="rgba(214, 39, 40, 0.15)",
-                name="Drawdown" if seg_id == 0 else None,
-                showlegend=seg_id == 0,
-                hoverinfo="skip",
-            ))
-
     # Benchmark, split on the same gaps so it doesn't bridge missing periods.
     if not benchmark.empty:
         benchmark = benchmark.sort_index()

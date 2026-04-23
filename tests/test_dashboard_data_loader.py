@@ -78,6 +78,19 @@ def test_load_equity_curve_prefers_real_risk_reports_when_orders_lack_portfolio_
     assert equity.round(2).tolist() == [100.0, 105.0]
 
 
+def test_load_equity_curve_densifies_sparse_business_days(monkeypatch, tmp_path):
+    data_loader = _load_data_loader(monkeypatch)
+    _configure_loader_paths(monkeypatch, data_loader, tmp_path)
+
+    _write_risk_report(tmp_path, "2026-04-08", 100_000.0)
+    _write_risk_report(tmp_path, "2026-04-10", 110_000.0)
+
+    equity = data_loader.load_equity_curve("Paper Trading")
+
+    assert list(equity.index.strftime("%Y-%m-%d")) == ["2026-04-08", "2026-04-09", "2026-04-10"]
+    assert equity.round(2).tolist() == [100.0, 100.0, 110.0]
+
+
 def test_load_benchmark_uses_real_sp500_macro_series(monkeypatch, tmp_path):
     data_loader = _load_data_loader(monkeypatch)
     _configure_loader_paths(monkeypatch, data_loader, tmp_path)
