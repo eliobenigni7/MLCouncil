@@ -72,6 +72,11 @@ def equity_curve_chart(
 ) -> go.Figure:
     """Equity curve vs benchmark normalized to 100, with drawdown band.
 
+    This function preserves genuine discontinuities in the underlying series.
+    If the equity curve has a large date gap (e.g. missing months/years), the
+    line is split into separate contiguous segments so Plotly does not draw a
+    misleading straight line across the gap.
+
     Parameters
     ----------
     equity : pd.Series
@@ -81,17 +86,44 @@ def equity_curve_chart(
     """
     fig = go.Figure()
 
-    # Drawdown band: fill below running peak in red
-    if not equity.empty:
-        rolling_peak = equity.cummax()
-        drawdown_upper = rolling_peak
-        drawdown_lower = equity
+    if equity.empty:
+        fig.update_layout(
+            **_DARK_LAYOUT,
+            title="Equity Curve vs SPY (normalized to 100)",
+            xaxis_title="Date",
+            yaxis_title="Value (base 100)",
+            hovermode="x unified",
+            legend=dict(orientation="h", y=1.08),
+        )
+        return fig
 
-        # Fill only where drawdown > threshold
-        in_dd = equity < rolling_peak
+    equity = equity.sort_index()
+    gap_threshold = pd.Timedelta(days=7)
+    gap_positions = equity.index.to_series().diff() > gap_threshold
+    segment_ids = gap_positions.cumsum().astype(int)
+
+    segment_count = int(segment_ids.max()) + 1 if len(segment_ids) else 0
+    if gap_positions.any():
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.01,
+            y=1.16,
+            showarrow=False,
+            align="left",
+            text=f"<span style='color:#ffb703'>Gap detected in equity curve: {segment_count} segments shown</span>",
+        )
+
+    # Drawdown band per continuous segment
+    for seg_id in range(segment_count):
+        seg = equity[segment_ids == seg_id]
+        if seg.empty:
+            continue
+        rolling_peak = seg.cummax()
+        in_dd = seg < rolling_peak
         if in_dd.any():
             fig.add_trace(go.Scatter(
-                x=equity.index,
+                x=seg.index,
                 y=rolling_peak.values,
                 fill=None,
                 mode="lines",
@@ -100,34 +132,46 @@ def equity_curve_chart(
                 hoverinfo="skip",
             ))
             fig.add_trace(go.Scatter(
-                x=equity.index,
-                y=equity.values,
+                x=seg.index,
+                y=seg.values,
                 fill="tonexty",
                 mode="none",
                 fillcolor="rgba(214, 39, 40, 0.15)",
-                name="Drawdown",
+                name="Drawdown" if seg_id == 0 else None,
+                showlegend=seg_id == 0,
                 hoverinfo="skip",
             ))
 
-    # Benchmark
+    # Benchmark, split on the same gaps so it doesn't bridge missing periods.
     if not benchmark.empty:
-        bm_aligned = benchmark.reindex(equity.index, method="ffill")
-        fig.add_trace(go.Scatter(
-            x=bm_aligned.index,
-            y=bm_aligned.values,
-            mode="lines",
-            name="SPY",
-            line=dict(color="#636EFA", width=1.5, dash="dot"),
-            opacity=0.75,
-        ))
+        benchmark = benchmark.sort_index()
+        bm = benchmark.reindex(equity.index)
+        for seg_id in range(segment_count):
+            seg_idx = equity.index[segment_ids == seg_id]
+            if len(seg_idx) == 0:
+                continue
+            bm_seg = bm.reindex(seg_idx).ffill()
+            fig.add_trace(go.Scatter(
+                x=bm_seg.index,
+                y=bm_seg.values,
+                mode="lines",
+                name="SPY" if seg_id == 0 else None,
+                showlegend=seg_id == 0,
+                line=dict(color="#636EFA", width=1.5, dash="dot"),
+                opacity=0.75,
+            ))
 
-    # Portfolio equity
-    if not equity.empty:
+    # Portfolio equity, one trace per continuous segment.
+    for seg_id in range(segment_count):
+        seg = equity[segment_ids == seg_id]
+        if seg.empty:
+            continue
         fig.add_trace(go.Scatter(
-            x=equity.index,
-            y=equity.values,
+            x=seg.index,
+            y=seg.values,
             mode="lines",
-            name="ML Council",
+            name="ML Council" if seg_id == 0 else None,
+            showlegend=seg_id == 0,
             line=dict(color="#00CC96", width=2.5),
         ))
 

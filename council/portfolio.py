@@ -215,6 +215,45 @@ class PortfolioConstructor:
             portfolio_value=portfolio_value,
         )
 
+    @staticmethod
+    def _project_to_capped_simplex(
+        values: np.ndarray,
+        budget_fraction: float,
+        upper_bounds: np.ndarray,
+    ) -> np.ndarray:
+        """Project weights onto a capped simplex with exact budget and caps."""
+        v = np.asarray(values, dtype=float).copy()
+        u = np.asarray(upper_bounds, dtype=float).copy()
+        if v.size == 0:
+            return v
+        v = np.where(np.isfinite(v), v, 0.0)
+        u = np.where(np.isfinite(u), np.maximum(u, 0.0), 0.0)
+        budget = float(np.clip(budget_fraction, 0.0, float(u.sum())))
+        if budget <= 1e-12:
+            return np.zeros_like(v)
+        if float(u.sum()) <= budget + 1e-12:
+            return u
+
+        def clipped_sum(tau: float) -> float:
+            return float(np.clip(v - tau, 0.0, u).sum())
+
+        lo = float(np.min(v - u)) - 1.0
+        hi = float(np.max(v)) + 1.0
+        while clipped_sum(lo) < budget:
+            lo -= max(1.0, abs(lo) + 1.0)
+        while clipped_sum(hi) > budget:
+            hi += max(1.0, abs(hi) + 1.0)
+
+        for _ in range(100):
+            mid = (lo + hi) / 2.0
+            if clipped_sum(mid) > budget:
+                lo = mid
+            else:
+                hi = mid
+
+        return np.clip(v - hi, 0.0, u)
+
+
     def optimize(
         self,
         alpha_signals: pd.Series,
@@ -409,27 +448,11 @@ class PortfolioConstructor:
             )
 
         weights = np.clip(w.value, 0.0, None)
-
-        weights[weights < effective_min_position] = 0.0
-        total = weights.sum()
-        if total < 1e-9:
-            weights = np.ones(n) / n
-        else:
-            # Normalize to the budget fraction, NOT to 1.0, preserving the
-            # cash reserve for intraday trading.
-            weights /= total
-            weights *= budget_fraction
-
-        # Re-normalising after zeroing small positions can push surviving
-        # weights above effective_max_position, violating the CVXPY constraint.
-        # Example: 10 positions at 10% each; zero one → re-norm gives 11.1%.
-        # Fix: clip again and re-normalise a second time to budget_fraction.
-        if weights.max() > effective_max_position + 1e-9:
-            weights = np.clip(weights, 0.0, effective_max_position)
-            total = weights.sum()
-            if total > 1e-9:
-                weights /= total
-                weights *= budget_fraction
+        weights = self._project_to_capped_simplex(
+            weights,
+            budget_fraction=budget_fraction,
+            upper_bounds=np.full(n, effective_max_position, dtype=float),
+        )
 
         return pd.Series(weights, index=tickers, name="target_weight")
 
@@ -453,8 +476,19 @@ class PortfolioConstructor:
 
         crypto_tickers = [t for t in alpha_signals.index if AlpacaLiveNode._is_crypto(t)]
         equity_tickers = [t for t in alpha_signals.index if t not in crypto_tickers]
+        overall_budget_fraction = self._get_budget_fraction(
+            self._get_portfolio_tier(portfolio_value)
+        )
 
-        results = {}
+        results: dict[str, float] = {}
+
+        def _signal_share(tickers: list[str]) -> float:
+            if not tickers:
+                return 0.0
+            total_abs = float(alpha_signals.abs().sum())
+            if total_abs <= 1e-12:
+                return float(len(tickers)) / float(len(alpha_signals)) if len(alpha_signals) else 0.0
+            return float(alpha_signals.reindex(tickers).abs().sum()) / total_abs
 
         # Equity optimization
         if equity_tickers:
@@ -464,10 +498,17 @@ class PortfolioConstructor:
             eq_cov = returns_covariance.reindex(index=equity_tickers, columns=equity_tickers)
             eq_market = market_returns if market_returns is not None else None
             eq_prices = prices.reindex(eq_signals.index) if prices is not None else None
-            results = self.optimize(
-                eq_signals, eq_mults, eq_curr, eq_cov, eq_market, eq_prices,
+            eq_result = self.optimize(
+                eq_signals,
+                eq_mults,
+                eq_curr,
+                eq_cov,
+                eq_market,
+                eq_prices,
                 portfolio_value=portfolio_value,
             ).to_dict()
+            eq_share = _signal_share(equity_tickers)
+            results.update({k: float(v) * eq_share for k, v in eq_result.items()})
 
         # Crypto optimization
         if crypto_tickers and self.crypto_enabled:
@@ -483,12 +524,18 @@ class PortfolioConstructor:
             cr_market = market_returns
             cr_prices = prices.reindex(cr_signals.index) if prices is not None else None
             cr_result = self.optimize(
-                cr_signals, cr_mults, cr_curr, cr_cov, cr_market, cr_prices
+                cr_signals,
+                cr_mults,
+                cr_curr,
+                cr_cov,
+                cr_market,
+                cr_prices,
             ).to_dict()
 
             self.max_position = saved_max_pos
             self.max_turnover = saved_max_turn
-            results.update(cr_result)
+            cr_share = _signal_share(crypto_tickers)
+            results.update({k: float(v) * cr_share for k, v in cr_result.items()})
         elif crypto_tickers:
             # Crypto disabled — include in equity optimization with standard limits
             cr_signals = alpha_signals[crypto_tickers]
@@ -500,7 +547,11 @@ class PortfolioConstructor:
             ).to_dict()
             results.update(cr_result)
 
-        return pd.Series(results, name="target_weight")
+        combined = pd.Series(results, dtype=float, name="target_weight")
+        total = float(combined.sum())
+        if total > overall_budget_fraction + 1e-9 and total > 1e-12:
+            combined = combined * (overall_budget_fraction / total)
+        return combined.sort_index()
 
     def _feasible_fallback_weights(
         self,

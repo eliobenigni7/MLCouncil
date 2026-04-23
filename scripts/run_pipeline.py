@@ -328,6 +328,9 @@ def step_portfolio(
     ohlcv: pl.DataFrame,
     last_date: date,
     portfolio_value: float = 1_000_000.0,
+    *,
+    save_orders: bool = True,
+    emit_report: bool = True,
 ) -> pd.Series:
     from council.portfolio import PortfolioConstructor
 
@@ -373,25 +376,34 @@ def step_portfolio(
     )
 
     constructor = PortfolioConstructor()
-    optimize_kwargs = {
-        "alpha_signals": filtered.reindex(cov_tickers).fillna(0.0),
-        "position_multipliers": multipliers.reindex(cov_tickers).fillna(1.0),
-        "current_weights": current_w,
-        "returns_covariance": cov,
-    }
-    try:
-        target_w = constructor.optimize(
-            **optimize_kwargs,
+    if getattr(constructor, "crypto_enabled", False) and any(t.upper().replace("-", "").replace("/", "").endswith("USD") for t in cov_tickers):
+        target_w = constructor.optimize_with_crypto(
+            alpha_signals=filtered.reindex(cov_tickers).fillna(0.0),
+            position_multipliers=multipliers.reindex(cov_tickers).fillna(1.0),
+            current_weights=current_w,
+            returns_covariance=cov,
             portfolio_value=portfolio_value,
         )
-    except TypeError:
-        # Backward compatibility for lightweight/dummy constructors used in tests.
-        target_w = constructor.optimize(**optimize_kwargs)
+    else:
+        optimize_kwargs = {
+            "alpha_signals": filtered.reindex(cov_tickers).fillna(0.0),
+            "position_multipliers": multipliers.reindex(cov_tickers).fillna(1.0),
+            "current_weights": current_w,
+            "returns_covariance": cov,
+        }
+        try:
+            target_w = constructor.optimize(
+                **optimize_kwargs,
+                portfolio_value=portfolio_value,
+            )
+        except TypeError:
+            # Backward compatibility for lightweight/dummy constructors used in tests.
+            target_w = constructor.optimize(**optimize_kwargs)
 
     orders = constructor.compute_orders(target_w, current_w, portfolio_value)
 
     # ── Save orders to parquet ───────────────────────────────────────────────
-    if not orders.empty:
+    if save_orders and not orders.empty:
         orders_df = pd.DataFrame({
             "ticker": orders.index,
             "direction": orders["direction"],
@@ -401,19 +413,21 @@ def step_portfolio(
         ORDERS_DIR.mkdir(parents=True, exist_ok=True)
         orders_path = ORDERS_DIR / f"{last_date}.parquet"
         orders_df.to_parquet(orders_path, index=False)
-        print(f"    [9] Ordini salvati in {orders_path}")
+        if emit_report:
+            print(f"    [9] Ordini salvati in {orders_path}")
 
     # ── Output ────────────────────────────────────────────────────────────────
-    print(f"[9] Target weights al {last_date} (portafoglio da ${portfolio_value:,.0f}):")
-    for ticker, w in target_w.sort_values(ascending=False).items():
-        bar = "█" * int(w * 200)
-        print(f"    {ticker:<6} {w:>6.2%}  {bar}")
+    if emit_report:
+        print(f"[9] Target weights al {last_date} (portafoglio da ${portfolio_value:,.0f}):")
+        for ticker, w in target_w.sort_values(ascending=False).items():
+            bar = "█" * int(w * 200)
+            print(f"    {ticker:<6} {w:>6.2%}  {bar}")
 
-    print(f"\n    Ordini da eseguire ({len(orders)} trade):")
-    if orders.empty:
-        print("    Nessun ordine (portafoglio già ottimale)")
-    else:
-        print(orders.to_string(index=False))
+        print(f"\n    Ordini da eseguire ({len(orders)} trade):")
+        if orders.empty:
+            print("    Nessun ordine (portafoglio già ottimale)")
+        else:
+            print(orders.to_string(index=False))
 
     return target_w
 

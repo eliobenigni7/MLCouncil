@@ -303,6 +303,31 @@ class TestTargets:
         null_count = last_5["ret_fwd_5d"].null_count()
         assert null_count > 0, "Expected NaN in last rows for 5d forward return"
 
+    def test_large_calendar_gap_is_not_treated_as_forward_return(self):
+        """A huge gap between observations must not create a fake forward return."""
+        from data.features.target import compute_targets
+
+        from datetime import date
+
+        df = pl.DataFrame(
+            {
+                "ticker": ["XYZ", "XYZ", "XYZ"],
+                "valid_time": [
+                    date(2024, 1, 2),
+                    date(2024, 1, 3),
+                    date(2026, 1, 5),
+                ],
+                "adj_close": [100.0, 101.0, 250.0],
+            }
+        )
+
+        targets = compute_targets(df, horizons=[1])
+        rows = targets.to_dicts()
+        ret_by_date = {row["valid_time"]: row["ret_fwd_1d"] for row in rows}
+
+        assert ret_by_date[date(2024, 1, 2)] is not None
+        assert ret_by_date[date(2024, 1, 3)] is None
+
     def test_custom_horizons(self, ohlcv_df):
         from data.features.target import compute_targets
 

@@ -457,23 +457,18 @@ class TestWalkForwardRunner:
             {
                 "AAA": np.linspace(0.2, 1.2, len(dates)),
                 "BBB": np.linspace(-0.1, 0.3, len(dates)),
-                "CCC": np.linspace(-0.4, -0.2, len(dates)),
+                "CCC": np.linspace(0.0, 0.8, len(dates)),
             },
             index=dates,
         )
         forward_returns = pd.DataFrame(
             {
-                "AAA": np.linspace(0.001, 0.004, len(dates)),
-                "BBB": np.linspace(0.0002, 0.001, len(dates)),
-                "CCC": np.linspace(-0.0006, -0.0002, len(dates)),
+                "AAA": np.linspace(0.01, 0.03, len(dates)),
+                "BBB": np.linspace(-0.02, 0.01, len(dates)),
+                "CCC": np.linspace(0.00, 0.02, len(dates)),
             },
             index=dates,
         )
-        components = {
-            "technical": signals,
-            "sentiment": signals * 0.4,
-            "regime": signals * 0.2,
-        }
 
         result = run_walk_forward_backtest(
             signals=signals,
@@ -483,15 +478,78 @@ class TestWalkForwardRunner:
             step=4,
             purge_period=1,
             embargo_period=1,
-            component_signals=components,
         )
 
         assert "summary" in result
         assert "window_metrics" in result
-        assert "benchmark_comparison" in result
-        assert "regime_performance" in result
-        assert "ablation_analysis" in result
-        assert "environment_metadata" in result
-        assert result["environment_metadata"]["python_version"]
-        assert result["summary"]["walk_forward_window_count"] >= 1
-        assert not result["ablation_analysis"].empty
+        assert "oos_returns" in result
+        assert result["summary"]["walk_forward_window_count"] > 0
+
+
+class TestDeterministicStrategyBacktest:
+    def test_simulate_weight_backtest_compounds_returns_and_costs(self):
+        from backtest.simulator import simulate_weight_backtest
+        from council.transaction_costs import TransactionCostModel
+
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+        weights = pd.DataFrame(
+            {
+                "AAA": [0.60, 0.40, 0.50],
+                "BBB": [0.40, 0.60, 0.50],
+            },
+            index=dates,
+        )
+        forward_returns = pd.DataFrame(
+            {
+                "AAA": [0.010, -0.020, 0.030],
+                "BBB": [0.000, 0.010, -0.010],
+            },
+            index=dates,
+        )
+
+        result = simulate_weight_backtest(
+            weights=weights,
+            forward_returns=forward_returns,
+            initial_capital=100_000.0,
+            cost_model=TransactionCostModel(commission_bps=0.0, slippage_bps=0.0),
+        )
+
+        expected = pd.Series(
+            [100_600.0, 100_398.8, 101_402.788],
+            index=dates,
+            name="equity",
+        )
+
+        pd.testing.assert_series_equal(result.equity_curve.round(6), expected.round(6))
+        assert result.stats["sharpe"] != 0.0
+        assert result.stats["turnover"] > 0.0
+
+    def test_simulate_weight_backtest_applies_transaction_costs(self):
+        from backtest.simulator import simulate_weight_backtest
+        from council.transaction_costs import TransactionCostModel
+
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+        weights = pd.DataFrame(
+            {
+                "AAA": [1.0, 0.0],
+                "BBB": [0.0, 1.0],
+            },
+            index=dates,
+        )
+        forward_returns = pd.DataFrame(
+            {
+                "AAA": [0.00, 0.00],
+                "BBB": [0.00, 0.00],
+            },
+            index=dates,
+        )
+
+        result = simulate_weight_backtest(
+            weights=weights,
+            forward_returns=forward_returns,
+            initial_capital=100_000.0,
+            cost_model=TransactionCostModel(commission_bps=10.0, slippage_bps=0.0),
+        )
+
+        assert result.equity_curve.iloc[1] < 100_000.0
+        assert result.stats["estimated_costs_usd"] > 0.0

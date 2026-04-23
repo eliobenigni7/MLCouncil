@@ -445,6 +445,31 @@ class TestPortfolioConstructor:
         orders = constructor.compute_orders(weights, weights, portfolio_value=100.0)
         assert len(orders) == 0, "No orders expected when weights are identical"
 
+    def test_optimize_with_crypto_preserves_budget_and_caps(self, monkeypatch):
+        """Crypto-aware optimization should keep the total budget and cap crypto legs."""
+        monkeypatch.setenv("MLCOUNCIL_CRYPTO_ENABLED", "true")
+        from council.portfolio import PortfolioConstructor
+
+        constructor = PortfolioConstructor()
+        tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "JPM", "XOM", "BTCUSD", "ETHUSD"]
+        alpha = pd.Series([0.9, 0.8, 0.78, 0.76, 0.74, 0.72, 0.7, 0.68, 0.66, 0.64], index=tickers, dtype=float)
+        multipliers = pd.Series(1.0, index=tickers)
+        current_w = pd.Series(1.0 / len(tickers), index=tickers)
+        cov = pd.DataFrame(np.eye(len(tickers)) * 0.0001, index=tickers, columns=tickers)
+
+        target = constructor.optimize_with_crypto(
+            alpha_signals=alpha,
+            position_multipliers=multipliers,
+            current_weights=current_w,
+            returns_covariance=cov,
+            portfolio_value=100_000.0,
+        )
+
+        assert abs(float(target.sum()) - 0.85) < 1e-4
+        assert (target >= -1e-6).all()
+        assert (target[["BTCUSD", "ETHUSD"]] <= constructor.max_crypto_position + 1e-4).all()
+        assert (target[["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "JPM", "XOM"]] <= constructor.max_position + 1e-4).all()
+
     def test_sector_aware_fallback_respects_dynamic_sector_cap(self, constructor):
         """Il fallback deve restare investibile senza concentrare tutto nel tech."""
         import builtins

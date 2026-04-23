@@ -56,7 +56,22 @@ def compute_targets(
 
         for h in horizons:
             fwd_price = c.shift(-h)
-            exprs.append((fwd_price / c - 1.0).alias(f"ret_fwd_{h}d"))
+            raw_fwd_ret = fwd_price / c - 1.0
+
+            # Guard against accidental cross-window contamination: if the next
+            # observation is too far away in calendar time, the "forward" return
+            # is not a true next-trading-day return and would create a bogus spike
+            # in the backtest.  Seven calendar days per horizon is generous enough
+            # to cover weekends and holidays while rejecting multi-month / multi-year
+            # gaps in the raw data.
+            max_gap = pl.duration(days=7 * h)
+            valid_gap = (pl.col("valid_time").shift(-h) - pl.col("valid_time")) <= max_gap
+            exprs.append(
+                pl.when(valid_gap)
+                .then(raw_fwd_ret)
+                .otherwise(None)
+                .alias(f"ret_fwd_{h}d")
+            )
 
         if risk_adjusted:
             # Compute rolling vol within this ticker's partition to avoid
