@@ -821,6 +821,26 @@ class TestFullPipelineSynthetic:
         assert len(result) == len(self.TICKERS)
         assert abs(result.sum() - 1.0) < 1e-6
 
+    def test_portfolio_weights_uses_standard_optimizer_for_equities_only(self):
+        """Con solo equity il pipeline step deve evitare il ramo crypto."""
+        ctx = _make_context(self.PARTITION)
+        council = pd.Series([1.2, -0.4, 0.8], index=self.TICKERS)
+        expected = pd.Series([0.5, 0.3, 0.2], index=self.TICKERS, name="target_weight")
+
+        with patch.object(_pipeline, "_compute_covariance", return_value=pd.DataFrame(
+            np.eye(len(self.TICKERS)) * 0.0001, index=self.TICKERS, columns=self.TICKERS
+        )), patch.object(_pipeline, "_load_live_portfolio_snapshot", return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0)), patch(
+            "council.portfolio.PortfolioConstructor.optimize", return_value=expected
+        ) as mock_optimize, patch(
+            "council.portfolio.PortfolioConstructor.optimize_with_crypto",
+            side_effect=AssertionError("optimize_with_crypto should not be used for equity-only universes"),
+        ):
+            result = _call_asset(_pipeline.portfolio_weights, ctx, council)
+
+        assert isinstance(result, pd.Series)
+        assert result.equals(expected)
+        mock_optimize.assert_called_once()
+
     def test_daily_orders_valid_schema(self):
         """daily_orders produce un DataFrame con schema corretto."""
         ctx = _make_context(self.PARTITION)

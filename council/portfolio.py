@@ -475,6 +475,17 @@ class PortfolioConstructor:
         from execution.alpaca_adapter import AlpacaLiveNode
 
         crypto_tickers = [t for t in alpha_signals.index if AlpacaLiveNode._is_crypto(t)]
+        if not crypto_tickers:
+            return self.optimize(
+                alpha_signals,
+                position_multipliers,
+                current_weights,
+                returns_covariance,
+                market_returns,
+                prices,
+                portfolio_value=portfolio_value,
+            )
+
         equity_tickers = [t for t in alpha_signals.index if t not in crypto_tickers]
         overall_budget_fraction = self._get_budget_fraction(
             self._get_portfolio_tier(portfolio_value)

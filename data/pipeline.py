@@ -1296,7 +1296,8 @@ def portfolio_weights(
 
     constructor = PortfolioConstructor()
     optimize_with_crypto = getattr(constructor, "optimize_with_crypto", None)
-    if callable(optimize_with_crypto):
+    has_crypto = any(_pipeline_crypto_check(ticker) for ticker in cov_tickers)
+    if callable(optimize_with_crypto) and has_crypto:
         weights = optimize_with_crypto(
             alpha_signals=signal_aligned,
             position_multipliers=multipliers,
@@ -1338,6 +1339,12 @@ def portfolio_weights(
         lineage_artifact_payload(weights_lineage, position_count=len(weights))
     )
     return weights
+
+
+def _pipeline_crypto_check(ticker: str) -> bool:
+    from execution.alpaca_adapter import AlpacaLiveNode
+
+    return AlpacaLiveNode._is_crypto(ticker)
 
 
 @dg.asset(
