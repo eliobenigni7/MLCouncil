@@ -61,6 +61,49 @@ def _load_configured_universe() -> set[str]:
 
 
 def _load_ohlcv() -> pl.DataFrame:
+    def _normalize_ohlcv_frame(df: pl.DataFrame, ticker: str) -> pl.DataFrame:
+        if "symbol" in df.columns:
+            df = df.drop("symbol")
+        if "ticker" not in df.columns:
+            df = df.with_columns(pl.lit(ticker).alias("ticker"))
+        if "transaction_time" in df.columns:
+            df = df.drop("transaction_time")
+        if "valid_time" in df.columns:
+            if df["valid_time"].dtype == pl.Datetime:
+                df = df.with_columns(pl.col("valid_time").dt.replace_time_zone("UTC").cast(pl.Date))
+            elif df["valid_time"].dtype != pl.Date:
+                df = df.with_columns(pl.col("valid_time").cast(pl.Date))
+        keep_cols = [c for c in ["ticker", "valid_time", "open", "high", "low", "close", "adj_close", "volume"] if c in df.columns]
+        return df.select(keep_cols) if keep_cols else df
+
+    def _download_ohlcv_yfinance(ticker: str, start: str, end: str) -> pl.DataFrame:
+        try:
+            import yfinance as yf
+            import pandas as pd_yf
+
+            raw = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                auto_adjust=False,
+                progress=False,
+                actions=False,
+            )
+            if raw is None or raw.empty:
+                return pl.DataFrame()
+            if isinstance(raw.columns, pd_yf.MultiIndex):
+                raw.columns = [col[0] for col in raw.columns]
+            raw = raw.rename(columns={"Adj Close": "adj_close"})
+            raw.columns = [c.lower() for c in raw.columns]
+            raw = raw.reset_index().rename(columns={"date": "valid_time", "Date": "valid_time"})
+            df = pl.from_pandas(raw)
+            if "valid_time" in df.columns and df["valid_time"].dtype != pl.Date:
+                df = df.with_columns(pl.col("valid_time").cast(pl.Date))
+            df = _normalize_ohlcv_frame(df, ticker)
+            return df.sort(["ticker", "valid_time"]) if "ticker" in df.columns else df.sort("valid_time")
+        except Exception:
+            return pl.DataFrame()
+
     frames: list[pl.DataFrame] = []
     raw_dir = ROOT / "data" / "raw" / "ohlcv"
     if not raw_dir.exists():
@@ -73,31 +116,47 @@ def _load_ohlcv() -> pl.DataFrame:
         ticker = ticker_dir.name.upper()
         if ticker not in allowed:
             continue
+
+        ticker_frames: list[pl.DataFrame] = []
         for pq in sorted(ticker_dir.glob("*.parquet")):
             try:
                 df = pl.read_parquet(pq)
             except Exception as exc:
                 print(f"[warn] skipping {pq.name}: {exc}")
                 continue
+            df = _normalize_ohlcv_frame(df, ticker)
+            if not df.is_empty():
+                ticker_frames.append(df)
 
-            if "symbol" in df.columns:
-                df = df.drop("symbol")
-            if "ticker" not in df.columns:
-                df = df.with_columns(pl.lit(ticker).alias("ticker"))
-            if "transaction_time" in df.columns:
-                df = df.drop("transaction_time")
-            if "valid_time" in df.columns:
-                if df["valid_time"].dtype == pl.Datetime:
-                    df = df.with_columns(pl.col("valid_time").dt.replace_time_zone("UTC").cast(pl.Date))
-                elif df["valid_time"].dtype != pl.Date:
-                    df = df.with_columns(pl.col("valid_time").cast(pl.Date))
+        if not ticker_frames:
+            continue
 
-            frames.append(df)
+        ticker_df = (
+            pl.concat(ticker_frames, how="vertical_relaxed")
+            .unique(subset=["ticker", "valid_time"], keep="last")
+            .sort(["ticker", "valid_time"])
+        )
+
+        valid_times = pd.to_datetime(ticker_df.get_column("valid_time").to_pandas()).sort_values()
+        if len(valid_times) > 1 and valid_times.diff().dt.days.dropna().gt(7).any():
+            remote = _download_ohlcv_yfinance(ticker, str(valid_times.min().date()), str(valid_times.max().date()))
+            if not remote.is_empty():
+                try:
+                    end_inclusive = (pd.to_datetime(valid_times.max().date()) + pd.Timedelta(days=1)).date()
+                except Exception:
+                    end_inclusive = pd.to_datetime(valid_times.max().date()).date()
+
+                ticker_df = _normalize_ohlcv_frame(remote, ticker).filter(
+                    (pl.col("valid_time") >= pl.lit(valid_times.min().date()).cast(pl.Date))
+                    & (pl.col("valid_time") <= pl.lit(end_inclusive).cast(pl.Date))
+                ).sort(["ticker", "valid_time"])
+
+        frames.append(ticker_df)
 
     if not frames:
         raise SystemExit("No OHLCV data found")
 
-    return pl.concat(frames).unique(["ticker", "valid_time"]).sort(["ticker", "valid_time"])
+    return pl.concat(frames, how="vertical_relaxed").unique(["ticker", "valid_time"]).sort(["ticker", "valid_time"])
 
 
 def _macro_path(name: str) -> str | None:

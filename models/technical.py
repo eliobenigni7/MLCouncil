@@ -342,10 +342,15 @@ class TechnicalModel(BaseModel):
         if self._model is None:
             raise RuntimeError("Model not fitted. Call fit() first.")
 
-        feat_cols = self._feature_cols
-        df = features.select(
-            ["ticker", "valid_time"] + feat_cols
-        ).to_pandas()
+        feat_cols = list(self._feature_cols or self._feature_cols_from(features))
+        present_cols = [c for c in feat_cols if c in features.columns]
+        missing_cols = [c for c in feat_cols if c not in features.columns]
+
+        df = features.select(["ticker", "valid_time"] + present_cols).to_pandas()
+        for col in missing_cols:
+            df[col] = 0.0
+        if feat_cols:
+            df = df[["ticker", "valid_time"] + feat_cols]
 
         # Normalize valid_time dtype for groupby
         if pd.api.types.is_datetime64_any_dtype(df["valid_time"]):
@@ -353,7 +358,7 @@ class TechnicalModel(BaseModel):
         else:
             df["valid_time"] = pd.to_datetime(df["valid_time"], errors="coerce").dt.date
 
-        X = df[feat_cols].fillna(0.0)
+        X = df[feat_cols].fillna(0.0) if feat_cols else pd.DataFrame(index=df.index)
         raw_scores = self._model.predict(X)
 
         df = df[["ticker", "valid_time"]].copy()

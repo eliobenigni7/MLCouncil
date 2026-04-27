@@ -1165,30 +1165,41 @@ class TradingService:
     def _orders_from_intraday_decision(self, decision: dict[str, Any]) -> list[dict[str, Any]]:
         orders: list[dict[str, Any]] = []
         # Extract prices from feature snapshot if available
-        feature_prices = {}
+        feature_prices: dict[str, float] = {}
         feature_snapshot = decision.get("feature_snapshot", {})
         for ticker, feats in feature_snapshot.get("features", {}).items():
             if isinstance(feats, dict) and "close" in feats:
-                feature_prices[ticker] = float(feats["close"])
+                try:
+                    feature_prices[ticker] = float(feats["close"])
+                except (TypeError, ValueError):
+                    continue
 
         for intent in decision.get("execution_intents", []):
             ticker = str(intent.get("ticker", ""))
             side = str(intent.get("side", "buy")).lower()
             quantity_notional = float(intent.get("quantity_notional", 0.0) or 0.0)
             estimated_price = float(intent.get("estimated_price", 0.0) or 0.0)
-            # Fallback to feature snapshot price if not in intent
+
+            # Prefer the intent price, then the feature snapshot, then a live lookup.
             if estimated_price <= 0 and ticker in feature_prices:
                 estimated_price = feature_prices[ticker]
-            # Convert notional to share count for equities; keep raw qty for crypto
-            if quantity_notional > 0 and estimated_price > 0 and not self.node._is_crypto(ticker):
+            if estimated_price <= 0:
+                try:
+                    latest_price = self.node.get_latest_price(ticker)
+                    if latest_price:
+                        estimated_price = float(latest_price)
+                except Exception:  # noqa: BLE001
+                    estimated_price = 0.0
+
+            # Convert notional to an actual trade quantity when we know the price.
+            # For crypto this is mandatory because Alpaca expects coin units.
+            # For equities this keeps the existing share-based execution path while
+            # preserving the fractional quantity in the order payload.
+            if quantity_notional > 0 and estimated_price > 0:
                 share_quantity = quantity_notional / estimated_price
-                # Round to whole shares for equities
-                if side == "sell":
-                    share_quantity = int(share_quantity)
-                else:
-                    share_quantity = int(round(share_quantity))
             else:
-                share_quantity = quantity_notional
+                share_quantity = 0.0
+
             orders.append(
                 {
                     "ticker": ticker,

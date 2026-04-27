@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -124,6 +125,67 @@ def _make_trade_fills(
             }
         )
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Test 0 — OHLCV loader must not preserve huge calendar holes
+# ---------------------------------------------------------------------------
+
+class TestOhlcvLoader:
+    def test_load_ohlcv_prefers_remote_prices_on_overlap(self, tmp_path, monkeypatch):
+        """When remote data is used to bridge a gap, overlapping dates must prefer yfinance."""
+        from backtest import runner as bt_runner
+
+        data_dir = tmp_path / "raw"
+        ticker_dir = data_dir / "ohlcv" / "META"
+        ticker_dir.mkdir(parents=True, exist_ok=True)
+
+        local_df = pl.DataFrame(
+            {
+                "valid_time": [
+                    pd.Timestamp("2024-04-01").date(),
+                    pd.Timestamp("2024-04-19").date(),
+                ],
+                "open": [100.0, 150.0],
+                "high": [101.0, 151.0],
+                "low": [99.0, 149.0],
+                "close": [100.5, 150.5],
+                "adj_close": [100.5, 150.5],
+                "volume": [1_000_000, 1_500_000],
+            }
+        )
+        local_df.write_parquet(ticker_dir / "META.parquet")
+
+        business_days = pd.bdate_range("2024-04-01", "2024-04-20")
+        yf_df = pd.DataFrame(
+            {
+                "Open": np.linspace(200.0, 219.0, len(business_days)),
+                "High": np.linspace(201.0, 220.0, len(business_days)),
+                "Low": np.linspace(199.0, 218.0, len(business_days)),
+                "Close": np.linspace(200.5, 219.5, len(business_days)),
+                "Adj Close": np.linspace(200.5, 219.5, len(business_days)),
+                "Volume": np.linspace(2_000_000, 3_000_000, len(business_days)).astype(int),
+            },
+            index=business_days,
+        )
+        yf_df.index.name = "Date"
+
+        monkeypatch.setattr(bt_runner, "_DATA_DIR", data_dir)
+
+        from unittest.mock import patch
+        with patch("yfinance.download", return_value=yf_df):
+            loaded = bt_runner._load_ohlcv_polars("META", "2024-04-01", "2024-04-20")
+
+        out = loaded.to_pandas()
+        out["valid_time"] = pd.to_datetime(out["valid_time"]).dt.date
+        out = out[out["valid_time"].isin([pd.Timestamp("2024-04-01").date(), pd.Timestamp("2024-04-19").date()])]
+        out = out.sort_values("valid_time")
+
+        assert out.iloc[0]["adj_close"] == pytest.approx(200.5)
+        assert out.iloc[0]["close"] == pytest.approx(200.5)
+        assert out.iloc[1]["adj_close"] == pytest.approx(219.5)
+        assert out.iloc[1]["close"] == pytest.approx(219.5)
+
 
 
 # ---------------------------------------------------------------------------

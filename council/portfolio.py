@@ -549,8 +549,27 @@ class PortfolioConstructor:
 
         combined = pd.Series(results, dtype=float, name="target_weight")
         total = float(combined.sum())
-        if total > overall_budget_fraction + 1e-9 and total > 1e-12:
-            combined = combined * (overall_budget_fraction / total)
+        if total > 1e-9:
+            # Keep the overall budget as much as possible, but ensure the final
+            # combined portfolio respects per-asset caps. This prevents a narrow
+            # crypto universe from concentrating the whole budget into BTC/USD.
+            upper_bounds = np.array(
+                [
+                    self.max_crypto_position if AlpacaLiveNode._is_crypto(ticker) else self.max_position
+                    for ticker in combined.index
+                ],
+                dtype=float,
+            )
+            feasible_budget = min(total, float(upper_bounds.sum()))
+            combined = pd.Series(
+                self._project_to_capped_simplex(
+                    combined.clip(lower=0.0).values,
+                    budget_fraction=feasible_budget,
+                    upper_bounds=upper_bounds,
+                ),
+                index=combined.index,
+                name="target_weight",
+            )
         return combined.sort_index()
 
     def _feasible_fallback_weights(

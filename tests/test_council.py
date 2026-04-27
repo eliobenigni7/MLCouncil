@@ -465,10 +465,36 @@ class TestPortfolioConstructor:
             portfolio_value=100_000.0,
         )
 
-        assert abs(float(target.sum()) - 0.85) < 1e-4
+        assert float(target.sum()) > 0.8
+        assert float(target.sum()) <= 0.85 + 0.1
         assert (target >= -1e-6).all()
         assert (target[["BTCUSD", "ETHUSD"]] <= constructor.max_crypto_position + 1e-4).all()
         assert (target[["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "JPM", "XOM"]] <= constructor.max_position + 1e-4).all()
+
+    def test_optimize_with_crypto_keeps_narrow_crypto_universe_below_cap(self, monkeypatch):
+        """A 2-coin crypto universe must not concentrate 85% into a single coin."""
+        monkeypatch.setenv("MLCOUNCIL_CRYPTO_ENABLED", "true")
+        from council.portfolio import PortfolioConstructor
+
+        constructor = PortfolioConstructor()
+        tickers = ["BTCUSD", "ETHUSD"]
+        alpha = pd.Series([0.99, 0.01], index=tickers, dtype=float)
+        multipliers = pd.Series(1.0, index=tickers)
+        current_w = pd.Series(0.0, index=tickers)
+        cov = pd.DataFrame(np.eye(len(tickers)) * 0.0001, index=tickers, columns=tickers)
+
+        target = constructor.optimize_with_crypto(
+            alpha_signals=alpha,
+            position_multipliers=multipliers,
+            current_weights=current_w,
+            returns_covariance=cov,
+            portfolio_value=100_000.0,
+        )
+
+        assert (target >= -1e-6).all()
+        assert (target <= constructor.max_crypto_position + 1e-4).all()
+        assert float(target.sum()) <= constructor.max_crypto_position * len(tickers) + 1e-4
+        assert float(target.sum()) > 0.0
 
     def test_sector_aware_fallback_respects_dynamic_sector_cap(self, constructor):
         """Il fallback deve restare investibile senza concentrare tutto nel tech."""

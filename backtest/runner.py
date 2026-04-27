@@ -153,42 +153,23 @@ class BacktestResult:
 # Data helpers
 # ===========================================================================
 
-def _load_ohlcv_polars(
+def _download_ohlcv_yfinance(
     ticker: str,
     start: str,
     end: str,
 ) -> pl.DataFrame:
-    """Carica OHLCV da parquet locali, con fallback yfinance."""
-    ohlcv_dir = _DATA_DIR / "ohlcv" / ticker
-    frames: list[pl.DataFrame] = []
-
-    if ohlcv_dir.exists():
-        for pq in sorted(ohlcv_dir.glob("*.parquet")):
-            try:
-                frames.append(pl.read_parquet(pq))
-            except Exception:
-                pass
-
-    if frames:
-        df = (
-            pl.concat(frames)
-            .filter(
-                (pl.col("valid_time") >= pl.lit(start).str.to_date())
-                & (pl.col("valid_time") <= pl.lit(end).str.to_date())
-            )
-            .sort("valid_time")
-        )
-        if not df.is_empty():
-            return df
-
-    # Fallback: yfinance
+    """Download OHLCV via yfinance and normalize the schema to Polars."""
     try:
         import yfinance as yf
         import pandas as pd_yf
 
         raw = yf.download(
-            ticker, start=start, end=end,
-            auto_adjust=False, progress=False, actions=False,
+            ticker,
+            start=start,
+            end=end,
+            auto_adjust=False,
+            progress=False,
+            actions=False,
         )
         if raw is None or raw.empty:
             return pl.DataFrame()
@@ -201,9 +182,75 @@ def _load_ohlcv_polars(
         df = pl.from_pandas(raw)
         if "valid_time" in df.columns and df["valid_time"].dtype != pl.Date:
             df = df.with_columns(pl.col("valid_time").cast(pl.Date))
+        wanted_cols = [c for c in ["valid_time", "open", "high", "low", "close", "adj_close", "volume"] if c in df.columns]
+        if wanted_cols:
+            df = df.select(wanted_cols)
         return df.sort("valid_time")
     except Exception:
         return pl.DataFrame()
+
+
+def _load_ohlcv_polars(
+    ticker: str,
+    start: str,
+    end: str,
+) -> pl.DataFrame:
+    """Carica OHLCV da parquet locali, con fallback yfinance.
+
+    Se il parquet locale contiene un buco temporale ampio, scarica il periodo
+    richiesto da yfinance e lo usa per colmare il gap. Questo evita backtest
+    artificialmente piatti quando i dati storici locali sono incompleti.
+    """
+    ohlcv_dir = _DATA_DIR / "ohlcv" / ticker
+    frames: list[pl.DataFrame] = []
+
+    if ohlcv_dir.exists():
+        for pq in sorted(ohlcv_dir.glob("*.parquet")):
+            try:
+                frame = pl.read_parquet(pq)
+                keep_cols = [c for c in ["valid_time", "open", "high", "low", "close", "adj_close", "volume"] if c in frame.columns]
+                if keep_cols:
+                    frame = frame.select(keep_cols)
+                frames.append(frame)
+            except Exception:
+                pass
+
+    local_df = pl.DataFrame()
+    if frames:
+        local_df = (
+            pl.concat(frames)
+            .filter(
+                (pl.col("valid_time") >= pl.lit(start).str.to_date())
+                & (pl.col("valid_time") <= pl.lit(end).str.to_date())
+            )
+            .sort("valid_time")
+        )
+
+    if local_df.is_empty():
+        return _download_ohlcv_yfinance(ticker, start, end)
+
+    has_large_gap = False
+    if local_df.height > 1:
+        valid_times = pd.to_datetime(local_df.get_column("valid_time").to_pandas()).sort_values()
+        diffs = valid_times.diff().dt.days.dropna()
+        has_large_gap = bool((diffs > 7).any())
+
+    if has_large_gap:
+        remote_df = _download_ohlcv_yfinance(ticker, start, end)
+        if not remote_df.is_empty():
+            try:
+                end_inclusive = (pd.to_datetime(end) + pd.Timedelta(days=1)).date()
+            except Exception:
+                end_inclusive = pd.to_datetime(end).date()
+
+            merged = remote_df.filter(
+                (pl.col("valid_time") >= pl.lit(start).str.to_date())
+                & (pl.col("valid_time") <= pl.lit(end_inclusive).cast(pl.Date))
+            ).sort("valid_time")
+            if not merged.is_empty():
+                return merged
+
+    return local_df
 
 
 def _ohlcv_to_nautilus_bars(

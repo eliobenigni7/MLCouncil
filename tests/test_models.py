@@ -236,6 +236,32 @@ def fitted_hmm(macro_df):
 # ---------------------------------------------------------------------------
 
 class TestLGBM:
+    def test_lgbm_predict_zero_fills_missing_features(self):
+        from unittest.mock import MagicMock
+
+        from models.technical import TechnicalModel
+
+        features = pl.DataFrame(
+            {
+                "ticker": ["AAA", "BBB"],
+                "valid_time": [date(2026, 4, 27), date(2026, 4, 27)],
+                "feat_a": [1.0, 2.0],
+            }
+        )
+
+        model = TechnicalModel.__new__(TechnicalModel)
+        model._model = MagicMock()
+        model._feature_cols = ["feat_a", "vix"]
+        model._model.predict.side_effect = lambda X: X["feat_a"].to_numpy() + X["vix"].to_numpy()
+
+        preds = model.predict(features)
+
+        assert isinstance(preds, pd.Series)
+        assert len(preds) == 2
+        passed = model._model.predict.call_args.args[0]
+        assert list(passed.columns) == ["feat_a", "vix"]
+        assert (passed["vix"] == 0.0).all()
+
     def test_lgbm_fit_predict(self, synthetic_data, fitted_lgbm):
         """fit on 2y synthetic, predict on 6m hold-out; IC must be > -0.5."""
         from scipy.stats import spearmanr
