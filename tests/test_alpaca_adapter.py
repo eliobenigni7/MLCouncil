@@ -31,6 +31,31 @@ def test_cancel_order_logs_exception_and_returns_false():
     log_exception.assert_called_once()
 
 
+def test_api_auth_headers_use_mode_specific_credentials():
+    from execution.alpaca_adapter import AlpacaConfig, TradingMode
+
+    node = _make_node()
+
+    node.config = AlpacaConfig(
+        paper_key="paper-key",
+        paper_secret="paper-secret",
+        live_key="live-key",
+        live_secret="live-secret",
+        mode=TradingMode.PAPER,
+    )
+    paper_headers = node._api_auth_headers()
+
+    node.config.mode = TradingMode.LIVE
+    live_headers = node._api_auth_headers(include_json=True)
+
+    assert paper_headers["APCA-API-KEY-ID"] == "paper-key"
+    assert paper_headers["APCA-API-SECRET-KEY"] == "paper-secret"
+    assert "Content-Type" not in paper_headers
+    assert live_headers["APCA-API-KEY-ID"] == "live-key"
+    assert live_headers["APCA-API-SECRET-KEY"] == "live-secret"
+    assert live_headers["Content-Type"] == "application/json"
+
+
 def test_check_adv_limit_logs_exception_and_returns_true():
     node = _make_node()
     node._data_client.get_stock_bars.side_effect = RuntimeError("bars unavailable")

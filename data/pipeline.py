@@ -1155,9 +1155,7 @@ def save_regime_results(
             from models.regime import RegimeModel
             checkpoint = _CHECKPOINTS / "hmm_latest.pkl"
             if checkpoint.exists():
-                import pickle as pickle_mod
-                with open(checkpoint, "rb") as f:
-                    regime_model: RegimeModel = pickle_mod.load(f)
+                regime_model: RegimeModel = _safe_pickle_load(checkpoint)
                 prob_dict = regime_model.predict_probabilities(raw_macro)
                 for key in probs:
                     if key in prob_dict:
@@ -1195,9 +1193,7 @@ def save_regime_results(
             from models.regime import RegimeModel
             checkpoint = _CHECKPOINTS / "hmm_latest.pkl"
             if checkpoint.exists():
-                import pickle as pickle_mod
-                with open(checkpoint, "rb") as f:
-                    regime_model: RegimeModel = pickle_mod.load(f)
+                regime_model: RegimeModel = _safe_pickle_load(checkpoint)
                 hist_df = regime_model.get_regime_history(raw_macro)
                 if "valid_time" in hist_df.columns:
                     hist_df = hist_df.rename(columns={"valid_time": "date"})

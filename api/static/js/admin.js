@@ -3,14 +3,26 @@ let refreshInterval;
 let latestHealth = null;
 
 function getApiKey() {
-    return localStorage.getItem('mlcouncil_api_key') || '';
+    let apiKey = sessionStorage.getItem('mlcouncil_api_key') || '';
+    if (!apiKey) {
+        apiKey = localStorage.getItem('mlcouncil_api_key') || '';
+        if (apiKey) {
+            sessionStorage.setItem('mlcouncil_api_key', apiKey);
+        }
+    }
+    if (apiKey) {
+        localStorage.removeItem('mlcouncil_api_key');
+    }
+    return apiKey;
 }
 
 function setApiKey(value) {
     const apiKey = (value || '').trim();
     if (apiKey) {
-        localStorage.setItem('mlcouncil_api_key', apiKey);
+        sessionStorage.setItem('mlcouncil_api_key', apiKey);
+        localStorage.removeItem('mlcouncil_api_key');
     } else {
+        sessionStorage.removeItem('mlcouncil_api_key');
         localStorage.removeItem('mlcouncil_api_key');
     }
 }
@@ -563,7 +575,8 @@ async function loadPendingOrders(date) {
         if (resp.orders && resp.orders.length > 0) {
             setTableRows(tbody, resp.orders.map(o => {
                 const tr = document.createElement('tr');
-                [o.ticker, (o.direction || 'buy').toUpperCase(), `${((o.target_weight || 0) * 100).toFixed(1)}%`, `$${((o.quantity || 0) * (o.price || 0)).toFixed(0)}`].forEach(value => {
+                const orderValue = o.notional ?? o.quantity ?? o.target_notional ?? o.target_value ?? o.value ?? o.price ?? 0;
+                [o.ticker, (o.direction || 'buy').toUpperCase(), `${((o.target_weight || 0) * 100).toFixed(1)}%`, `$${Number(orderValue || 0).toFixed(0)}`].forEach(value => {
                     const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
                 });
                 return tr;

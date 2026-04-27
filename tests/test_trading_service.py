@@ -32,6 +32,8 @@ def _make_service(
     )
     svc._node.get_latest_price.return_value = 200.0
     svc._node.submit_order.return_value = {"status": "accepted"}
+    svc._node._is_crypto = MagicMock(return_value=False)
+    svc._node.submit_order_notional = MagicMock(return_value={"status": "accepted"})
 
     svc._config = MagicMock()
     svc._config.mode.value = "paper"
@@ -110,6 +112,7 @@ class TestTradingService:
 
     def test_validate_order_accepts_fractional_crypto_quantity(self):
         svc = _make_service()
+        svc._node._is_crypto = MagicMock(side_effect=lambda symbol: symbol == "BTCUSD")
 
         order = {"ticker": "BTCUSD", "direction": "sell", "share_quantity": 0.075, "price": 70000.0}
         account = {"portfolio_value": 100000.0}
@@ -165,6 +168,86 @@ class TestTradingService:
 
         assert adjusted == []
         assert any("dropped buy intent" in item for item in warnings)
+
+    def test_orders_from_intraday_decision_preserves_absent_target_weight(self):
+        svc = _make_service()
+
+        orders = svc._orders_from_intraday_decision(
+            {
+                "decision_id": "dec-1",
+                "execution_intents": [
+                    {
+                        "ticker": "AAPL",
+                        "side": "buy",
+                        "quantity_notional": 5000.0,
+                        "estimated_price": 250.0,
+                    }
+                ],
+            }
+        )
+
+        assert "target_weight" not in orders[0]
+        assert orders[0]["share_quantity"] == pytest.approx(20.0)
+
+    def test_orders_from_intraday_decision_preserves_absent_target_weight_for_sell(self):
+        svc = _make_service()
+
+        orders = svc._orders_from_intraday_decision(
+            {
+                "decision_id": "dec-2",
+                "execution_intents": [
+                    {
+                        "ticker": "AAPL",
+                        "side": "sell",
+                        "quantity_notional": 5000.0,
+                        "estimated_price": 250.0,
+                    }
+                ],
+            }
+        )
+
+        assert "target_weight" not in orders[0]
+        assert orders[0]["quantity"] == pytest.approx(5000.0)
+        assert orders[0]["share_quantity"] == pytest.approx(20.0)
+
+    def test_orders_from_intraday_decision_keeps_explicit_target_weight(self):
+        svc = _make_service()
+
+        orders = svc._orders_from_intraday_decision(
+            {
+                "decision_id": "dec-3",
+                "execution_intents": [
+                    {
+                        "ticker": "AAPL",
+                        "side": "buy",
+                        "target_weight": 0.04,
+                        "quantity_notional": 4000.0,
+                        "estimated_price": 200.0,
+                    }
+                ],
+            }
+        )
+
+        assert orders[0]["target_weight"] == pytest.approx(0.04)
+
+    def test_risk_adjust_intraday_orders_derives_weight_for_missing_target_weight(self, monkeypatch):
+        svc = _make_service(account={"portfolio_value": 100000.0})
+        monkeypatch.setenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20")
+
+        adjusted, warnings = svc._risk_adjust_intraday_orders(
+            [
+                {
+                    "ticker": "AAPL",
+                    "direction": "buy",
+                    "quantity": 5000.0,
+                    "share_quantity": 20.0,
+                }
+            ]
+        )
+
+        assert not warnings
+        assert "target_weight" not in adjusted[0]
+        assert adjusted[0]["quantity"] == pytest.approx(5000.0)
 
     def test_get_pending_orders_empty(self):
         from api.services import trading_service as ts
@@ -659,10 +742,47 @@ class TestTradingService:
                 ts.OPERATIONS_DIR = original_ops_dir
                 ts.INTRADAY_OPERATIONS_DIR = original_intraday_ops_dir
 
-        svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
+        svc._node.submit_order_notional.assert_called_once_with("AAPL", 1000.0, "buy")
         assert result["orders_submitted"] == 1
         assert result["lineage"]["decision_id"] == "decision-789-test"
         assert result["lineage"]["strategy_version"] == "intraday-v1"
+
+    def test_execute_intraday_decision_sells_without_target_weight_as_notional(self, monkeypatch):
+        from api.services import trading_service as ts
+
+        monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
+        svc = _make_service()
+        svc._node.get_latest_price.return_value = 250.0
+        decision = {
+            "decision_id": "decision-sell-notional",
+            "as_of": "2026-04-09T14:45:00+00:00",
+            "strategy_version": "intraday-v1",
+            "market_session": "regular",
+            "execution_intents": [
+                {
+                    "ticker": "AAPL",
+                    "side": "sell",
+                    "quantity_notional": 5000.0,
+                    "confidence": 0.81,
+                    "rationale": "trim AAPL",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            original_ops_dir = ts.OPERATIONS_DIR
+            original_intraday_ops_dir = ts.INTRADAY_OPERATIONS_DIR
+            ts.OPERATIONS_DIR = tmp_path / "operations"
+            ts.INTRADAY_OPERATIONS_DIR = ts.OPERATIONS_DIR / "intraday"
+            try:
+                result = svc.execute_intraday_decision(decision)
+            finally:
+                ts.OPERATIONS_DIR = original_ops_dir
+                ts.INTRADAY_OPERATIONS_DIR = original_intraday_ops_dir
+
+        svc._node.submit_order_notional.assert_called_once_with("AAPL", 5000.0, "sell")
+        assert result["orders_submitted"] == 1
 
     def test_prepare_execution_context_honors_explicit_symbols_to_close(self, monkeypatch):
         svc = _make_service()
@@ -734,7 +854,7 @@ class TestTradingService:
 
         assert first["orders_submitted"] == 1
         assert "already been executed" in second["error"]
-        svc._node.submit_order.assert_called_once_with("AAPL", 5, "buy")
+        svc._node.submit_order_notional.assert_called_once_with("AAPL", 1000.0, "buy")
 
     def test_execute_intraday_decision_preserves_fractional_crypto_quantity(self, monkeypatch):
         from api.services import trading_service as ts
@@ -743,6 +863,7 @@ class TestTradingService:
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
         svc = _make_service()
         svc._node.get_latest_price.return_value = 70000.0
+        svc._node._is_crypto = MagicMock(side_effect=lambda symbol: symbol == "BTCUSD")
         decision = {
             "decision_id": "decision-btc-fractional",
             "as_of": "2026-04-13T09:15:00+00:00",
@@ -751,7 +872,7 @@ class TestTradingService:
             "execution_intents": [
                 {
                     "ticker": "BTCUSD",
-                    "side": "sell",
+                    "side": "buy",
                     "target_weight": 0.055,
                     "quantity_notional": 5500.0,
                     "confidence": 0.45,

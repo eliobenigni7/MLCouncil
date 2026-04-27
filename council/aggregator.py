@@ -100,20 +100,20 @@ class OrthogonalityMonitor:
         if len(models) < 2:
             return pd.DataFrame()
 
-        series_list = []
+        series_list: list[tuple[str, pd.Series]] = []
         for model in models:
             if model in self._signal_history:
                 df = self._signal_history[model]
                 if end_date and end_date in df.index:
                     df = df.loc[:end_date]
                 if len(df) >= 10:
-                    series_list.append(df.mean(axis=1).tail(self.correlation_window))
+                    series_list.append((model, df.mean(axis=1).tail(self.correlation_window)))
 
         if len(series_list) < 2:
             return pd.DataFrame()
 
-        combined = pd.concat(series_list, axis=1)
-        combined.columns = models[: len(series_list)]
+        combined = pd.concat([series for _, series in series_list], axis=1)
+        combined.columns = [model for model, _ in series_list]
         return combined.corr()
 
     def get_correlated_pairs(

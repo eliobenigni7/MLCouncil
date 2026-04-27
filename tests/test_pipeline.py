@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import types
 from datetime import date
+import pickle
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -97,6 +98,38 @@ def test_load_universe_flattens_bucketed_config():
     assert "AAPL" in tickers
     assert "SNOW" in tickers
     assert len(tickers) == len(set(tickers))
+
+
+def test_safe_pickle_load_rejects_tampered_checkpoint(tmp_path):
+    checkpoint = tmp_path / "hmm_latest.pkl"
+    checkpoint.write_bytes(pickle.dumps({"ok": True}))
+    (tmp_path / "hmm_latest.pkl.hash").write_text("0" * 64, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Checkpoint hash mismatch"):
+        _pipeline._safe_pickle_load(checkpoint)
+
+
+def test_save_regime_results_uses_safe_pickle_loader_for_both_sites(monkeypatch, tmp_path):
+    ctx = _make_context()
+    fake_macro = pl.DataFrame({"valid_time": [date(2024, 1, 15)], "vix": [12.3]})
+    fake_model = MagicMock()
+    fake_model.predict_probabilities.return_value = {"bull": 0.7, "bear": 0.2, "transition": 0.1}
+    fake_model.get_regime_history.return_value = pd.DataFrame({"valid_time": [date(2024, 1, 15)], "regime": ["bull"]})
+
+    monkeypatch.setattr(_pipeline, "_RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(_pipeline, "_CHECKPOINTS", tmp_path)
+    monkeypatch.setattr(_pipeline, "_load_macro_context_from_disk", lambda: fake_macro)
+    monkeypatch.setattr(_pipeline, "_safe_pickle_load", MagicMock(return_value=fake_model))
+
+    (tmp_path / "hmm_latest.pkl").write_bytes(pickle.dumps({"model": True}))
+    (tmp_path / "hmm_latest.pkl.hash").write_text(
+        __import__("hashlib").sha256((tmp_path / "hmm_latest.pkl").read_bytes()).hexdigest(),
+        encoding="utf-8",
+    )
+
+    _call_asset(_pipeline.save_regime_results, ctx, "bull")
+
+    assert _pipeline._safe_pickle_load.call_count == 2
 
 
 def test_models_regime_import_does_not_require_lightgbm(monkeypatch):

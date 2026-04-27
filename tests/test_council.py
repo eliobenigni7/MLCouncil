@@ -160,6 +160,23 @@ class TestCouncilAggregator:
         assert set(agg._ortho_monitor._signal_history["lgbm"].columns) == {"AAPL", "MSFT"}
         assert set(agg._ortho_monitor._signal_history["sentiment"].columns) == {"MSFT", "GOOGL"}
 
+    def test_compute_correlation_matrix_keeps_requested_model_labels(self):
+        from council.aggregator import CouncilAggregator
+
+        agg = CouncilAggregator(use_orthogonality=True)
+        idx = pd.date_range("2024-01-01", periods=12, freq="D")
+        agg._ortho_monitor._signal_history = {
+            "lgbm": pd.DataFrame({"AAPL": np.linspace(0, 1, 12)}, index=idx),
+            "sentiment": pd.DataFrame({"AAPL": np.linspace(1, 0, 12)}, index=idx),
+        }
+
+        corr = agg._ortho_monitor.compute_correlation_matrix(
+            ["lgbm", "sentiment", "hmm"]
+        )
+
+        assert corr.columns.tolist() == ["lgbm", "sentiment"]
+        assert corr.index.tolist() == ["lgbm", "sentiment"]
+
     def test_update_performance_populates_ic_history(self):
         """update_performance should fill _ic_by_date with 30+ entries."""
         from council.aggregator import CouncilAggregator

@@ -747,6 +747,7 @@ class TradingService:
         symbol = str(order.get("ticker"))
         raw_quantity = float(order.get("quantity", 0) or 0)
         target_weight = order.get("target_weight")
+        intraday_notional = bool(order.get("intraday_notional"))
 
         current_position_qty = 0.0
         current_price = 0.0
@@ -768,7 +769,7 @@ class TradingService:
             except Exception:  # noqa: BLE001
                 estimated_price = 0.0
 
-        if target_weight is not None:
+        if target_weight is not None or intraday_notional:
             requested_notional = abs(raw_quantity)
             share_quantity = (
                 requested_notional / estimated_price if estimated_price > 0 else 0.0
@@ -1206,12 +1207,14 @@ class TradingService:
                     "direction": side,
                     "quantity": quantity_notional,
                     "share_quantity": share_quantity,
-                    "target_weight": float(intent.get("target_weight", 0.0) or 0.0),
+                    "intraday_notional": True,
                     "price": estimated_price,
                     "decision_id": decision.get("decision_id"),
                     "strategy_version": decision.get("strategy_version", "intraday-v1"),
                 }
             )
+            if intent.get("target_weight") is not None:
+                orders[-1]["target_weight"] = float(intent["target_weight"])
         return orders
 
     def _risk_adjust_intraday_orders(
@@ -1262,13 +1265,17 @@ class TradingService:
             if not ticker:
                 continue
             direction = str(order.get("direction", "buy")).lower()
-            target_weight = float(order.get("target_weight", 0.0) or 0.0)
             requested_notional = float(order.get("quantity", 0.0) or 0.0)
+            target_weight_value = order.get("target_weight")
+            if target_weight_value is None and portfolio_value > 0:
+                effective_weight = requested_notional / portfolio_value
+            else:
+                effective_weight = float(target_weight_value or 0.0)
 
             if direction != "buy":
                 adjusted_orders.append(order)
                 continue
-            if target_weight <= 0.0 or requested_notional <= 0.0:
+            if effective_weight <= 0.0 or requested_notional <= 0.0:
                 continue
 
             current_weight = float(current_weight_by_symbol.get(ticker, 0.0))
@@ -1283,14 +1290,15 @@ class TradingService:
                     f"{ticker}: dropped buy intent (current {current_weight:.2%} >= limit {max_allowed:.2%})"
                 )
                 continue
-            if target_weight > available_weight:
-                scale = available_weight / target_weight
+            if effective_weight > available_weight:
+                scale = available_weight / effective_weight
                 scaled = dict(order)
-                scaled["target_weight"] = available_weight
                 scaled["quantity"] = requested_notional * scale
+                if target_weight_value is not None:
+                    scaled["target_weight"] = available_weight
                 adjusted_orders.append(scaled)
                 warnings.append(
-                    f"{ticker}: target_weight scaled {target_weight:.2%}->{available_weight:.2%} to fit position cap"
+                    f"{ticker}: target_weight scaled {effective_weight:.2%}->{available_weight:.2%} to fit position cap"
                 )
             else:
                 adjusted_orders.append(order)
@@ -1309,7 +1317,8 @@ class TradingService:
             scale = max_notional / total_notional
             for order in adjusted_orders:
                 order["quantity"] = float(order.get("quantity", 0.0) or 0.0) * scale
-                order["target_weight"] = float(order.get("target_weight", 0.0) or 0.0) * scale
+                if order.get("target_weight") is not None:
+                    order["target_weight"] = float(order.get("target_weight", 0.0) or 0.0) * scale
             warnings.append(
                 f"intraday intents scaled by {scale:.2f} to respect turnover cap {turnover_cap:.2%}"
             )

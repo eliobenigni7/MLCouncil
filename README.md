@@ -1,6 +1,6 @@
 # MLCouncil
 
-MLCouncil is an end-to-end **multi-model ensemble paper trading system** for US equities and crypto. Three independent alpha models produce daily signals that a regime-aware council aggregator combines into portfolio weights, which a CVXPY optimizer converts into daily trading orders submitted to Alpaca Paper Trading.
+MLCouncil is an end-to-end **multi-signal paper trading system** for US equities and crypto. A 2-signal daily ensemble plus HMM regime labeling feeds a regime-aware council aggregator, which a CVXPY optimizer converts into daily trading orders submitted to Alpaca Paper Trading.
 
 ---
 
@@ -27,7 +27,7 @@ MLCouncil is an end-to-end **multi-model ensemble paper trading system** for US 
 
 ## How It Works
 
-The system runs a daily pipeline with eight stages, orchestrated by Dagster and scheduled at 21:30 ET on weekdays:
+The system runs a daily Dagster pipeline with eight stages, scheduled at 21:30 ET on weekdays. Its job is to load the latest checkpoints and perform inference, not retrain the models end-to-end:
 
 ```
 Stage 1 — Ingest
@@ -38,7 +38,7 @@ Stage 2 — Feature Engineering
   FinBERT headline sentiment scores (SQLite-cached)
   Macro features: VIX, 10Y/2Y spread, S&P 500 rolling windows (21/63/252 days)
 
-Stage 3 — Model Training / Refresh
+Stage 3 — Inference / Checkpoint Refresh
   LightGBM technical model (CPCV cross-validation, SHAP logged to MLflow)
   FinBERT sentiment model (ProsusAI/finbert)
   3-state HMM regime detector (bull / bear / transition)
@@ -68,7 +68,7 @@ Stage 8 — Execution
   Artifacts: data/operations/, data/paper_trades/, data/risk/
 ```
 
-All feature writes are versioned with `transaction_time` in ArcticDB (LMDB backend) to guarantee point-in-time correctness and prevent lookahead bias during backtesting.
+Feature versioning is tracked for point-in-time correctness, with historical retrieval and backtesting support handled by the feature store layer.
 
 ---
 
@@ -240,7 +240,7 @@ A model candidate is promoted to production only if all of the following gates a
 | MLflow lineage | `pipeline_run_id`, `data_version`, `feature_version`, `model_version` all present |
 | Metrics logged | `sharpe`, `max_drawdown`, `turnover`, `oos_sharpe`, `oos_max_drawdown`, `oos_turnover` |
 
-For validation-depth monitoring, retraining also tracks `equal_weight_sharpe_delta`, `equal_weight_cagr_delta`, and `regime_count` from walk-forward diagnostics.
+For validation-depth monitoring, the daily inference path also tracks `equal_weight_sharpe_delta`, `equal_weight_cagr_delta`, and `regime_count` from walk-forward diagnostics.
 When component signals are available, walk-forward diagnostics also expose `ablation_analysis` with marginal Sharpe contribution per component.
 
 Candidates are rejected if gross/net metrics diverge implausibly from the estimated transaction costs, or if manual overrides were required to pass any gate.
@@ -340,7 +340,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -r requirements_lock.txt # pinned snapshot; keep aligned with requirements.txt floors
-pip install -r requirements_api.txt   # for API / admin only
+# API / admin extras are already included via requirements.txt; install requirements_api.txt only for standalone extras.
 ```
 
 ### Environment Configuration

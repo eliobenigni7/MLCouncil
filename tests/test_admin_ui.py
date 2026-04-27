@@ -156,9 +156,30 @@ def test_admin_ui_includes_api_key_storage_and_sends_header():
     js_text = admin_js.read_text(encoding="utf-8")
 
     assert "id=\"api-key\"" in html_text
+    assert "sessionStorage.getItem('mlcouncil_api_key')" in js_text
     assert "localStorage.getItem('mlcouncil_api_key')" in js_text
     assert "X-API-Key" in js_text
-    assert "localStorage.setItem('mlcouncil_api_key'" in js_text
+    assert "sessionStorage.setItem('mlcouncil_api_key'" in js_text
+    assert "localStorage.removeItem('mlcouncil_api_key')" in js_text
+
+
+def test_admin_js_migrates_legacy_api_key_from_localstorage():
+    admin_js = Path(__file__).resolve().parents[1] / "api" / "static" / "js" / "admin.js"
+    text = admin_js.read_text(encoding="utf-8")
+
+    assert "if (!apiKey)" in text
+    assert "apiKey = localStorage.getItem('mlcouncil_api_key') || '';" in text
+    assert "sessionStorage.setItem('mlcouncil_api_key', apiKey);" in text
+
+
+def test_admin_js_pending_orders_use_notional_or_quantity_fallback():
+    admin_js = Path(__file__).resolve().parents[1] / "api" / "static" / "js" / "admin.js"
+    text = admin_js.read_text(encoding="utf-8")
+
+    assert "loadPendingOrders(date)" in text
+    assert "o.notional ?? o.quantity ?? o.target_notional ?? o.target_value ?? o.value ?? o.price ?? 0" in text
+    assert "$${Number(orderValue || 0).toFixed(0)}" in text
+    assert "(o.quantity || 0) * (o.price || 0)" not in text
 
 
 def test_admin_js_update_single_setting_uses_supplied_value():

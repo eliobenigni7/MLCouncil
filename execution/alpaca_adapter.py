@@ -166,8 +166,12 @@ class AlpacaLiveNode:
         )
 
     def _api_auth_headers(self, include_json: bool = False) -> dict[str, str]:
-        api_key = self.config.paper_key or self.config.live_key or ""
-        api_secret = self.config.paper_secret or self.config.live_secret or ""
+        if self.config.mode == TradingMode.LIVE:
+            api_key = self.config.live_key or ""
+            api_secret = self.config.live_secret or ""
+        else:
+            api_key = self.config.paper_key or ""
+            api_secret = self.config.paper_secret or ""
         headers = {
             "APCA-API-KEY-ID": api_key,
             "APCA-API-SECRET-KEY": api_secret,
