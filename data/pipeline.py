@@ -949,12 +949,26 @@ def _sunday_tags(context: "dg.ScheduleEvaluationContext") -> dict[str, str]:
     return {"dagster/partition": partition_date}
 
 
-hmm_schedule = dg.ScheduleDefinition(
-    job=train_hmm_job,
+@dg.schedule(
     cron_schedule="0 23 * * 0",       # 23:00 ET ogni domenica
     execution_timezone="America/New_York",
-    tags_fn=_sunday_tags,
+    job=train_hmm_job,
 )
+def hmm_schedule(context: "dg.ScheduleEvaluationContext"):
+    """Schedule HMM domenicale: processa la settimana appena conclusa."""
+    et = pytz.timezone("America/New_York")
+    scheduled = context.scheduled_execution_time
+    if scheduled is None:
+        partition_date = date_type.today().isoformat()
+    else:
+        if scheduled.tzinfo is None:
+            scheduled = pytz.UTC.localize(scheduled)
+        et_time = scheduled.astimezone(et)
+        partition_date = et_time.date().isoformat()
+    return dg.RunRequest(
+        partition_key=partition_date,
+        tags={"mlcouncil/partition": partition_date},
+    )
 
 
 # ============================================================================
@@ -1483,22 +1497,20 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
 
 daily_job = dg.define_asset_job(
     name="daily_pipeline",
-    selection=dg.AssetSelection.all(),
+    selection=dg.AssetSelection.all() - dg.AssetSelection.assets(train_hmm),
     partitions_def=_DAILY_PARTITIONS,
     description=(
-        "Pipeline giornaliera MLCouncil: ingest → features → signals "
-        "→ council → orders"
+        "Pipeline giornaliera MLCouncil: ingest \u2192 features \u2192 signals "
+        "\u2192 council \u2192 orders"
     ),
 )
 
-def _daily_partition_tags(context: "dg.ScheduleEvaluationContext") -> dict[str, str]:
-    """Ritorna i tags per la partition del job daily_pipeline.
 
-    Per uno schedule che gira alle 21:30 ET lun-ven, la partition da processare
-    è il giorno di mercato precedente (ieri). Se ieri era weekend, usa venerdi.
-    """
+def _prev_trading_day(
+    scheduled: date_type | None,
+) -> str:
+    """Calcola la partition (giorno precedente del mercato) per lo schedule."""
     et = pytz.timezone("America/New_York")
-    scheduled = context.scheduled_execution_time
     if scheduled is None:
         partition_date = date_type.today() - timedelta(days=1)
     else:
@@ -1510,15 +1522,21 @@ def _daily_partition_tags(context: "dg.ScheduleEvaluationContext") -> dict[str, 
             partition_date -= timedelta(days=1)
         elif partition_date.strftime("%a") == "Sun":
             partition_date -= timedelta(days=2)
-    return {"dagster/partition": partition_date.strftime("%Y-%m-%d")}
+    return partition_date.strftime("%Y-%m-%d")
 
 
-daily_schedule = dg.ScheduleDefinition(
-    job=daily_job,
+@dg.schedule(
     cron_schedule="30 21 * * 1-5",   # 21:30 ET, lun-ven
     execution_timezone="America/New_York",
-    tags_fn=_daily_partition_tags,
+    job=daily_job,
 )
+def daily_schedule(context: "dg.ScheduleEvaluationContext"):
+    """Schedule giornaliera: processa i dati del giorno di mercato precedente."""
+    partition_key = _prev_trading_day(context.scheduled_execution_time)
+    return dg.RunRequest(
+        partition_key=partition_key,
+        tags={"mlcouncil/partition": partition_key},
+    )
 
 
 @dg.run_failure_sensor(
@@ -1538,10 +1556,10 @@ def failure_sensor(context: RunFailureSensorContext) -> dg.SkipReason | None:
     context.log.error(
         f"[failure_sensor] Run {failed_run.run_id!r} FALLITO.\n"
         f"  Job       : {failed_run.job_name}\n"
-        f"  Partizione: {failed_run.tags.get('dagster/partition', 'N/A')}\n"
+        f"  Partizione: {failed_run.tags.get('mlcouncil/partition', 'N/A')}\n"
         f"  Errore    : {error}\n"
         f"  Re-run    : dagster job execute -j daily_pipeline "
-        f"--partition {failed_run.tags.get('dagster/partition', '')}"
+        f"--partition {failed_run.tags.get('mlcouncil/partition', '')}"
     )
     # Restituisce None → il sensore ha processato l'evento (non skippa)
     return None
