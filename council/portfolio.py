@@ -77,15 +77,15 @@ class PortfolioConstructor:
         self.min_position: float = 0.01
         self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.30"))
         self.long_only: bool = True
-        self.max_vol_ann: float = 0.20
-        self.sector_cap: float = 0.25
+        self.max_vol_ann: float = 0.30
+        self.sector_cap: float = 0.35
         # Beta constraint enabled by default: the council generates pure
         # cross-sectional alpha signals (z-scored, regime-agnostic), so the
         # portfolio should not carry unintended systematic market exposure.
         # The constraint caps |portfolio_beta| <= max_beta_exposure when
         # market_returns is provided to optimize(); no-op otherwise.
         self.beta_neutral: bool = True
-        self.max_beta_exposure: float = 0.30
+        self.max_beta_exposure: float = 0.50
         # Defaults come from runtime env for parity with backtests.
         self.commission_bps: float = get_default_commission_bps()
         self.slippage_bps: float = get_default_slippage_bps()
