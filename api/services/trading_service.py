@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from council.artifacts import write_artifact_manifest
 from data.contracts import validate_asset_contract
