@@ -7,6 +7,8 @@ from fastapi import HTTPException, Request
 
 _PUBLIC_API_PATHS = {
     "/api/health",
+    "/api/health/dagster",
+    "/api/health/intraday",
     "/api/docs",
     "/api/openapi.json",
 }

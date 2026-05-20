@@ -1012,6 +1012,9 @@ class TradingService:
         # (from bulk equity parquets) and pd.Timestamp (from daily crypto parquets)
         # causes TypeError in Categorical sort with newer pandas.
         history["valid_time"] = pd.to_datetime(history["valid_time"], utc=True)
+        # Drop duplicate (ticker, valid_time) entries that arise from overlapping
+        # yearly parquets (e.g. AAPL.parquet and 2025.parquet both cover 2025 dates).
+        history = history.drop_duplicates(subset=["ticker", "valid_time"], keep="last")
         history = history.sort_values(["ticker", "valid_time"])
         history["ret_1d"] = history.groupby("ticker")["adj_close"].pct_change()
         wide = history.pivot(index="valid_time", columns="ticker", values="ret_1d")

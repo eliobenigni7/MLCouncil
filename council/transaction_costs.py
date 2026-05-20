@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-DEFAULT_COMMISSION_BPS = 0.0
-DEFAULT_SLIPPAGE_BPS = 3.0
+DEFAULT_COMMISSION_BPS = 1.0
+DEFAULT_SLIPPAGE_BPS = 5.0
 
 
 def _read_bps_env(key: str, default: float) -> float:
@@ -42,14 +42,18 @@ def estimate_slippage_bps(ticker: str, dollar_volume: float | None = None) -> fl
     - Crypto (BTCUSD, ETHUSD): 1-3 bps (24/7 high liquidity)
     """
     ILLIQUIDITY_MAP = {
-        # Mega-cap — tight spreads
+        # Mega-cap — tight spreads ($50B+ market cap, >$5B daily volume)
         "AAPL": 2.0, "MSFT": 2.0, "GOOGL": 2.5, "AMZN": 2.5,
         "META": 2.5, "NVDA": 2.0, "TSLA": 3.0, "JPM": 3.0,
-        "V": 3.0, "MA": 3.0,
+        "V": 3.0, "MA": 3.0, "LLY": 3.0, "UNH": 3.5,
+        "JNJ": 3.0, "WMT": 3.0, "PG": 3.0, "KO": 3.0, "PEP": 3.0,
+        "XOM": 3.5, "CVX": 3.5, "HD": 3.0, "NKE": 4.0, "CAT": 4.0,
+        "BA": 5.0, "HON": 3.5, "UNP": 4.0, "NEE": 4.0, "DUK": 4.0,
+        "GS": 4.0, "BAC": 3.5, "LIN": 4.0, "APD": 5.0, "DIS": 4.0,
+        "TMUS": 4.0, "AMT": 5.0, "PLD": 5.0,
         # Large-cap
         "UBER": 4.0, "PLTR": 5.0, "CRWD": 5.0, "DDOG": 5.0,
-        "SHOP": 5.0, "JNJ": 3.0, "UNH": 3.5, "XOM": 3.5,
-        "WMT": 3.0, "PG": 3.0,
+        "SHOP": 5.0, "MRK": 3.5, "ABT": 4.0, "PFE": 4.0, "COP": 4.0,
         # Mid-cap — wider spreads
         "ETSY": 8.0, "FVRR": 12.0, "ROKU": 8.0, "DOCU": 10.0,
         "ABNB": 6.0, "NET": 7.0, "SQ": 6.0, "SNOW": 7.0,

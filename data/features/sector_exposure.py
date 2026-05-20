@@ -5,34 +5,70 @@ from __future__ import annotations
 import pandas as pd
 
 SECTOR_MAP = {
+    # Technology
     "AAPL": "Technology",
     "MSFT": "Technology",
     "GOOGL": "Technology",
-    "AMZN": "Consumer Discretionary",
     "META": "Technology",
     "NVDA": "Technology",
-    "TSLA": "Consumer Discretionary",
-    "JPM": "Financials",
-    "V": "Financials",
-    "MA": "Financials",
-    "JNJ": "Healthcare",
-    "UNH": "Healthcare",
-    "XOM": "Energy",
-    "WMT": "Consumer Staples",
-    "PG": "Consumer Staples",
-    "ETSY": "Consumer Discretionary",
     "DOCU": "Technology",
-    "UBER": "Consumer Discretionary",
-    "ABNB": "Consumer Discretionary",
     "PLTR": "Technology",
     "SNOW": "Technology",
     "CRWD": "Technology",
     "NET": "Technology",
-    "SQ": "Financials",
     "SHOP": "Technology",
     "FVRR": "Technology",
-    "ROKU": "Communication Services",
     "DDOG": "Technology",
+    # Consumer Discretionary
+    "AMZN": "Consumer Discretionary",
+    "ETSY": "Consumer Discretionary",
+    "UBER": "Consumer Discretionary",
+    "ABNB": "Consumer Discretionary",
+    "TSLA": "Consumer Discretionary",
+    "NKE": "Consumer Discretionary",
+    "HD": "Consumer Discretionary",
+    # Healthcare
+    "LLY": "Healthcare",
+    "JNJ": "Healthcare",
+    "UNH": "Healthcare",
+    "PFE": "Healthcare",
+    "MRK": "Healthcare",
+    "ABT": "Healthcare",
+    # Financials
+    "JPM": "Financials",
+    "V": "Financials",
+    "MA": "Financials",
+    "SQ": "Financials",
+    "BAC": "Financials",
+    "GS": "Financials",
+    # Consumer Staples
+    "WMT": "Consumer Staples",
+    "PG": "Consumer Staples",
+    "KO": "Consumer Staples",
+    "PEP": "Consumer Staples",
+    # Industrials
+    "CAT": "Industrials",
+    "BA": "Industrials",
+    "HON": "Industrials",
+    "UNP": "Industrials",
+    # Energy
+    "XOM": "Energy",
+    "CVX": "Energy",
+    "COP": "Energy",
+    # Utilities
+    "NEE": "Utilities",
+    "DUK": "Utilities",
+    # Real Estate
+    "AMT": "Real Estate",
+    "PLD": "Real Estate",
+    # Communication Services
+    "DIS": "Communication Services",
+    "TMUS": "Communication Services",
+    "ROKU": "Communication Services",
+    # Materials
+    "LIN": "Materials",
+    "APD": "Materials",
+    # Crypto
     "BTCUSD": "Crypto",
     "ETHUSD": "Crypto",
 }

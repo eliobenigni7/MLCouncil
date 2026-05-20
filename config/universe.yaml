@@ -1,26 +1,77 @@
 universe:
   large_cap:
+    # Technology
     - AAPL
     - MSFT
     - GOOGL
-    - AMZN
     - META
     - NVDA
+    # Healthcare
+    - LLY
+    - UNH
+    - JNJ
+    # Financials
+    - JPM
+    - V
+    - MA
+    # Consumer Discretionary
+    - AMZN
+    - TSLA
+    - NKE
+    - HD
+    # Consumer Staples
+    - WMT
+    - PG
+    - KO
+    - PEP
+    # Industrials
+    - CAT
+    - BA
+    - HON
+    # Energy
+    - XOM
+    - CVX
+    # Communication Services
+    - DIS
+    - TMUS
 
   mid_cap:
-    - ETSY
+    # Technology
     - DOCU
-    - UBER
-    - ABNB
     - PLTR
     - SNOW
     - CRWD
     - NET
-    - SQ
     - SHOP
     - FVRR
-    - ROKU
     - DDOG
+    # Healthcare
+    - PFE
+    - MRK
+    - ABT
+    # Financials
+    - SQ
+    - BAC
+    - GS
+    # Consumer Discretionary
+    - ETSY
+    - UBER
+    - ABNB
+    # Communication Services
+    - ROKU
+    # Energy
+    - COP
+    # Industrials
+    - UNP
+    # Utilities
+    - NEE
+    - DUK
+    # Real Estate
+    - AMT
+    - PLD
+    # Materials
+    - LIN
+    - APD
 
   settings:
     max_large_cap_weight: 0.08
