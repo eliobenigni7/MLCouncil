@@ -26,5 +26,7 @@
   "SHOP": "Technology",
   "FVRR": "Technology",
   "ROKU": "Communication Services",
-  "DDOG": "Technology"
+    "DDOG": "Technology",
+    "BTCUSD": "Crypto",
+    "ETHUSD": "Crypto"
 }

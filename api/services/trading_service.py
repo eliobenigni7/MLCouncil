@@ -174,6 +174,23 @@ class TradingService:
             if weight > max_position:
                 return False, f"{symbol} exceeds max position {max_position:.0%}"
 
+            # Pre-flight buying-power check: reject if notional exceeds cash
+            # (crypto orders fail with 403 if insufficient USD balance)
+            estimated_cost = float(order.get("requested_notional", 0) or 0)
+            if estimated_cost <= 0 and quantity > 0:
+                price = float(order.get("estimated_price") or order.get("price") or 0.0)
+                estimated_cost = quantity * price
+            available_cash = float(
+                account.get("cash") or account.get("buying_power", 0) or 0
+            )
+            if estimated_cost > 0 and available_cash > 0 and estimated_cost > available_cash * 1.01:
+                # 1% buffer for slippage
+                return (
+                    False,
+                    f"{symbol}: insufficient buying power "
+                    f"(${estimated_cost:,.0f} needed vs ${available_cash:,.0f} available)",
+                )
+
         return True, "OK"
 
     def execute_orders(self, date: str) -> dict:
@@ -574,24 +591,34 @@ class TradingService:
 
             # For intraday equity orders, always use notional (fractional shares)
             # Alpaca supports fractional shares for equities via notional orders
-            if not is_crypto and requested_notional >= 1.0:
-                result = self.node.submit_order_notional(
-                    order["ticker"],
-                    requested_notional,
-                    order["direction"],
-                )
-            elif qty <= 0:
+            try:
+                if not is_crypto and requested_notional >= 1.0:
+                    result = self.node.submit_order_notional(
+                        order["ticker"],
+                        requested_notional,
+                        order["direction"],
+                    )
+                elif qty <= 0:
+                    order_results.append(
+                        {"symbol": order["ticker"], "status": "rejected",
+                         "reason": f"Rounded qty is 0 (notional ${requested_notional:.0f} < 1 share @ ${order.get('estimated_price', 0):.0f})"}
+                    )
+                    continue
+                else:
+                    result = self.node.submit_order(
+                        order["ticker"],
+                        qty,
+                        order["direction"],
+                    )
+            except RuntimeError as exc:
+                # Catch Alpaca API rejections (e.g. insufficient balance)
+                # so one failed order doesn't kill the entire batch
+                logger.warning("Order rejected by broker for %s: %s", order["ticker"], exc)
                 order_results.append(
                     {"symbol": order["ticker"], "status": "rejected",
-                     "reason": f"Rounded qty is 0 (notional ${requested_notional:.0f} < 1 share @ ${order.get('estimated_price', 0):.0f})"}
+                     "reason": str(exc)}
                 )
                 continue
-            else:
-                result = self.node.submit_order(
-                    order["ticker"],
-                    qty,
-                    order["direction"],
-                )
             order_results.append(
                 {
                     **result,
@@ -950,7 +977,7 @@ class TradingService:
         symbols: list[str],
         lookback_days: int = 90,
     ) -> pd.DataFrame:
-        ohlcv_dir = _ROOT / "data" / "ohlcv"
+        ohlcv_dir = _ROOT / "data" / "raw" / "ohlcv"
         frames = []
         for symbol in symbols:
             ticker_dir = ohlcv_dir / symbol
@@ -971,6 +998,10 @@ class TradingService:
             return pd.DataFrame(columns=symbols)
 
         history = pd.concat(frames, ignore_index=True)
+        # Normalize valid_time to pd.Timestamp before sort: mixed datetime.date
+        # (from bulk equity parquets) and pd.Timestamp (from daily crypto parquets)
+        # causes TypeError in Categorical sort with newer pandas.
+        history["valid_time"] = pd.to_datetime(history["valid_time"], utc=True)
         history = history.sort_values(["ticker", "valid_time"])
         history["ret_1d"] = history.groupby("ticker")["adj_close"].pct_change()
         wide = history.pivot(index="valid_time", columns="ticker", values="ret_1d")
