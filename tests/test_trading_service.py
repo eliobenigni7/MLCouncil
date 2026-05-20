@@ -74,7 +74,7 @@ class TestTradingService:
         svc = _make_service()
 
         order = {"ticker": "AAPL", "direction": "buy", "quantity": 10, "price": 150.0}
-        account = {"portfolio_value": 100000.0}
+        account = {"portfolio_value": 100000.0, "buying_power": 100000.0}
 
         valid, msg = svc._validate_order(order, account, pd.DataFrame())
         assert valid is True

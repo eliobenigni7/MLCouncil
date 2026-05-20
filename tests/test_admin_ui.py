@@ -67,6 +67,7 @@ def test_admin_api_allows_requests_when_api_key_is_not_configured():
     assert resp.status_code == 200
 
 
+@pytest.mark.requires_api_key
 def test_admin_api_requires_key_when_configured():
     _install_slowapi_stub()
     from api.main import create_app
@@ -79,6 +80,7 @@ def test_admin_api_requires_key_when_configured():
     assert resp.status_code == 401
 
 
+@pytest.mark.requires_api_key
 def test_admin_api_accepts_valid_key_when_configured():
     _install_slowapi_stub()
     from api.main import create_app
@@ -108,6 +110,7 @@ def test_admin_api_does_not_warn_when_key_is_optional():
     assert not [w for w in caught if "MLCOUNCIL_API_KEY" in str(w.message)]
 
 
+@pytest.mark.requires_api_key
 def test_admin_api_fails_closed_when_required_key_is_missing():
     _install_slowapi_stub()
     from api.main import create_app
@@ -119,6 +122,7 @@ def test_admin_api_fails_closed_when_required_key_is_missing():
                 pass
 
 
+@pytest.mark.requires_api_key
 def test_admin_api_fails_closed_in_paper_profile_without_key():
     _install_slowapi_stub()
     from api.main import create_app

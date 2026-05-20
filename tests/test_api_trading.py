@@ -76,6 +76,7 @@ def test_execute_orders_returns_conflict_for_blocked_pretrade(client):
     assert detail["pretrade"]["blocked"] is True
 
 
+@pytest.mark.requires_api_key
 def test_trading_endpoints_require_api_key_when_configured(client):
     with patch.dict("os.environ", {"MLCOUNCIL_API_KEY": "secret-key"}, clear=True):
         resp = client.get("/api/trading/status")
@@ -84,6 +85,7 @@ def test_trading_endpoints_require_api_key_when_configured(client):
     assert resp.json()["detail"] == "Missing X-API-Key header"
 
 
+@pytest.mark.requires_api_key
 def test_trading_endpoints_accept_valid_api_key(client):
     with patch.dict("os.environ", {"MLCOUNCIL_API_KEY": "secret-key"}, clear=True):
         with patch(

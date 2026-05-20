@@ -345,7 +345,14 @@ def _call_asset(asset_def, *args):
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         )
     ]
-    return fn(*args[:len(positional_params)])
+    call_args = list(args[:len(positional_params)])
+    missing_params = positional_params[len(call_args):]
+    for param in missing_params:
+        if param.name == "alpha158_features":
+            call_args.append(pl.DataFrame({"ticker": [], "valid_time": []}))
+        else:
+            break
+    return fn(*call_args)
 
 
 # ===========================================================================
@@ -679,6 +686,14 @@ class TestFullPipelineSynthetic:
     TICKERS   = ["AAPL", "MSFT", "GOOGL"]
     PARTITION = "2024-01-15"
 
+    def _alpha158_features(self) -> pl.DataFrame:
+        today = date.fromisoformat(self.PARTITION)
+        return pl.DataFrame({
+            "ticker": self.TICKERS,
+            "valid_time": [today] * len(self.TICKERS),
+            "f1": [1.0] * len(self.TICKERS),
+        })
+
     # ── Layer 2: Features ────────────────────────────────────────────────────
 
     def test_sentiment_features_returns_empty_on_empty_news(self, tmp_path):
@@ -787,8 +802,10 @@ class TestFullPipelineSynthetic:
             _pipeline,
             "_load_live_portfolio_snapshot",
             return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
-        ):
-            result = _call_asset(_pipeline.portfolio_weights, ctx, council)
+        ), patch("council.risk_engine.RiskEngine.check_limits_from_weights", return_value=(True, [])):
+            result = _call_asset(
+                _pipeline.portfolio_weights, ctx, council, self._alpha158_features()
+            )
 
         assert isinstance(result, pd.Series)
         assert not result.empty
@@ -814,8 +831,13 @@ class TestFullPipelineSynthetic:
             _pipeline,
             "_load_live_portfolio_snapshot",
             return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
+        ), patch(
+            "council.risk_engine.RiskEngine.check_limits_from_weights",
+            return_value=(True, []),
         ):
-            result = _call_asset(_pipeline.portfolio_weights, ctx, council)
+            result = _call_asset(
+                _pipeline.portfolio_weights, ctx, council, self._alpha158_features()
+            )
 
         assert isinstance(result, pd.Series)
         assert len(result) == len(self.TICKERS)
@@ -835,7 +857,9 @@ class TestFullPipelineSynthetic:
             "council.portfolio.PortfolioConstructor.optimize_with_crypto",
             side_effect=AssertionError("optimize_with_crypto should not be used for equity-only universes"),
         ):
-            result = _call_asset(_pipeline.portfolio_weights, ctx, council)
+            result = _call_asset(
+                _pipeline.portfolio_weights, ctx, council, self._alpha158_features()
+            )
 
         assert isinstance(result, pd.Series)
         assert result.equals(expected)
@@ -1244,9 +1268,7 @@ class TestScheduleCron:
     def test_schedule_registered_in_definitions(self):
         """La schedule è registrata nelle Definitions."""
         schedule_names = [s.name for s in _pipeline.defs.schedules]
-        assert any("daily_pipeline" in n for n in schedule_names), (
-            f"Nessuna schedule per daily_pipeline, trovate: {schedule_names}"
-        )
+        assert "daily_schedule" in schedule_names
 
     def test_failure_sensor_registered(self):
         """Il failure sensor è registrato nelle Definitions."""
