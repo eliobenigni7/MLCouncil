@@ -1,0 +1,8 @@
+{
+  "pdf_path": "/mnt/data/MLCouncil/mlcouncil_report_2026-04-28.pdf",
+  "risk_rows": 21,
+  "mlflow_runs": 167,
+  "backtest_final_equity": 324016.48484311823,
+  "backtest_sharpe": 0.9592370309365159,
+  "wf_oos_sharpe": 0.6379917147053542
+}

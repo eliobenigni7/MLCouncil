@@ -180,7 +180,7 @@ class DagsterClient:
                     },
                     "partitionNames": [partition],
                     "forceSynchronousSubmission": True,
-                    "tags": [{"key": "dagster/partition", "value": partition}],
+                    "tags": [{"key": "mlcouncil/partition", "value": partition}],
                     "runConfigData": {},
                 }
             }
@@ -281,7 +281,7 @@ class DagsterClient:
         last = results[0]
         partition = None
         for tag in last.get("tags", []):
-            if tag.get("key") == "dagster/partition":
+            if tag.get("key") == "mlcouncil/partition":
                 partition = tag.get("value")
                 break
         return PipelineStatus(
@@ -334,7 +334,7 @@ class DagsterClient:
 
         tags = run_data.get("tags", [])
         partition = next(
-            (tag["value"] for tag in tags if tag.get("key") == "dagster/partition"),
+            (tag["value"] for tag in tags if tag.get("key") == "mlcouncil/partition"),
             None,
         )
 

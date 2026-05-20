@@ -117,7 +117,7 @@ class ExposureReport:
 class RiskLimits:
     max_var_pct: float = 0.02
     max_cvar_pct: float = 0.035
-    max_sector_exposure: float = 1.0  # 1.0 = no limit
+    max_sector_exposure: float = 0.35  # 0.35 = 35% cap (matching portfolio constructor's 25% + 10% buffer)
     max_single_position: float = 0.10
     max_crypto_position: float = 0.20
     max_net_exposure: float = 1.0
@@ -484,6 +484,62 @@ class RiskEngine:
             ))
 
         return breaches
+
+    def check_limits_from_weights(
+        self,
+        weights: pd.Series,
+        cov: pd.DataFrame,
+        portfolio_value: float = 100_000.0,
+    ) -> tuple[bool, list[str]]:
+        """Lightweight pre-trade risk check using only weights and covariance.
+
+        Returns (limits_ok, list_of_breach_descriptions).
+        Suitable for use in the daily pipeline before orders are submitted.
+        """
+        sector_map = self.sector_map
+        breaches: list[str] = []
+
+        # Sector exposure check
+        sector_weights: dict[str, float] = {}
+        for ticker, w in weights.items():
+            sector = sector_map.get(ticker, "Other")
+            sector_weights[sector] = sector_weights.get(sector, 0.0) + abs(w)
+        for sector, exposure in sector_weights.items():
+            if exposure > self.limits.max_sector_exposure:
+                breaches.append(
+                    f"Sector Exposure: {sector} at {exposure:.2%} "
+                    f"(limit {self.limits.max_sector_exposure:.2%})"
+                )
+
+        # Single position concentration check
+        for ticker, w in weights.items():
+            limit = (
+                self.limits.max_crypto_position
+                if ticker in {"BTCUSD", "ETHUSD"}
+                else self.limits.max_single_position
+            )
+            if abs(w) > limit:
+                breaches.append(
+                    f"Position Limit: {ticker} at {abs(w):.2%} (limit {limit:.2%})"
+                )
+
+        # VaR approximation from covariance
+        if len(weights) > 1 and not cov.empty:
+            w_arr = weights.reindex(cov.columns).fillna(0.0).values
+            cov_aligned = cov.reindex(
+                index=weights.index, columns=weights.index
+            ).fillna(0.0)
+            port_var = float(w_arr @ cov_aligned.values @ w_arr)
+            if port_var > 0:
+                daily_vol = np.sqrt(port_var)
+                # Approximate 1-day 99% VaR (parametric, Gaussian)
+                var_pct = 2.326 * daily_vol  # z = 2.326 for 99%
+                if var_pct > self.limits.max_var_pct:
+                    breaches.append(
+                        f"VaR Limit: {var_pct:.2%} (limit {self.limits.max_var_pct:.2%})"
+                    )
+
+        return (len(breaches) == 0, breaches)
 
     def compute_full_risk(
         self,

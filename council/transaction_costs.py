@@ -29,6 +29,45 @@ def get_default_slippage_bps() -> float:
     return _read_bps_env("MLCOUNCIL_SLIPPAGE_BPS", DEFAULT_SLIPPAGE_BPS)
 
 
+def estimate_slippage_bps(ticker: str, dollar_volume: float | None = None) -> float:
+    """Estimate slippage in basis points based on asset liquidity.
+    
+    Uses the Almgren-Chriss square-root model:
+    slippage = sigma * sqrt(Q/V) * market_impact_coefficient
+    
+    Simplified for daily rebalancing:
+    - Mega-cap (AAPL, MSFT, GOOGL, AMZN, META, NVDA): 2-3 bps
+    - Large-cap (JPM, V, TSLA, UBER, PLTR, CRWD, DDOG, SHOP): 4-6 bps
+    - Mid-cap (ETSY, FVRR, ROKU, DOCU, ABNB, NET, SQ): 8-15 bps
+    - Crypto (BTCUSD, ETHUSD): 1-3 bps (24/7 high liquidity)
+    """
+    ILLIQUIDITY_MAP = {
+        # Mega-cap — tight spreads
+        "AAPL": 2.0, "MSFT": 2.0, "GOOGL": 2.5, "AMZN": 2.5,
+        "META": 2.5, "NVDA": 2.0, "TSLA": 3.0, "JPM": 3.0,
+        "V": 3.0, "MA": 3.0,
+        # Large-cap
+        "UBER": 4.0, "PLTR": 5.0, "CRWD": 5.0, "DDOG": 5.0,
+        "SHOP": 5.0, "JNJ": 3.0, "UNH": 3.5, "XOM": 3.5,
+        "WMT": 3.0, "PG": 3.0,
+        # Mid-cap — wider spreads
+        "ETSY": 8.0, "FVRR": 12.0, "ROKU": 8.0, "DOCU": 10.0,
+        "ABNB": 6.0, "NET": 7.0, "SQ": 6.0, "SNOW": 7.0,
+        # Crypto — 24/7 high liquidity
+        "BTCUSD": 2.0, "ETHUSD": 2.5,
+    }
+    base = ILLIQUIDITY_MAP.get(ticker, 5.0)  # default 5 bps
+    
+    if dollar_volume is not None and dollar_volume > 0:
+        # Volume-based adjustment: lower volume → higher slippage
+        # Square-root model: impact ~ sqrt(order_size / daily_volume)
+        reference_volume = 1e9  # $1B reference
+        volume_factor = max(0.5, min(2.0, (reference_volume / dollar_volume) ** 0.3))
+        base *= volume_factor
+    
+    return base
+
+
 @dataclass(frozen=True)
 class TransactionCostModel:
     """Estimate transaction costs from either weights or traded notional."""

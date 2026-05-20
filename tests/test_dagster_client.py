@@ -23,7 +23,7 @@ async def test_get_last_status_uses_pipeline_name_filter_and_partition_tag():
                                 "startTime": "1",
                                 "endTime": "2",
                                 "tags": [
-                                    {"key": "dagster/partition", "value": "2026-04-03"},
+                                    {"key": "mlcouncil/partition", "value": "2026-04-03"},
                                     {"key": "foo", "value": "bar"},
                                 ],
                             }
@@ -119,7 +119,7 @@ async def test_trigger_run_uses_partition_backfill_for_partitioned_job():
     assert payload["variables"]["backfillParams"]["selector"]["partitionSetName"] == "daily_pipeline_partition_set"
     assert payload["variables"]["backfillParams"]["runConfigData"] == {}
     assert payload["variables"]["backfillParams"]["tags"] == [
-        {"key": "dagster/partition", "value": "2026-04-03"}
+        {"key": "mlcouncil/partition", "value": "2026-04-03"}
     ]
     assert run_id == "run-456"
 

@@ -515,7 +515,7 @@ class AlpacaLiveNode:
 
         order_request = MarketOrderRequest(
             symbol=symbol,
-            notional=notional,
+            notional=round(notional, 2),
             side=order_side,
             time_in_force=tif,
         )

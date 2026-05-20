@@ -256,7 +256,7 @@ def _load_partitioned_parquet(subdir: str, partition_date: str) -> pl.DataFrame:
 
 def _load_macro_context_from_disk() -> pl.DataFrame:
     """Load the macro context parquet files saved by download_macro."""
-    macro_dir = _DATA_DIR / "raw" / "macro"
+    macro_dir = _DATA_DIR / "macro"
 
     def _path(name: str) -> str | None:
         p = macro_dir / f"{name}.parquet"
@@ -1241,6 +1241,7 @@ def save_regime_results(
 def portfolio_weights(
     context: AssetExecutionContext,
     council_signal: pd.Series,
+    alpha158_features: pl.DataFrame,
 ) -> pd.Series:
     """Ottimizza il portafoglio con conformal sizing e covariance storica.
 
@@ -1287,6 +1288,9 @@ def portfolio_weights(
     signal_aligned = council_signal.reindex(cov_tickers).fillna(0.0)
     cov = cov_df.reindex(index=cov_tickers, columns=cov_tickers).fillna(0.0)
 
+    # Market returns for beta neutrality
+    market_returns = _load_market_returns()
+
     # Conformal position sizing
     sizer_checkpoint = _CHECKPOINTS / "conformal_sizer.pkl"
     if sizer_checkpoint.exists():
@@ -1295,9 +1299,27 @@ def portfolio_weights(
             f"portfolio_weights [{partition_date}]: "
             f"conformal sizer caricato da {sizer_checkpoint}"
         )
+        # Conformal position sizing — use real Alpha158 features
         n = len(cov_tickers)
-        X_dummy = np.zeros((n, sizer._n_features or 1))
-        multipliers = sizer.compute_position_multipliers(signal_aligned, X_dummy)
+        feat_df = alpha158_features.filter(pl.col("ticker").is_in(cov_tickers))
+        feat_cols = [c for c in feat_df.columns if c not in _EXCLUDE_COLS]
+        if (
+            len(feat_df) == n
+            and len(feat_cols) >= (sizer._n_features or 0)
+            and sizer._n_features is not None
+        ):
+            X_real = feat_df.select(feat_cols[:sizer._n_features]).to_numpy()
+            multipliers = sizer.compute_position_multipliers(signal_aligned, X_real)
+        else:
+            # Fallback: fewer tickers in features than sizer expects
+            X_dummy = np.zeros((n, sizer._n_features or 1))
+            context.log.warning(
+                f"portfolio_weights [{partition_date}]: "
+                f"feature/ticker mismatch ({len(feat_df)} vs {n} tickers, "
+                f"{len(feat_cols)} vs {sizer._n_features} features) — "
+                f"using dummy features for conformal sizing"
+            )
+            multipliers = sizer.compute_position_multipliers(signal_aligned, X_dummy)
     else:
         context.log.warning(
             f"portfolio_weights [{partition_date}]: "
@@ -1317,6 +1339,7 @@ def portfolio_weights(
             position_multipliers=multipliers,
             current_weights=current_w,
             returns_covariance=cov,
+            market_returns=market_returns,
             portfolio_value=portfolio_value,
         )
     else:
@@ -1325,8 +1348,36 @@ def portfolio_weights(
             position_multipliers=multipliers,
             current_weights=current_w,
             returns_covariance=cov,
+            market_returns=market_returns,
             portfolio_value=portfolio_value,
         )
+
+    # ── Pre-trade risk check ──────────────────────────────────────────
+    from council.risk_engine import RiskEngine
+    risk = RiskEngine()
+    limits_ok, breaches = risk.check_limits_from_weights(weights, cov)
+    if not limits_ok:
+        context.log.warning(
+            f"portfolio_weights [{partition_date}]: "
+            f"risk limits breached: {breaches} — scaling down positions"
+        )
+        # Scale all weights proportionally until limits are met
+        for breach in breaches:
+            if "sector" in str(breach).lower():
+                # Reduce overweight sectors
+                from data.features.sector_exposure import compute_sector_exposures, get_ticker_sector
+                sector_exposures = compute_sector_exposures(weights)
+                for sector, exposure in sector_exposures.items():
+                    if exposure > 0.35:
+                        scale = 0.35 / exposure
+                        for t in weights.index:
+                            if get_ticker_sector(t) == sector:
+                                weights[t] *= scale
+            elif "var" in str(breach).lower():
+                weights *= 0.5  # Halve all positions if VaR breach
+    # Re-normalize weights
+    if abs(weights.sum()) > 1e-9:
+        weights = weights / weights.abs().sum() * min(weights.abs().sum(), 1.0)
 
     weights = attach_lineage(weights.rename("target_weight"), **extract_lineage(council_signal))
     weights_lineage = extract_lineage(weights)
@@ -1488,7 +1539,44 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
         .set_index("valid_time")
         .tail(90)
     )
-    return returns_wide.cov(min_periods=30)
+    cov_df = returns_wide.cov(min_periods=30)
+
+    # Apply Ledoit-Wolf shrinkage for better conditioning
+    if len(returns_wide.columns) > 1 and len(returns_wide) >= 5:
+        from sklearn.covariance import LedoitWolf
+        returns_clean = returns_wide.dropna(axis=1, how="all").dropna()
+        if len(returns_clean) >= 5 and len(returns_clean.columns) > 1:
+            lw = LedoitWolf().fit(returns_clean.values)
+            cov_df = pd.DataFrame(
+                lw.covariance_,
+                index=returns_clean.columns,
+                columns=returns_clean.columns,
+            )
+
+    return cov_df
+
+
+def _load_market_returns() -> pd.Series | None:
+    """Carica i ritorni di mercato (SPY o S&P 500) per beta neutrality."""
+    spy_path = _DATA_DIR / "ohlcv" / "SPY"
+    if not spy_path.exists():
+        # Try alternative location
+        spy_path = _DATA_DIR / "raw" / "ohlcv" / "SPY"
+    if not spy_path.exists():
+        return None
+    try:
+        all_files = sorted(spy_path.glob("*.parquet"))
+        if not all_files:
+            return None
+        df = pd.concat([pd.read_parquet(f) for f in all_files], ignore_index=True)
+        if "adj_close" in df.columns and "ticker" in df.columns:
+            spy = df[df["ticker"] == "SPY"].sort_values("valid_time")
+            spy_returns = spy["adj_close"].pct_change().dropna()
+            spy_returns.index = spy["valid_time"].iloc[1:].values
+            return spy_returns
+    except Exception:
+        pass
+    return None
 
 
 # ===========================================================================
