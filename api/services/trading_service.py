@@ -186,6 +186,13 @@ class TradingService:
             available_cash = float(
                 account.get("cash") or account.get("buying_power", 0) or 0
             )
+            if estimated_cost > 0 and available_cash <= 0:
+                # Negative or zero cash means no buying power for new positions
+                return (
+                    False,
+                    f"{symbol}: insufficient buying power "
+                    f"(cash ${available_cash:,.0f} ≤ 0)",
+                )
             if estimated_cost > 0 and available_cash > 0 and estimated_cost > available_cash * 1.01:
                 # 1% buffer for slippage
                 return (
