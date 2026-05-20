@@ -117,7 +117,7 @@ class ExposureReport:
 class RiskLimits:
     max_var_pct: float = 0.02
     max_cvar_pct: float = 0.035
-    max_sector_exposure: float = 0.35  # 0.35 = 35% cap (matching portfolio constructor's 25% + 10% buffer)
+    max_sector_exposure: float = 0.40  # 0.40 = 40% cap (relaxed from 35% to reduce infeasible optimizer fallbacks)
     max_single_position: float = 0.10
     max_crypto_position: float = 0.20
     max_net_exposure: float = 1.0

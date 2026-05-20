@@ -36,42 +36,15 @@ universe:
     - TMUS
 
   mid_cap:
-    # Technology
-    - DOCU
-    - PLTR
-    - SNOW
-    - CRWD
-    - NET
-    - SHOP
-    - FVRR
-    - DDOG
+    # Financials
+    - BAC
+    - GS
     # Healthcare
     - PFE
     - MRK
     - ABT
-    # Financials
-    - SQ
-    - BAC
-    - GS
-    # Consumer Discretionary
-    - ETSY
-    - UBER
-    - ABNB
-    # Communication Services
-    - ROKU
     # Energy
     - COP
-    # Industrials
-    - UNP
-    # Utilities
-    - NEE
-    - DUK
-    # Real Estate
-    - AMT
-    - PLD
-    # Materials
-    - LIN
-    - APD
 
   settings:
     max_large_cap_weight: 0.08

@@ -37,7 +37,7 @@ from scripts import run_pipeline as rp
 
 RESULTS_DIR = ROOT / "data" / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-REBALANCE_EVERY = 3
+REBALANCE_EVERY = 5
 EQUITY_UNIVERSE = {"AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA"}
 
 

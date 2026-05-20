@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 DEFAULT_COMMISSION_BPS = 1.0
-DEFAULT_SLIPPAGE_BPS = 5.0
+DEFAULT_SLIPPAGE_BPS = 3.0
 
 
 def _read_bps_env(key: str, default: float) -> float:
