@@ -1,44 +1,42 @@
-# Production manifest — updated ONLY via walk-forward promotion gate + promote_model.py
-# Daily pipeline reads this when MLCOUNCIL_ENV_PROFILE=prod|paper (see council/production_config.py)
-#
-# Do not hand-edit promoted checkpoints without a gate report and audit entry.
-
 schema_version: 1
-updated_at: null
-updated_by: null
-
+updated_at: '2026-05-21T17:07:46.325759+00:00'
+updated_by: promote_council_module.py
 models:
   technical:
-    family: lightgbm
-    checkpoint: models/checkpoints/lgbm_latest.pkl
+    family: tft
+    checkpoint: models/checkpoints/tft_challenger.pkl
   sentiment:
     family: finbert
     checkpoint: models/checkpoints/sentiment_latest.pkl
   regime:
     family: hmm
     checkpoint: models/checkpoints/hmm_latest.pkl
-
 council:
   aggregator_mode: linear
   position_sizing: conformal
-  covariance_estimator: ledoit
+  covariance_estimator: dcc
   portfolio_mode: cvxpy
   use_stacked_council: false
   regime_mode: label
-
 experts:
   tft:
-    enabled: false
+    enabled: true
     checkpoint: models/checkpoints/tft_challenger.pkl
   microstructure:
     enabled: false
   moe:
     enabled: false
     gate_checkpoint: models/checkpoints/moe_gate.pkl
-
 features:
   online_learning: false
   otel_enabled: false
   hrp_soft_prior: false
-
-promotion_history: []
+promotion_history:
+- model: tft
+  at: '2026-05-21T17:07:43.842685+00:00'
+  gate_report: E:\Github\MLCouncil\data\operations\walkforward_promotion_tft.json
+  by: promote_model.py
+- model: council_dcc
+  at: '2026-05-21T17:07:46.325759+00:00'
+  gate_report: E:\Github\MLCouncil\data\operations\council_promotion_dcc.json
+  by: promote_council_module.py

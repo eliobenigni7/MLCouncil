@@ -20,6 +20,7 @@ _NEWS_SCHEMA = {
     "ticker": pl.Utf8,
     "valid_time": pl.Date,
     "transaction_time": pl.Datetime("us", "UTC"),
+    "arrival_time": pl.Datetime("us", "UTC"),
     "title": pl.Utf8,
     "published": pl.Datetime("us", "UTC"),
     "source": pl.Utf8,
@@ -88,6 +89,7 @@ def _parse_feed(ticker: str, date: str, tx_time: datetime) -> list[dict]:
                     "ticker": ticker,
                     "valid_time": date,
                     "transaction_time": tx_time,
+                    "arrival_time": published,
                     "title": getattr(entry, "title", ""),
                     "published": published,
                     "source": getattr(entry, "source", {}).get("title", "")
@@ -145,6 +147,7 @@ def download_news(
             pl.col("ticker").cast(pl.Utf8),
             pl.col("valid_time").cast(pl.Date),
             pl.col("transaction_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("arrival_time").cast(pl.Datetime("us", "UTC")),
             pl.col("title").cast(pl.Utf8),
             pl.col("published").cast(pl.Datetime("us", "UTC")),
             pl.col("source").cast(pl.Utf8),

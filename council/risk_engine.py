@@ -341,6 +341,16 @@ class RiskEngine:
             var_1d, cvar_1d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 1)
             var_5d, cvar_5d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 5)
             var_10d, cvar_10d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 10)
+        elif method == "generative":
+            from council.generative_stress import GenerativeStressEngine
+
+            tickers = [t for t in weights if t in returns.columns]
+            wide = returns[tickers] if tickers else returns
+            stress = GenerativeStressEngine(n_scenarios=10_000).sample_scenarios(wide)
+            var_1d = abs(stress.var_95)
+            cvar_1d = var_1d * 1.25
+            var_5d, cvar_5d = var_1d * np.sqrt(5), cvar_1d * np.sqrt(5)
+            var_10d, cvar_10d = var_1d * np.sqrt(10), cvar_1d * np.sqrt(10)
         else:
             var_1d, cvar_1d = self.compute_var_monte_carlo(
                 returns,

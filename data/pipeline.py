@@ -434,11 +434,16 @@ def raw_news(context: AssetExecutionContext) -> None:
     from data.ingest.news import download_news
 
     partition_date = context.partition_key
-    tickers = _load_universe()
-
-    df = download_news(tickers=tickers, date=partition_date, data_dir=_DATA_DIR)
-    context.log.info(f"raw_news [{partition_date}]: {df.shape[0]} headline")
-    _record_asset_metadata(context, "raw_news", df, partition_date)
+    with trace_span(
+        "mlcouncil.ingest.raw_news",
+        layer="ingest",
+        asset="raw_news",
+        partition_date=partition_date,
+    ):
+        tickers = _load_universe()
+        df = download_news(tickers=tickers, date=partition_date, data_dir=_DATA_DIR)
+        context.log.info(f"raw_news [{partition_date}]: {df.shape[0]} headline")
+        _record_asset_metadata(context, "raw_news", df, partition_date)
 
 
 @dg.asset(
@@ -453,7 +458,13 @@ def raw_macro(context: AssetExecutionContext) -> None:
 
     partition_date = context.partition_key
 
-    download_macro(end=partition_date, data_dir=_DATA_DIR)
+    with trace_span(
+        "mlcouncil.ingest.raw_macro",
+        layer="ingest",
+        asset="raw_macro",
+        partition_date=partition_date,
+    ):
+        download_macro(end=partition_date, data_dir=_DATA_DIR)
 
     macro_dir = _DATA_DIR / "macro"
 
@@ -641,6 +652,28 @@ def sentiment_features(
         return _empty
 
     df = pl.DataFrame(records)
+
+    try:
+        from models.sentiment_llm import LLMSentimentScorer, llm_sentiment_shadow_enabled, log_shadow_scores
+
+        if llm_sentiment_shadow_enabled():
+            scorer = LLMSentimentScorer()
+            finbert_s = pd.Series(ticker_scores, name="finbert")
+            llm_scores: dict[str, float] = {}
+            for ticker, items in ticker_news.items():
+                texts = [item[0] for item in items if item and item[0]]
+                if not texts:
+                    llm_scores[ticker] = 0.0
+                    continue
+                llm_scores[ticker] = float(np.mean([scorer.score_text(t) for t in texts[:5]]))
+            log_shadow_scores(partition_date, finbert_s, pd.Series(llm_scores, name="llm"))
+            context.log.info(
+                f"sentiment_features [{partition_date}]: LLM shadow logged "
+                f"({len(llm_scores)} tickers)"
+            )
+    except Exception as exc:
+        context.log.debug(f"sentiment_features [{partition_date}]: LLM shadow skip ({exc})")
+
     context.log.info(
         f"sentiment_features [{partition_date}]: "
         f"{len(records)} ticker con sentiment | "
@@ -1096,10 +1129,34 @@ def council_signal(
     current_regime: str,
 ) -> pd.Series:
     """Aggrega i segnali dei modelli con il CouncilAggregator."""
-    from council.aggregator import CouncilAggregator
-
     partition_date = context.partition_key
     today = date_type.fromisoformat(partition_date)
+
+    with trace_span(
+        "mlcouncil.council.council_signal",
+        layer="council",
+        asset="council_signal",
+        partition_date=partition_date,
+    ):
+        return _run_council_signal(
+            context,
+            lgbm_signals,
+            sentiment_signals,
+            current_regime,
+            partition_date,
+            today,
+        )
+
+
+def _run_council_signal(
+    context: AssetExecutionContext,
+    lgbm_signals: pd.Series,
+    sentiment_signals: pd.Series,
+    current_regime: str,
+    partition_date: str,
+    today: date_type,
+) -> pd.Series:
+    from council.aggregator import CouncilAggregator
 
     aggregator = CouncilAggregator(
         config_path=str(_ROOT / "config" / "regime_weights.yaml")
@@ -1407,10 +1464,27 @@ def portfolio_weights(
     Se il conformal sizer non è disponibile usa moltiplicatori unitari.
     La matrice di covarianza è calcolata sulle ultime 90 sessioni disponibili.
     """
+    partition_date = context.partition_key
+
+    with trace_span(
+        "mlcouncil.council.portfolio_weights",
+        layer="council",
+        asset="portfolio_weights",
+        partition_date=partition_date,
+    ):
+        return _run_portfolio_weights(
+            context, council_signal, alpha158_features, partition_date
+        )
+
+
+def _run_portfolio_weights(
+    context: AssetExecutionContext,
+    council_signal: pd.Series,
+    alpha158_features: pl.DataFrame,
+    partition_date: str,
+) -> pd.Series:
     from council.cqr import get_position_sizer, position_sizer_checkpoint_name
     from council.portfolio_diff import get_portfolio_constructor
-
-    partition_date = context.partition_key
 
     if council_signal.empty:
         context.log.warning(
@@ -1799,6 +1873,79 @@ def cost_calibration_gate(
 
 @dg.asset(
     retry_policy=_RETRY,
+    description="Weekly TDA topology stress signal (T4.5 shadow).",
+)
+def tda_warning_signal(context: AssetExecutionContext) -> dict:
+    """Compute rolling beta1 proxy on multivariate returns; log alert metadata."""
+    from council.tda_warning import PersistentHomologyAnalyser, tda_warning_enabled
+
+    if not tda_warning_enabled():
+        return {"status": "disabled"}
+
+    tickers = _load_universe()[:12]
+    ohlcv_dir = _DATA_DIR / "ohlcv"
+    frames: list[pl.DataFrame] = []
+    for ticker in tickers:
+        ticker_dir = ohlcv_dir / ticker
+        if ticker_dir.exists():
+            for pq in sorted(ticker_dir.glob("*.parquet")):
+                try:
+                    frames.append(_normalize_df(pl.read_parquet(pq)))
+                except Exception:
+                    pass
+    if not frames:
+        return {"status": "skipped_no_returns"}
+    ohlcv = pl.concat(frames).sort(["ticker", "valid_time"])
+    returns_wide = (
+        ohlcv.select(["ticker", "valid_time", "adj_close"])
+        .with_columns(
+            (pl.col("adj_close") / pl.col("adj_close").shift(1) - 1)
+            .over("ticker")
+            .alias("ret_1d")
+        )
+        .filter(pl.col("ret_1d").is_not_null())
+        .pivot(values="ret_1d", index="valid_time", on="ticker")
+        .to_pandas()
+        .set_index("valid_time")
+        .tail(90)
+    )
+    if returns_wide.empty:
+        return {"status": "skipped_no_returns"}
+    analyser = PersistentHomologyAnalyser()
+    result = analyser.analyse(returns_wide)
+    out_path = _RESULTS_DIR / "tda_warning_latest.json"
+    _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    import json
+
+    payload = result.to_dict()
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    context.log.info(f"tda_warning_signal: {payload}")
+    if result.is_alert:
+        context.log.warning(
+            f"tda_warning_signal: beta1_proxy={result.beta1_proxy:.3f} "
+            f">= {result.threshold}"
+        )
+    return payload
+
+
+tda_warning_job = dg.define_asset_job(
+    name="tda_warning_job",
+    selection=dg.AssetSelection.assets(tda_warning_signal),
+    description="Weekly TDA early-warning check.",
+)
+
+
+@dg.schedule(
+    cron_schedule="0 6 * * 1",
+    execution_timezone="UTC",
+    job=tda_warning_job,
+)
+def tda_warning_schedule(context: "dg.ScheduleEvaluationContext"):
+    return dg.RunRequest(tags={"mlcouncil/job": "tda_warning"})
+
+
+@dg.asset(
+    retry_policy=_RETRY,
     description=(
         "Weekly alpha model promotion gate (T1.1). Evaluates shadow challengers vs "
         "champion walk-forward metrics. Production promotion requires "
@@ -2045,9 +2192,10 @@ _ALL_ASSETS = [
     train_hmm,
     cost_calibration_artifact,
     cost_calibration_gate,
-    # train_hmm + cost_calibration_* sono unpartitioned: hanno schedule
-    # dedicate (train_hmm_job: domenicale 23:00 ET; cost_calibration_job: ogni
-    # notte 23:00 ET).
+    model_promotion_gate,
+    tda_warning_signal,
+    # train_hmm + cost_calibration_* + model_promotion_gate sono unpartitioned:
+    # schedule dedicate (train_hmm_job, cost_calibration_job, walkforward_promotion_job).
 ]
 
 
@@ -2181,7 +2329,19 @@ defs = dg.Definitions(
         portfolio_weights_contract,
         daily_orders_contract,
     ],
-    jobs=[daily_job, train_hmm_job, cost_calibration_job],
-    schedules=[daily_schedule, hmm_schedule, cost_calibration_schedule],
+    jobs=[
+        daily_job,
+        train_hmm_job,
+        cost_calibration_job,
+        walkforward_promotion_job,
+        tda_warning_job,
+    ],
+    schedules=[
+        daily_schedule,
+        hmm_schedule,
+        cost_calibration_schedule,
+        walkforward_promotion_schedule,
+        tda_warning_schedule,
+    ],
     sensors=[failure_sensor],
 )

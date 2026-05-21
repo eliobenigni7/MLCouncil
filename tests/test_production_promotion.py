@@ -11,8 +11,26 @@ import yaml
 
 def test_manifest_defaults_linear_conformal(tmp_path, monkeypatch):
     manifest_path = tmp_path / "production_manifest.yaml"
-    src = Path(__file__).resolve().parents[1] / "config" / "production_manifest.yaml"
-    manifest_path.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    baseline = {
+        "schema_version": 1,
+        "models": {
+            "technical": {"family": "lightgbm", "checkpoint": "models/checkpoints/lgbm_latest.pkl"},
+            "sentiment": {"family": "finbert", "checkpoint": "models/checkpoints/sentiment_latest.pkl"},
+            "regime": {"family": "hmm", "checkpoint": "models/checkpoints/hmm_latest.pkl"},
+        },
+        "council": {
+            "aggregator_mode": "linear",
+            "position_sizing": "conformal",
+            "covariance_estimator": "ledoit",
+            "portfolio_mode": "cvxpy",
+            "use_stacked_council": False,
+            "regime_mode": "label",
+        },
+        "experts": {"tft": {"enabled": False}, "microstructure": {"enabled": False}},
+        "features": {"online_learning": False, "otel_enabled": False},
+        "promotion_history": [],
+    }
+    manifest_path.write_text(yaml.safe_dump(baseline), encoding="utf-8")
 
     monkeypatch.setenv("MLCOUNCIL_ENV_PROFILE", "prod")
     monkeypatch.setenv("MLCOUNCIL_USE_PRODUCTION_MANIFEST", "true")

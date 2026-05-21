@@ -474,6 +474,8 @@ class TestAssetDependencies:
             "AssetKey(['train_hmm'])",
             "AssetKey(['cost_calibration_artifact'])",
             "AssetKey(['cost_calibration_gate'])",
+            "AssetKey(['model_promotion_gate'])",
+            "AssetKey(['tda_warning_signal'])",
         }
 
     def test_retry_policy_configured(self):
@@ -484,6 +486,8 @@ class TestAssetDependencies:
                     "AssetKey(['train_hmm'])",
                     "AssetKey(['cost_calibration_artifact'])",
                     "AssetKey(['cost_calibration_gate'])",
+                    "AssetKey(['model_promotion_gate'])",
+                    "AssetKey(['tda_warning_signal'])",
                 }
                 continue
             op = a.op

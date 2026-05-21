@@ -697,22 +697,27 @@ Lavora sul track <Tx.y> del piano docs/disruptive-roadmap-2026-05-21.md.
 
 ---
 
-## Wave 1 — Gap analysis (codebase snapshot 2026-05-21)
+## Wave 1–4 — Gap analysis (codebase snapshot 2026-05-21, aggiornato)
 
-Automated inventory against `origin/master` + local untracked work (`data/pipeline.py`,
-`council/cost_calibration_gate.py`, etc.). Status: **missing** = track deliverable absent;
-**partial** = related primitives exist but track acceptance criteria not met;
-**done** = track scope satisfied.
+Status: **scaffold** = codice + ADR + test; **ops** = operativo in CI/staging/prod;
+**promoted** = campione in `config/production_manifest.yaml` dopo gate.
 
-| Track | Status | Key files found | Notes |
-|---|---|---|---|
-| **T1.1** Walk-forward CI | **partial** | `backtest/validation.py` (`build_purged_walk_forward_splits`, `run_walk_forward_analysis`, `estimate_pbo`, `summarize_walk_forward_metrics`); `council/cost_calibration_gate.py` + `validate_cost_calibration_promotion` (cost-only); `.github/workflows/ci.yml` | Missing: `walk-forward-ci.yml`, `scripts/run_walkforward_promotion.py`, `validate_model_promotion()`, `tests/test_walkforward_promotion.py`, ADR |
-| **T1.2** Online learning | **partial** | `data/pipeline.py::lgbm_signals` (static `lgbm_latest.pkl` via `TechnicalModel.predict`); `council/monitor.py` (KS feature drift, not ADWIN/DDM); `council/pickle_security.py` | Missing: `models/online.py`, `council/drift.py`, incremental `refit`, `river` dep, tests |
-| **T1.3** Tri-temporal store | **partial** | `data/store/arctic_store.py` (`valid_time` + `transaction_time`, `as_of_transaction_time`); `tests/test_arctic_store.py` (PIT bi-temporal) | Missing: `arrival_time`, `as_of_arrival_time`, `scripts/migrate_arrival_time.py`, tri-temporal tests |
-| **T1.4** Observability | **partial** | `dashboard/app.py` + `dashboard/data_loader.py` (council math-trace); `docker-compose.yml` (admin, dashboard, dagster, mlflow) | Missing: `observability/tracing.py`, OTel instrumentation, `docker-compose.observability.yml`, `dashboards/grafana/mlcouncil.json`; no `opentelemetry-*` in requirements |
+| Wave | Track | Status | Key deliverables | Remaining to close track |
+|------|-------|--------|------------------|--------------------------|
+| **1** | T1.1 Walk-forward CI | **scaffold + ops partial** | `.github/workflows/walk-forward-ci.yml`, `scripts/run_walkforward_promotion.py`, `validate_model_promotion`, `model_promotion_gate` Dagster asset, `scripts/populate_walkforward_caches.py` | CI `lightgbm` non-dry-run con cache; populate signal parquet in CI; monthly FinBERT workflow; auto-PR opzionale |
+| **1** | T1.2 Online learning | **scaffold** | `models/online.py`, `council/drift.py`, pipeline `_run_lgbm_signals`, `river` in requirements | Staging con `MLCOUNCIL_ONLINE_LEARNING=true`; manifest flag |
+| **1** | T1.3 Tri-temporal store | **scaffold** | `arctic_store.py` (`arrival_time`, `as_of_arrival_time`), `migrate_arrival_time.py`, tri-temporal tests | `arrival_time` su ingest news; LMDB migrate apply; replay `as_of_arrival_time` in backtest |
+| **1** | T1.4 Observability | **scaffold + ops partial** | `observability/tracing.py`, compose + Grafana JSON, `trace_span` su layer ingest/features/signals/council | Span su `raw_news`/`raw_macro`/`council_signal`/`portfolio_weights`; E2E Tempo verify |
+| **2** | T2.1 TFT | **scaffold** | `models/tft.py`, `train_tft.py`, gate `tft`, shadow parquet | GPU train; gate empirico; **promoted** via `promote_model.py` |
+| **2** | T2.2 FinMA/RAG | **scaffold** | `sentiment_llm.py`, `sec_filings.py`, `vector_store.py` | Dagster shadow hook; walk-forward model key; Whisper deferred |
+| **2** | T2.3 Deep regime | **scaffold** | `regime_dss.py`, embedding mode in aggregator | HMM resta daily; ELBO/council IC gate |
+| **2** | T2.4 Microstructure | **scaffold** | `microstructure.py`, `compute_ofi`, `orderbook.py` stubs | L2 live feed; walk-forward IC |
+| **3** | T3.1–T3.4 | **scaffold shadow** | MoE, CQR, diff port, DCC in pipeline factories | **≥1 W2 champion** poi promote council module in manifest |
+| **4** | T4.1–T4.5 | **scaffold** (2026-05-21) | `rl_agent`, `router`, `generative_stress`, `causal_drift`, `tda_warning` + tests + ADR | Empirical gating; RL dopo 6m fill history |
 
-**Suggested agent branches:** `feat/walkforward-ci` (T1.1), `feat/otel-grafana` (T1.4),
-`feat/tri-temporal-store` (T1.3), `feat/online-learning` (T1.2, after T1.1).
+**Production manifest today:** champions LightGBM + FinBERT + HMM; `experts.tft.enabled: false`;
+`promotion_history` populated only after operator `scripts/promote_model.py` / `promote_council_module.py`.
 
-**Blockers:** `river` and OpenTelemetry SDKs not in `requirements.txt`; T1.1 must land
-before T1.2/T2.x promotion loops; T1.3 migration needs RSS/FRED metadata contracts in ingest.
+**Suggested next ops:** `python scripts/populate_walkforward_caches.py` → weekly CI →
+`python scripts/promote_model.py --model tft` (after streak ≥3) →
+`python scripts/promote_council_module.py --module dcc`.

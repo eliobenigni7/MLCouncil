@@ -454,6 +454,65 @@ class CouncilMonitor:
         )
 
     # ------------------------------------------------------------------
+    # 3b. Causal graph drift (PCMCI proxy, T4.4)
+    # ------------------------------------------------------------------
+
+    def check_causal_graph_drift(
+        self,
+        features_today: "pd.DataFrame | Any",
+        returns_today: "pd.Series | Any",
+        model_name: str = "council",
+    ) -> AlertResult:
+        """Alert when feature→return causal link structure changes vs baseline."""
+        from council.causal_drift import PCMCIDriftDetector, causal_drift_enabled
+
+        if not causal_drift_enabled():
+            return AlertResult(
+                is_alert=False,
+                severity=Severity.INFO,
+                model_name=model_name,
+                check_type="causal_drift",
+                message="Causal drift check disabled (MLCOUNCIL_CAUSAL_DRIFT_ENABLED).",
+                recommendation="Enable for staging experiments.",
+                metric_value=0.0,
+                threshold=self.drift_pvalue_threshold,
+            )
+
+        today_df = _to_pandas(features_today)
+        ret = _to_pandas(returns_today)
+        if isinstance(ret, pd.DataFrame) and ret.shape[1] == 1:
+            ret = ret.iloc[:, 0]
+
+        detector = PCMCIDriftDetector()
+        is_alert, diag = detector.check(today_df, ret)
+
+        if is_alert:
+            return AlertResult(
+                is_alert=True,
+                severity=Severity.WARNING,
+                model_name=model_name,
+                check_type="causal_drift",
+                message=(
+                    f"{model_name}: causal graph drift detected "
+                    f"(change_fraction={diag.get('change_fraction', 0):.2f})."
+                ),
+                recommendation="Review feature-return dependencies; consider retrain.",
+                metric_value=float(diag.get("change_fraction", 0)),
+                threshold=detector.link_change_fraction,
+            )
+
+        return AlertResult(
+            is_alert=False,
+            severity=Severity.INFO,
+            model_name=model_name,
+            check_type="causal_drift",
+            message=f"{model_name}: causal graph stable ({diag.get('status')}).",
+            recommendation="No action required.",
+            metric_value=float(diag.get("change_fraction", 0)),
+            threshold=detector.link_change_fraction,
+        )
+
+    # ------------------------------------------------------------------
     # 4. Regime change
     # ------------------------------------------------------------------
 

@@ -126,8 +126,11 @@ dagster dev -f data/pipeline.py
 
 - `MLCOUNCIL_ENV_PROFILE=prod` + `MLCOUNCIL_USE_PRODUCTION_MANIFEST=true`
 - Champions: `config/production_manifest.yaml` (LightGBM, FinBERT, HMM, linear/conformal/Ledoit/CVXPY)
-- Weekly: `model_promotion_gate` asset / GitHub `walk-forward-ci.yml`
+- Weekly: `model_promotion_gate` Dagster asset + GitHub `walk-forward-ci.yml`
+- Seed CI caches: `python scripts/populate_walkforward_caches.py`
 - Promote after 3 passes: `python scripts/promote_model.py --model lightgbm`
+- Council module promote: `python scripts/promote_council_module.py --module dcc`
+- Staging TFT path: `python scripts/establish_wave2_staging_promotion.py --model tft`
 
 ADR: `docs/adr/2026-05-21-production-promotion-gate.md`
 
@@ -186,6 +189,15 @@ python scripts/run_pipeline.py --partition 2026-05-20
 - Dagster spans on `raw_ohlcv`, `alpha158_features`, `lgbm_signals`, `daily_orders`
 - Dashboard: `dashboards/grafana/mlcouncil.json` (provisioned by observability compose)
 - ADR: `docs/adr/2026-05-21-otel-grafana.md`
+
+## Wave 4 execution & risk (T4.x — shadow scaffolds)
+
+- `council/causal_drift.py`, `council/tda_warning.py`, `council/generative_stress.py`
+- `execution/rl_agent.py`, `execution/router.py`, `execution/lob_simulator.py`
+- Dagster: `tda_warning_signal` (weekly); monitor: `check_causal_graph_drift`
+- RiskEngine: `compute_var(..., method="generative")`
+- ADRs: `docs/adr/2026-05-21-causal-drift-pcmci.md`, `tda-early-warning.md`, `generative-stress.md`, `rl-execution.md`, `smart-order-routing.md`
+- Dashboard: `dashboard/pages/2_Challenger_Promotion.py`
 
 ## Known Issues
 

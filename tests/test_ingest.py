@@ -338,7 +338,16 @@ class TestNews:
             )
 
         assert isinstance(result, pl.DataFrame)
-        expected_cols = {"ticker", "valid_time", "transaction_time", "title", "published", "source", "url"}
+        expected_cols = {
+            "ticker",
+            "valid_time",
+            "transaction_time",
+            "arrival_time",
+            "title",
+            "published",
+            "source",
+            "url",
+        }
         assert expected_cols == set(result.columns)
 
     def test_news_bitemporal_not_null(self, cfg, monkeypatch):
