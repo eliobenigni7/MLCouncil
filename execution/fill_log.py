@@ -146,15 +146,24 @@ def _records_to_df(records: Iterable[FillRecord]) -> pl.DataFrame:
     return df.cast({k: v for k, v in _SCHEMA.items() if k in df.columns})
 
 
-def append_fills(records: Iterable[FillRecord], base: Path = FILL_LOG_DIR) -> Path:
+def append_fills(records: Iterable[FillRecord], base: Optional[Path] = None) -> Path:
     """Append a batch of :class:`FillRecord` to the monthly parquet.
 
     All records in *records* must share the same month, which is determined
     from their ``fill_ts``. Mixing months raises ``ValueError`` to keep the
     partition contract obvious. Use multiple calls for cross-month batches.
 
+    The base directory defaults to the module-level ``FILL_LOG_DIR`` resolved
+    at call time, so tests can ``monkeypatch.setattr`` it transparently.
+
     Returns the parquet path that was rewritten.
     """
+    if base is None:
+        # Resolve at call time so tests can monkeypatch FILL_LOG_DIR.
+        import execution.fill_log as _self
+
+        base = _self.FILL_LOG_DIR
+
     records = list(records)
     if not records:
         return base  # nothing to do
@@ -184,7 +193,7 @@ def append_fills(records: Iterable[FillRecord], base: Path = FILL_LOG_DIR) -> Pa
     return path
 
 
-def append_fill(record: FillRecord, base: Path = FILL_LOG_DIR) -> Path:
+def append_fill(record: FillRecord, base: Optional[Path] = None) -> Path:
     """Convenience wrapper around :func:`append_fills` for a single record."""
     return append_fills([record], base=base)
 
@@ -192,9 +201,14 @@ def append_fill(record: FillRecord, base: Path = FILL_LOG_DIR) -> Path:
 def read_fills(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
-    base: Path = FILL_LOG_DIR,
+    base: Optional[Path] = None,
 ) -> pl.DataFrame:
     """Read the union of monthly parquet partitions, optionally filtered."""
+    if base is None:
+        import execution.fill_log as _self
+
+        base = _self.FILL_LOG_DIR
+
     if not base.exists():
         return pl.DataFrame(schema=_SCHEMA)
 

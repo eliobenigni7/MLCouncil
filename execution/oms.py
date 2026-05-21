@@ -105,6 +105,12 @@ class Order:
     child_orders: list[str] = field(default_factory=list)
     parent_order_id: Optional[str] = None
     tags: dict = field(default_factory=dict)
+    # Reference price captured at decision time for implementation-shortfall.
+    # Last close for daily market orders, signal-time mid for intraday,
+    # limit_price for limit orders. Set by the caller when the order is
+    # created; defaults to None and falls back to limit_price/avg_fill_price
+    # downstream when building FillRecord entries.
+    decision_price: Optional[float] = None
 
     @property
     def remaining_quantity(self) -> int:
@@ -184,6 +190,7 @@ class OrderManager:
         stop_price: Optional[float] = None,
         time_in_force: str = "day",
         tags: Optional[dict] = None,
+        decision_price: Optional[float] = None,
     ) -> Order:
         order_id = self._generate_order_id(symbol)
         order = Order(
@@ -196,6 +203,7 @@ class OrderManager:
             limit_price=limit_price,
             stop_price=stop_price,
             tags=tags or {},
+            decision_price=decision_price if decision_price is not None else limit_price,
         )
         self.orders[order_id] = order
         self.fills[order_id] = []
@@ -286,10 +294,52 @@ class OrderManager:
         order.updated_at = datetime.now(timezone.utc)
         self._save_pending_orders()
         self._save_fill(fill)
+        self._append_fill_record(order, fill)
+
+    def _append_fill_record(self, order: Order, fill: Fill) -> None:
+        """Mirror the fill into the structured fill log for cost calibration.
+
+        Best-effort: failures are logged but never break the order lifecycle.
+        Decision price falls back to limit_price → fill.price when not set.
+        """
+        try:
+            from execution.fill_log import FillRecord, append_fill
+
+            decision_price = order.decision_price or order.limit_price or fill.price
+            if decision_price <= 0:
+                return
+            # Convert commission USD → bps for symmetry with FillRecord schema.
+            commission_bps = (
+                (fill.commission / (fill.quantity * fill.price)) * 10_000.0
+                if fill.quantity > 0 and fill.price > 0
+                else 0.0
+            )
+            record = FillRecord(
+                fill_id=fill.fill_id,
+                order_id=order.order_id,
+                ticker=order.symbol,
+                side=order.side.value,
+                qty=float(fill.quantity),
+                fill_price=float(fill.price),
+                decision_price=float(decision_price),
+                decision_ts=order.created_at,
+                fill_ts=fill.timestamp,
+                broker=order.tags.get("broker", "alpaca"),
+                venue=fill.venue,
+                pipeline_run_id=order.tags.get("pipeline_run_id", ""),
+                config_hash=order.tags.get("config_hash", ""),
+                commission_bps=commission_bps,
+                slippage_bps_assumed=float(order.tags.get("slippage_bps_assumed", 0.0)),
+                cost_calibration_version=order.tags.get("cost_calibration_version", ""),
+            )
+            append_fill(record)
+        except Exception:
+            # Telemetry must never break execution; fall through silently.
+            pass
 
     def _save_fill(self, fill: Fill) -> None:
         fills_file = OMS_DIR / f"fills_{fill.order_id}.json"
-        fills_file.write_text(json.dumps([asdict(fill)], indent=2))
+        fills_file.write_text(json.dumps([asdict(fill)], indent=2, default=str))
 
     def cancel(self, order: Order, broker: "BrokerAdapter") -> bool:
         if order.is_complete:
