@@ -14,7 +14,9 @@ The spike compares inverse-vol HRP-style weights vs equal weight on ~90 days of 
 
 ## Decision
 
-**Conditional go** for a soft-prior track: proceed only if spike `recommendation` is `go` (condition number &lt; 1e4) and a follow-up walk-forward shows tail-risk improvement vs MV.
+**Go** for soft-prior MVP (spike `artifacts/spikes/spike_hrp.json`, `recommendation: go`,
+condition number ≈ 14). Full walk-forward champion/challenger still required before
+disabling `MLCOUNCIL_HRP_SOFT_PRIOR` default.
 
 ## Consequences
 

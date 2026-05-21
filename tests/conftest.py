@@ -44,10 +44,31 @@ def _install_slowapi_stub() -> None:
 _install_slowapi_stub()
 
 
+def _install_feedparser_stub() -> None:
+    if importlib.util.find_spec("feedparser") is not None:
+        return
+
+    feedparser_mod = types.ModuleType("feedparser")
+
+    def _parse(_url: str):
+        mock = types.SimpleNamespace(entries=[], bozo=False)
+        return mock
+
+    feedparser_mod.parse = _parse
+    sys.modules["feedparser"] = feedparser_mod
+
+
+_install_feedparser_stub()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "requires_api_key: test exercises real API key authentication behavior",
+    )
+    config.addinivalue_line(
+        "markers",
+        "asyncio: async test (pytest-asyncio)",
     )
 
 

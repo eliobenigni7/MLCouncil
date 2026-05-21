@@ -12,7 +12,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-RESULTS = ROOT / "data" / "results" / "spike_hrp.json"
+RESULTS = ROOT / "artifacts" / "spikes" / "spike_hrp.json"
 
 
 def _load_returns(tickers: list[str], lookback: int = 90) -> pd.DataFrame:

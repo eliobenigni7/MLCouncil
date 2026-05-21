@@ -459,6 +459,7 @@ class TestTradingService:
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
 
         svc = _make_service()
+        svc._dispatch_alert = MagicMock()
         svc.get_pending_orders = MagicMock(
             return_value=[
                 {

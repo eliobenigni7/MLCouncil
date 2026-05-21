@@ -1,10 +1,9 @@
 # MLCouncil — Piano Operativo Post-AS-IS/TO-BE (2026-05-21)
 
-> **Aggiornamento 2026-05-21:** Fasi 0-3 **completate** sul branch
-> `claude/codebase-algorithm-analysis-JmoBp`. Drift register 11/11 ✅, fill
-> telemetry attiva (FillRecord parquet + OMS hook + backfill script), motore
-> di calibrazione costi pronto con manifest SHA-256 e asset Dagster notturno
-> registrato. Le Fasi 4-7 restano da eseguire (vedi marcatori "STATUS" inline).
+> **Aggiornamento 2026-05-21:** Fasi 0-7 **completate** su `master` (commit `f95e25e`
+> e follow-up). Drift register 11/11 ✅. Cost calibration wired in
+> `TransactionCostModel`, promotion gate Dagster (`cost_calibration_gate`),
+> dashboard math-trace, HRP soft-prior. Spike artifacts in `artifacts/spikes/`.
 
 ## Executive summary
 
@@ -343,9 +342,14 @@ Catturare: Sharpe lordo/netto, turnover, IS medio, breach count, runtime. Confro
 
 **Done della Fase 5:** track #1 P2 chiuso con evidenza A/B; sistema può promuovere o rollback.
 
+**Post-f95e25e — promotion gate in produzione:** `cost_calibration_gate` asset Dagster
+(chiama `run_cost_calibration_promotion_gate`, scrive `config/runtime_override.env`
+se fallisce). `cost_calibration_artifact` dipende da `daily_orders` via
+`LastPartitionMapping` per `pipeline_run_id`.
+
 ---
 
-## Fase 6 — Dashboard math-trace MVP (P1 observability)  ⏳ PENDING
+## Fase 6 — Dashboard math-trace MVP (P1 observability)  ✅ COMPLETATA (f95e25e)
 
 **Obiettivo:** rendere ogni decisione tracciabile dall'UI senza redesign completo.
 
@@ -432,10 +436,10 @@ Fase 0 (sync)                                       ✅
     │
     └──> Fase 2 (fill telemetry)                    ✅
               └──> Fase 3 (calibration engine)      ✅
-                        └──> Fase 4 (wire in TCM)   ✅
-                                  └──> Fase 5       ✅
-                                            ├──> Fase 6 (dashboard)
-                                            └──> Fase 7 (next track)
+                        └──> Fase 4 (wire in TCM)   ✅  (f95e25e)
+                                  └──> Fase 5       ✅  (f95e25e + gate asset)
+                                            ├──> Fase 6 (dashboard) ✅
+                                            └──> Fase 7 (HRP MVP) ✅
 ```
 
 Le Fasi 4 e 6 possono partire **in parallelo** appena Fase 3 è ferma (lo è ora): Fase 4 tocca solo `council/transaction_costs.py` + backtest, Fase 6 tocca solo `dashboard/`. Fase 5 (governance) dipende strettamente da Fase 4.
@@ -464,8 +468,8 @@ python -m pytest tests/ -v --timeout=120
 # Backtest A/B costi
 python scripts/run_strategy_backtest.py --cost-mode=both
 
-# Materializza calibration
-dagster asset materialize -f data/pipeline.py --select cost_calibration_artifact
+# Materializza calibration + promotion gate
+dagster asset materialize -f data/pipeline.py --select cost_calibration_artifact,cost_calibration_gate
 
 # Dashboard locale
 streamlit run dashboard/app.py

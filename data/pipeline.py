@@ -1515,15 +1515,31 @@ def daily_orders(
 # LAYER 4b — COST CALIBRATION (nightly job, unpartitioned)
 # ===========================================================================
 
+def _lineage_from_daily_orders(daily_orders: pd.DataFrame) -> tuple[str, str]:
+    """Extract pipeline_run_id and cost_calibration_version from orders lineage."""
+    if daily_orders is None or daily_orders.empty:
+        return "", ""
+    row = daily_orders.iloc[0]
+    return (
+        str(row.get("pipeline_run_id", "") or ""),
+        str(row.get("cost_calibration_version", "") or ""),
+    )
+
+
 @dg.asset(
+    ins={"daily_orders": dg.AssetIn(partition_mapping=dg.LastPartitionMapping())},
     retry_policy=_RETRY,
     description=(
         "Nightly self-calibrating transaction cost artifact (ADR-0003 Stage B). "
         "Reads data/operations/fills/*.parquet and writes "
-        "data/operations/cost_calibration.json + .manifest sidecar."
+        "data/operations/cost_calibration.json + .manifest sidecar. "
+        "Joins pipeline_run_id from the latest materialized daily_orders partition."
     ),
 )
-def cost_calibration_artifact(context: AssetExecutionContext) -> dict:
+def cost_calibration_artifact(
+    context: AssetExecutionContext,
+    daily_orders: pd.DataFrame,
+) -> dict:
     """Build kappa_slippage_bps per ticker/tier from realised fills.
 
     Unpartitioned: the calibrator consumes a rolling window of the entire
@@ -1537,8 +1553,15 @@ def cost_calibration_artifact(context: AssetExecutionContext) -> dict:
     )
     from runtime_env import get_config_hash
 
-    pipeline_run_id = getattr(context, "run_id", "") or ""
+    orders_run_id, _orders_calib_ver = _lineage_from_daily_orders(daily_orders)
+    pipeline_run_id = orders_run_id or getattr(context, "run_id", "") or ""
     config_hash = get_config_hash()
+
+    if orders_run_id:
+        context.log.info(
+            f"cost_calibration_artifact: lineage pipeline_run_id={orders_run_id} "
+            f"from daily_orders"
+        )
 
     artifact = run_calibration_job(
         fills_dir=DEFAULT_FILLS_DIR,
@@ -1568,15 +1591,51 @@ def cost_calibration_artifact(context: AssetExecutionContext) -> dict:
         "kappa_by_ticker": artifact.kappa_by_ticker,
         "kappa_by_tier": artifact.kappa_by_tier,
         "version": artifact.version,
+        "pipeline_run_id": pipeline_run_id,
     }
+
+
+@dg.asset(
+    ins={
+        "calibration_summary": dg.AssetIn("cost_calibration_artifact"),
+        "daily_orders": dg.AssetIn(partition_mapping=dg.LastPartitionMapping()),
+    },
+    retry_policy=_RETRY,
+    description=(
+        "Post-calibration promotion gate: A/B static vs calibrated costs on cached "
+        "strategy weights; auto-writes config/runtime_override.env on failure."
+    ),
+)
+def cost_calibration_gate(
+    context: AssetExecutionContext,
+    calibration_summary: dict,
+    daily_orders: pd.DataFrame,
+) -> dict:
+    from council.cost_calibration_gate import run_cost_calibration_promotion_gate
+
+    report = run_cost_calibration_promotion_gate(
+        calibration_summary=calibration_summary,
+        daily_orders=daily_orders,
+    )
+    context.log.info(
+        f"cost_calibration_gate: status={report.get('status')} "
+        f"passed={report.get('promotion_passed')} reverted={report.get('reverted')}"
+    )
+    if report.get("reasons"):
+        for reason in report["reasons"]:
+            context.log.warning(f"cost_calibration_gate: {reason}")
+    return report
 
 
 cost_calibration_job = dg.define_asset_job(
     name="cost_calibration_job",
-    selection=dg.AssetSelection.assets(cost_calibration_artifact),
+    selection=dg.AssetSelection.assets(
+        cost_calibration_artifact,
+        cost_calibration_gate,
+    ),
     description=(
-        "Nightly cost-calibration job: rebuilds kappa_slippage_bps from realised "
-        "fills and refreshes data/operations/cost_calibration.json."
+        "Nightly cost-calibration job: rebuilds kappa, runs promotion gate, "
+        "reverts to static lookup on failure."
     ),
 )
 
@@ -1771,7 +1830,8 @@ _ALL_ASSETS = [
     daily_orders,
     train_hmm,
     cost_calibration_artifact,
-    # train_hmm + cost_calibration_artifact sono unpartitioned: hanno schedule
+    cost_calibration_gate,
+    # train_hmm + cost_calibration_* sono unpartitioned: hanno schedule
     # dedicate (train_hmm_job: domenicale 23:00 ET; cost_calibration_job: ogni
     # notte 23:00 ET).
 ]

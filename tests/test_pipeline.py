@@ -96,7 +96,7 @@ def test_load_universe_flattens_bucketed_config():
     tickers = _pipeline._load_universe()
 
     assert "AAPL" in tickers
-    assert "SNOW" in tickers
+    assert "PFE" in tickers
     assert len(tickers) == len(set(tickers))
 
 
@@ -473,6 +473,7 @@ class TestAssetDependencies:
         assert set(unpartitioned) == {
             "AssetKey(['train_hmm'])",
             "AssetKey(['cost_calibration_artifact'])",
+            "AssetKey(['cost_calibration_gate'])",
         }
 
     def test_retry_policy_configured(self):
@@ -482,6 +483,7 @@ class TestAssetDependencies:
                 assert str(a.key) in {
                     "AssetKey(['train_hmm'])",
                     "AssetKey(['cost_calibration_artifact'])",
+                    "AssetKey(['cost_calibration_gate'])",
                 }
                 continue
             op = a.op
