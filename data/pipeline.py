@@ -1497,6 +1497,86 @@ def daily_orders(
 
 
 # ===========================================================================
+# LAYER 4b — COST CALIBRATION (nightly job, unpartitioned)
+# ===========================================================================
+
+@dg.asset(
+    retry_policy=_RETRY,
+    description=(
+        "Nightly self-calibrating transaction cost artifact (ADR-0003 Stage B). "
+        "Reads data/operations/fills/*.parquet and writes "
+        "data/operations/cost_calibration.json + .manifest sidecar."
+    ),
+)
+def cost_calibration_artifact(context: AssetExecutionContext) -> dict:
+    """Build kappa_slippage_bps per ticker/tier from realised fills.
+
+    Unpartitioned: the calibrator consumes a rolling window of the entire
+    fill log, partitioned upstream by month. Returns a summary dict for
+    Dagster metadata; the durable artifact is the on-disk JSON + manifest.
+    """
+    from council.cost_calibration import (
+        DEFAULT_CALIBRATION_PATH,
+        DEFAULT_FILLS_DIR,
+        run_calibration_job,
+    )
+    from runtime_env import get_config_hash
+
+    pipeline_run_id = getattr(context, "run_id", "") or ""
+    config_hash = get_config_hash()
+
+    artifact = run_calibration_job(
+        fills_dir=DEFAULT_FILLS_DIR,
+        out_path=DEFAULT_CALIBRATION_PATH,
+        pipeline_run_id=pipeline_run_id,
+        config_hash=config_hash,
+    )
+
+    if artifact is None:
+        context.log.warning(
+            "cost_calibration_artifact: no fills available — skipping write. "
+            "TransactionCostModel will continue using static lookup."
+        )
+        return {
+            "status": "skipped_no_fills",
+            "fills_dir": str(DEFAULT_FILLS_DIR),
+        }
+
+    context.log.info(
+        f"cost_calibration_artifact: {artifact.fill_sample_count} fills → "
+        f"{len(artifact.kappa_by_ticker)} tickers, {len(artifact.kappa_by_tier)} tiers "
+        f"(version={artifact.version[:12]}…)"
+    )
+    return {
+        "status": "ok",
+        "fill_sample_count": artifact.fill_sample_count,
+        "kappa_by_ticker": artifact.kappa_by_ticker,
+        "kappa_by_tier": artifact.kappa_by_tier,
+        "version": artifact.version,
+    }
+
+
+cost_calibration_job = dg.define_asset_job(
+    name="cost_calibration_job",
+    selection=dg.AssetSelection.assets(cost_calibration_artifact),
+    description=(
+        "Nightly cost-calibration job: rebuilds kappa_slippage_bps from realised "
+        "fills and refreshes data/operations/cost_calibration.json."
+    ),
+)
+
+
+@dg.schedule(
+    cron_schedule="0 23 * * *",  # 23:00 ET every day
+    execution_timezone="America/New_York",
+    job=cost_calibration_job,
+)
+def cost_calibration_schedule(context: "dg.ScheduleEvaluationContext"):
+    """Nightly recalibration at 23:00 ET after market close + paper trade settlement."""
+    return dg.RunRequest(tags={"mlcouncil/job": "cost_calibration"})
+
+
+# ===========================================================================
 # HELPERS (non-asset)
 # ===========================================================================
 
@@ -1675,8 +1755,10 @@ _ALL_ASSETS = [
     portfolio_weights,
     daily_orders,
     train_hmm,
-    # train_hmm è escluso da daily_pipeline perché è unpartitioned
-    # (schedule: domenicale 23:00 ET tramite train_hmm_job)
+    cost_calibration_artifact,
+    # train_hmm + cost_calibration_artifact sono unpartitioned: hanno schedule
+    # dedicate (train_hmm_job: domenicale 23:00 ET; cost_calibration_job: ogni
+    # notte 23:00 ET).
 ]
 
 
@@ -1810,7 +1892,7 @@ defs = dg.Definitions(
         portfolio_weights_contract,
         daily_orders_contract,
     ],
-    jobs=[daily_job, train_hmm_job],
-    schedules=[daily_schedule, hmm_schedule],
+    jobs=[daily_job, train_hmm_job, cost_calibration_job],
+    schedules=[daily_schedule, hmm_schedule, cost_calibration_schedule],
     sensors=[failure_sensor],
 )
