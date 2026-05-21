@@ -1,0 +1,115 @@
+- generic [ref=e6]:
+  - complementary [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - link "MLflow" [ref=e10] [cursor=pointer]:
+          - /url: "#/"
+          - img "MLflow" [ref=e11]
+        - generic [ref=e21]: 3.11.1
+      - button "Toggle sidebar" [ref=e22] [cursor=pointer]:
+        - img [ref=e23]:
+          - img [ref=e24]
+    - generic [ref=e27]:
+      - button "GenAI" [ref=e28] [cursor=pointer]:
+        - generic [ref=e29]: GenAI
+      - button "Model training" [ref=e30] [cursor=pointer]:
+        - generic [ref=e31]: Model training
+    - navigation [ref=e32]:
+      - list [ref=e33]:
+        - listitem [ref=e34]:
+          - link [ref=e35] [cursor=pointer]:
+            - /url: "#/experiments"
+            - img [ref=e36]:
+              - img [ref=e37]
+            - img [ref=e39]:
+              - img [ref=e40]
+            - img [ref=e43]:
+              - img [ref=e44]
+        - listitem
+        - listitem [ref=e46]:
+          - link "Overview" [ref=e47] [cursor=pointer]:
+            - /url: "#/experiments/0/overview?startTime=ALL"
+            - img [ref=e48]:
+              - img [ref=e49]
+            - text: Overview
+        - listitem [ref=e52]: Observability
+        - listitem [ref=e53]:
+          - link "Traces" [ref=e54] [cursor=pointer]:
+            - /url: "#/experiments/0/traces?startTime=ALL"
+            - img [ref=e55]:
+              - img [ref=e56]
+            - text: Traces
+        - listitem [ref=e58]:
+          - link "Sessions" [ref=e59] [cursor=pointer]:
+            - /url: "#/experiments/0/chat-sessions?startTime=ALL"
+            - img [ref=e60]:
+              - img [ref=e61]
+            - text: Sessions
+        - listitem [ref=e64]: Evaluation
+        - listitem [ref=e65]:
+          - link "Judges" [ref=e66] [cursor=pointer]:
+            - /url: "#/experiments/0/judges?startTime=ALL"
+            - img [ref=e67]:
+              - img [ref=e68]
+            - text: Judges
+        - listitem [ref=e70]:
+          - link "Datasets" [ref=e71] [cursor=pointer]:
+            - /url: "#/experiments/0/datasets?startTime=ALL"
+            - img [ref=e72]:
+              - img [ref=e73]
+            - text: Datasets
+        - listitem [ref=e75]:
+          - link "Evaluation runs" [ref=e76] [cursor=pointer]:
+            - /url: "#/experiments/0/evaluation-runs?startTime=ALL"
+            - img [ref=e77]:
+              - img [ref=e78]
+            - text: Evaluation runs
+        - listitem [ref=e81]: Prompts & versions
+        - listitem [ref=e82]:
+          - link "Prompts" [ref=e83] [cursor=pointer]:
+            - /url: "#/experiments/0/prompts?startTime=ALL"
+            - img [ref=e84]:
+              - img [ref=e85]
+            - text: Prompts
+        - listitem [ref=e87]:
+          - link "Agent versions" [ref=e88] [cursor=pointer]:
+            - /url: "#/experiments/0/models?startTime=ALL"
+            - img [ref=e89]:
+              - img [ref=e90]
+            - text: Agent versions
+        - listitem [ref=e94]:
+          - link "AI Gateway" [ref=e95] [cursor=pointer]:
+            - /url: "#/gateway"
+            - img [ref=e96]:
+              - img [ref=e97]
+            - text: AI Gateway
+      - generic [ref=e100]:
+        - button "Assistant" [ref=e101] [cursor=pointer]:
+          - img [ref=e103]:
+            - img [ref=e104]
+            - img [ref=e106]
+          - generic [ref=e107]: Assistant
+          - status [ref=e108]:
+            - generic [ref=e110]: Beta
+        - listitem [ref=e111]:
+          - link "Docs" [ref=e112] [cursor=pointer]:
+            - /url: https://www.mlflow.org/docs/latest/genai/
+            - img [ref=e113]:
+              - img [ref=e114]
+            - generic [ref=e117]:
+              - text: Docs
+              - img [ref=e118]:
+                - img [ref=e119]
+        - listitem [ref=e122]:
+          - link "Settings" [ref=e123] [cursor=pointer]:
+            - /url: "#/settings"
+            - img [ref=e124]:
+              - img [ref=e125]
+            - text: Settings
+  - main [ref=e129]:
+    - generic [ref=e131]:
+      - heading [level=3] [ref=e132]
+      - list [ref=e133]:
+        - listitem [ref=e134]
+        - listitem [ref=e135]
+        - listitem [ref=e136]

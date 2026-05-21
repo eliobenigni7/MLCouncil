@@ -273,21 +273,52 @@ class RiskEngine:
         if len(available_tickers) < 2:
             return 0.0, 0.0
 
-        mean_returns = returns[available_tickers].mean()
-        cov_matrix = returns[available_tickers].cov()
+        aligned = returns[available_tickers].copy()
+        aligned = aligned.dropna(how="any")
+        if len(aligned) < 2:
+            return 0.0, 0.0
 
-        w = np.array([weights.get(t, 0) for t in available_tickers])
-        mu = mean_returns.values @ w
-        sigma = np.sqrt(w @ cov_matrix.values @ w)
+        mean_vec = aligned.mean().to_numpy(dtype=float)
+        cov = aligned.cov().to_numpy(dtype=float)
+        cov = self._regularize_covariance(cov)
+        w = np.array([weights.get(t, 0.0) for t in available_tickers], dtype=float)
 
         rng = np.random.default_rng(self.seed if seed is None else seed)
-        simulated_returns = rng.normal(mu * horizon, sigma * np.sqrt(horizon), n_simulations)
-        simulated_pnl = simulated_returns * portfolio_value
+        # Draw joint asset scenarios, then map to portfolio PnL.
+        scenario_returns = rng.multivariate_normal(
+            mean=mean_vec * horizon,
+            cov=cov * horizon,
+            size=n_simulations,
+        )
+        simulated_pnl = (scenario_returns @ w) * portfolio_value
 
         var_pct = np.percentile(simulated_pnl, (1 - confidence) * 100)
         cvar_pct = simulated_pnl[simulated_pnl <= var_pct].mean()
 
         return abs(var_pct), abs(cvar_pct) if not np.isnan(cvar_pct) else abs(var_pct) * 1.5
+
+    @staticmethod
+    def _regularize_covariance(cov: np.ndarray) -> np.ndarray:
+        """Return a symmetric positive-definite covariance matrix.
+
+        Uses a small diagonal ridge scaled to average variance and clips any
+        negative eigenvalues that can appear from finite samples.
+        """
+        cov = np.asarray(cov, dtype=float)
+        cov = (cov + cov.T) / 2.0
+
+        if cov.size == 0:
+            return cov
+
+        diag = np.clip(np.diag(cov), a_min=0.0, a_max=None)
+        scale = float(diag.mean()) if np.any(diag > 0.0) else 1.0
+        ridge = max(scale * 1e-6, 1e-12)
+        cov = cov + np.eye(cov.shape[0]) * ridge
+
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        eigvals = np.clip(eigvals, a_min=ridge, a_max=None)
+        cov_pd = eigvecs @ np.diag(eigvals) @ eigvecs.T
+        return (cov_pd + cov_pd.T) / 2.0
 
     def compute_var(
         self,

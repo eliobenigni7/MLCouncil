@@ -1,6 +1,6 @@
 # MLCouncil
 
-MLCouncil is an end-to-end **multi-signal paper trading system** for US equities and crypto. A 2-signal daily ensemble plus HMM regime labeling feeds a regime-aware council aggregator, which a CVXPY optimizer converts into daily trading orders submitted to Alpaca Paper Trading.
+MLCouncil is an end-to-end **multi-signal paper trading system** for US equities and crypto. The current daily path uses a 2-signal ensemble (LightGBM technical + FinBERT sentiment) with HMM regime labeling as context for the council aggregator; a CVXPY optimizer converts the resulting target weights into daily orders for Alpaca Paper Trading.
 
 ---
 
@@ -34,7 +34,7 @@ Stage 1 — Ingest
   yfinance / FRED / RSS → raw OHLCV, macro series, news headlines
 
 Stage 2 — Feature Engineering
-  Alpha158 (158+ technical indicators, 1-day lookahead shift)
+  Technical feature set inspired by Alpha158 (1-day lookahead shift)
   FinBERT headline sentiment scores (SQLite-cached)
   Macro features: VIX, 10Y/2Y spread, S&P 500 rolling windows (21/63/252 days)
 
@@ -47,7 +47,7 @@ Stage 4 — Signal Generation
   Each model produces cross-sectional z-scores per ticker per day
 
 Stage 5 — Council Aggregation
-  Regime-conditional base weights scaled by each model's rolling 100-day IC-Sharpe
+  Regime-conditional base weights scaled by each model's EWM IC-Sharpe over recent history
   Orthogonality enforcement: correlated models are automatically down-weighted
   Weight bounds: minimum 5%, maximum 70% per model
 
@@ -68,17 +68,19 @@ Stage 8 — Execution
   Artifacts: data/operations/, data/paper_trades/, data/risk/
 ```
 
+Daily inference does not compute training targets (`compute_targets` is used in training/backtesting flows, not in the daily Dagster inference path).
+
 Feature versioning is tracked for point-in-time correctness, with historical retrieval and backtesting support handled by the feature store layer.
 
 ---
 
 ## Alpha Models
 
-### Technical Model — LightGBM + Alpha158
+### Technical Model — LightGBM + Technical Feature Set
 
 **File:** `models/technical.py`
 
-The technical model uses over 158 point-in-time features derived from OHLCV data (inspired by the Qlib Alpha158 factor library), computed via Polars and deliberately shifted 1 day to eliminate lookahead bias.
+The technical model uses a point-in-time OHLCV/macro feature set inspired by the Qlib Alpha158 family, computed via Polars and deliberately shifted 1 day to eliminate lookahead bias. The exact feature inventory is defined by `data/features/alpha158.py`; do not assume the name means the runtime output always contains exactly 158 factors.
 
 **Training protocol:**
 - Combinatorial Purged Cross-Validation (CPCV): dates split into 6 folds, all C(6,2) = 15 (train, test) combinations generated
@@ -120,21 +122,21 @@ A regime change alert fires when the HMM emits a new state with transition proba
 
 **File:** `council/aggregator.py`
 
-The council combines the three model signals in two stages:
+The council combines active alpha signals in two stages. In the current daily pipeline, `lgbm` and `sentiment` are the active alpha signals; the HMM model supplies the current regime label used to select regime-conditional weights.
 
 ### 1. Regime-Conditional Base Weights
 
-| Regime     | LightGBM | Sentiment | HMM  |
-|------------|----------|-----------|------|
-| Bull       | 50%      | 30%       | 20%  |
-| Bear       | 40%      | 20%       | 40%  |
-| Transition | 45%      | 25%       | 30%  |
+| Regime     | Raw LightGBM | Raw Sentiment | Effective daily start after active-signal normalization |
+|------------|--------------|---------------|---------------------------------------------------------|
+| Bull       | 50%          | 30%           | ~62.5% LightGBM / ~37.5% sentiment |
+| Bear       | 40%          | 20%           | ~66.7% LightGBM / ~33.3% sentiment |
+| Transition | 45%          | 25%           | ~64.3% LightGBM / ~35.7% sentiment |
 
-In bear regimes, HMM weight increases because the regime detector carries more information about market structure than the technical factor.
+The config still contains HMM weights for a fuller 3-signal council design, but the daily `council_signal` path should be read as a 2-signal ensemble unless an HMM alpha signal is explicitly added.
 
 ### 2. Adaptive Reweighting (after 30 days of history)
 
-After 30 days of observed IC history, base weights are scaled by each model's **rolling 100-day Information Coefficient Sharpe** (mean IC / std IC × √252). Models with consistently negative IC-Sharpe are down-weighted toward their floor. Weight bounds are enforced after renormalization:
+After 30 days of observed IC history, base weights are scaled by each model's **EWM Information Coefficient Sharpe** over recent observations (halflife up to 20 days, bounded by the configured history window). Models with consistently negative IC-Sharpe are down-weighted toward their floor. Weight bounds are enforced after renormalization:
 
 - **Floor:** 5% per active model
 - **Ceiling:** 70% per model
@@ -156,13 +158,13 @@ maximize   (α ⊙ conformal_multipliers)' w − tc_penalty × turnover
 subject to
     Σ w_i    = 1          (fully invested)
     w_i     ≥ 0           (long-only)
-    w_i     ≤ 10%         (per-position cap; 8% large-cap, 5% mid-cap)
+    w_i     ≤ cap         (tier/config-dependent per-position cap)
     Σ |w_i − w_curr_i|   ≤ 30%   (one-way turnover cap)
-    w' Σ w  ≤ (20%/√252)²        (daily volatility cap)
-    sector[w] ≤ 25%              (sector exposure cap)
+    w' Σ w  ≤ (30%/√252)²        (daily volatility cap)
+    sector[w] ≤ effective cap    (base cap 35%, adjusted for feasible universe)
 ```
 
-**Transaction cost model:** defaults are 3 bps slippage + 0 bps commission = 3 bps total (configurable via `MLCOUNCIL_SLIPPAGE_BPS` and `MLCOUNCIL_COMMISSION_BPS`), estimated on one-way turnover. Both gross and net equity curves are reported.
+**Transaction cost model:** currently a configurable heuristic. Runtime defaults are 3 bps slippage + 1 bps commission = 4 bps total (configurable via `MLCOUNCIL_SLIPPAGE_BPS` and `MLCOUNCIL_COMMISSION_BPS`), estimated on one-way turnover. This is not yet a realized-slippage calibrated impact model.
 
 Post-processing: positions below 1% weight are zeroed and the remainder renormalized to satisfy the budget constraint.
 
@@ -181,7 +183,7 @@ Before portfolio construction, each signal is scaled by a **conformal multiplier
 | Narrow         | High       | up to 2.0× |
 | Wide           | Low        | down to 0.2× |
 
-Coverage of 85% (rather than 90%) was chosen to tighten intervals and increase average multipliers by ~15%, improving expected alpha capture. The 15% miss rate is acceptable because diversification across 19 tickers limits individual tail exposure.
+Coverage of 85% (rather than 90%) was chosen to tighten intervals and increase average multipliers by ~15%, improving expected alpha capture. The 15% miss rate is acceptable because diversification across the configured universe limits individual tail exposure.
 
 **References:** Angelopoulos & Bates (2023), *Conformal Risk Control*; MAPIE library (Jackknife+ method).
 
@@ -208,12 +210,12 @@ CRITICAL alerts trigger email dispatch via `council/alerts.py`. All alert result
 
 **File:** `config/universe.yaml`
 
-**19 equities across two segments:**
+The tradable universe is configured in `config/universe.yaml`, which supports bucketed equity groups plus a crypto universe. At the time of this update, the configured equity universe is broader than the older 19-equity README description and includes BTCUSD/ETHUSD under `crypto_universe`.
 
-| Segment | Tickers | Max Weight/Position |
-|---------|---------|---------------------|
-| Large-cap (6) | AAPL, MSFT, GOOGL, AMZN, META, NVDA | 8% |
-| Mid-cap (13) | ETSY, DOCU, UBER, ABNB, PLTR, SNOW, CRWD, NET, SQ, SHOP, FVRR, ROKU, DDOG | 5% |
+| Segment | Source | Max Weight/Position |
+|---------|--------|---------------------|
+| Large-cap equities | `universe.large_cap` in `config/universe.yaml` | `universe.settings.max_large_cap_weight` |
+| Mid-cap equities | `universe.mid_cap` in `config/universe.yaml` | `universe.settings.max_mid_cap_weight` |
 
 **Crypto (in progress):**
 | Tickers | Max Weight/Position |
@@ -249,10 +251,10 @@ Candidates are rejected if gross/net metrics diverge implausibly from the estima
 
 | Constraint | Limit |
 |------------|-------|
-| Max single position | 10% of portfolio (8% large-cap, 5% mid-cap) |
-| Daily one-way turnover | ≤ 30% |
-| Annualized portfolio volatility | ≤ 20% |
-| Single sector exposure | ≤ 25% |
+| Max single position | Runtime default 10%, with small-portfolio tier overrides and large/mid-cap config caps documented in `config/universe.yaml` |
+| Daily one-way turnover | Runtime default 30%, tier-dependent for small portfolios |
+| Annualized portfolio volatility | Runtime default 30% |
+| Single sector exposure | Base cap 35%, adjusted by `compute_effective_sector_cap()` for feasibility |
 | Long-only | Yes (no shorts in current scope) |
 
 ### Backtest Realism Parameters
@@ -261,8 +263,8 @@ Candidates are rejected if gross/net metrics diverge implausibly from the estima
 |-----------|-------|
 | Fill model | Next-open (order at EOD → fill at T+1 open) |
 | Slippage | 3 bps probabilistic |
-| Commission | 0 bps (default, configurable) |
-| Total transaction cost | 3 bps per one-way trade (default) |
+| Commission | 1 bps (default, configurable) |
+| Total transaction cost | 4 bps per one-way trade (default) |
 | Capital assumption | Long-only, fully invested |
 
 ### Alpha Decay Thresholds
@@ -275,7 +277,7 @@ Candidates are rejected if gross/net metrics diverge implausibly from the estima
 
 ### Adaptive Weight Stability
 
-The council's adaptive reweighting requires at least 30 days of IC history before it activates. The rolling IC-Sharpe window is 100 days — chosen over shorter windows (60 days is considered too noisy for equity IC-Sharpe estimation, where noise dominates signal over short horizons). No model weight falls below 5% or exceeds 70% after renormalization.
+The council's adaptive reweighting requires at least 30 days of IC history before it activates. The implementation computes an EWM IC-Sharpe over recent observations with halflife up to 20 days and a configured history window. No model weight falls below 5% or exceeds 70% after performance reweighting; orthogonality downweighting may then reduce effective weight mass by design.
 
 ### What to Expect in Paper Trading
 
@@ -639,6 +641,11 @@ MLCouncil/
 - [docs/paper-trading-runbook.md](docs/paper-trading-runbook.md) — Daily operator workflow, triage guide
 - [docs/model-promotion-criteria.md](docs/model-promotion-criteria.md) — Promotion gates and qualitative checklist
 - [docs/adr/README.md](docs/adr/README.md) — ADR workflow and template for major design/process decisions
+
+### Current Analysis and TO BE
+- [docs/architecture-as-is-to-be-2026-05-21.md](docs/architecture-as-is-to-be-2026-05-21.md) — AS IS drift register, TO BE concept, and cleanup roadmap from the combined analysis
+- [docs/agentic-prompts-2026-05-21.md](docs/agentic-prompts-2026-05-21.md) — Ordered prompt pack for agentic implementation of AS IS fixes and TO BE preparation
+- [docs/superpowers/plans/2026-05-21-mlcouncil-foundation-to-be.md](docs/superpowers/plans/2026-05-21-mlcouncil-foundation-to-be.md) — Implementation plan for foundation cleanup and baseline measurement
 
 ---
 

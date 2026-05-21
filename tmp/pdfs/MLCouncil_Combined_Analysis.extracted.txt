@@ -1,0 +1,932 @@
+
+
+===== PAGE 1 =====
+MLCouncil — Combined Codebase Analysis
+MLCouncil
+Ispezione Codebase — Report Consolidato AS-IS / TO-BE
+Sintesi delle due analisi indipendenti, con sezione di divergenze doc ↔ codice ↔ teoria.
+2026-05-21
+Indice
+Indice..............................................................................................................................................................1
+Sintesi esecutiva..................................................................................................................................................3
+Parte 1 — Inventario AS-IS..................................................................................................................................4
+1.1 Stack a quattro layer................................................................................................................................4
+1.2 Struttura del repository...........................................................................................................................4
+1.3 Mappa moduli, classi ed entry point.......................................................................................................4
+1.4 Pipeline Dagster e asset principali...........................................................................................................5
+1.5 Stack operativo........................................................................................................................................5
+Parte 2 — Divergenze doc ↔ codice ↔ teoria.................................................................................................7
+Sommario divergenze (compatto)...............................................................................................................10
+Parte 3 — Teoria matematica per algoritmo....................................................................................................11
+3.1 Feature engineering (Layer 2)................................................................................................................11
+Parkinson Volatility (teorica)..................................................................................................................11
+Cross-sectional rank stabile....................................................................................................................11
+Rolling returns log-stabili........................................................................................................................11
+VWAP deviation......................................................................................................................................11
+Indicatori momentum classici.................................................................................................................11
+Target engineering (offline)....................................................................................................................11
+Complessità feature engineering............................................................................................................11
+3.2 Modelli alpha (Layer 3)..........................................................................................................................11
+Technical — LightGBM + CPCV...............................................................................................................11
+Sentiment — FinBERT.............................................................................................................................12
+Regime — Hidden Markov Model gaussiano.........................................................................................12
+3.3 Council aggregator (Layer 4)..................................................................................................................13
+Regime-conditional weighting................................................................................................................13
+Adaptive IR (EWM, halflife = 20) — implementazione reale..................................................................13
+Orthogonality constraint........................................................................................................................13
+Conformal prediction (MAPIE Jackknife+)..............................................................................................13
+Position multiplier — mapping esponenziale.........................................................................................13
+3.4 Portfolio construction (CVXPY)..............................................................................................................13
+Ledoit-Wolf shrinkage.............................................................................................................................14
+Capped simplex projection.....................................................................................................................14
+3.5 Esecuzione (Layer 4 — bottom).............................................................................................................14
+Almgren-Chriss square-root impact (teorico).........................................................................................14
+Cost estimation.......................................................................................................................................14
+VWAP execution profile..........................................................................................................................14
+3.6 Risk management...................................................................................................................................14
+VaR — varianti........................................................................................................................................14
+Expected Shortfall (CVaR).......................................................................................................................14
+Drawdown circuit breaker......................................................................................................................14
+Parte 4 — Diagrammi........................................................................................................................................15
+4.1 Flusso end-to-end..................................................................................................................................15
+4.2 Architettura di servizio (docker-compose)............................................................................................15
+Pag. 1 di 25
+
+===== PAGE 2 =====
+MLCouncil — Combined Codebase Analysis
+4.3 Stati HMM..............................................................................................................................................16
+4.4 Risk waterfall..........................................................................................................................................16
+Parte 5 — Analisi critica AS-IS...........................................................................................................................18
+Parte 6 — Proposte TO-BE................................................................................................................................19
+6.0 Foundation cleanup (P0 — pre-disruptive)...........................................................................................19
+6.1 Modelli alpha di nuova generazione......................................................................................................19
+6.1.1 LightGBM → Temporal Fusion Transformer (TFT) o PatchTST......................................................19
+6.1.2 Sentiment: FinBERT → FinGPT/FinMA + RAG su filings.................................................................20
+6.1.3 Regime: HMM → Switching State-Space Model (Variational Inference)......................................20
+6.1.4 Quarto modello: Microstructure / Order Flow Imbalance............................................................20
+6.2 Council aggregation non lineare............................................................................................................20
+6.2.1 Mixture-of-Experts (MoE) gating regime-aware...........................................................................20
+6.2.2 Stacking con meta-learner conformal (CQR).................................................................................20
+6.3 Portfolio construction evoluto...............................................................................................................20
+6.3.1 HRP (Hierarchical Risk Parity, López de Prado).............................................................................20
+6.3.2 Robust optimization (Ben-Tal, Nemirovski)...................................................................................20
+6.3.3 Differentiable portfolio (cvxpylayers)............................................................................................20
+6.3.4 Conditional covariance via DCC-GARCH o GNN.............................................................................21
+6.4 Esecuzione di nuova generazione..........................................................................................................21
+6.4.1 RL-based execution........................................................................................................................21
+6.4.2 Smart Order Routing multi-venue.................................................................................................21
+6.5 Risk management...................................................................................................................................21
+6.5.1 Stress test con generative scenarios.............................................................................................21
+6.5.2 Causal inference per drift detection..............................................................................................21
+6.5.3 Crash early warning via topological data analysis.........................................................................21
+6.6 Infrastruttura & MLOps..........................................................................................................................21
+6.6.1 Walk-forward CI con purged-embargoed CV................................................................................21
+6.6.2 Online learning...............................................................................................................................21
+6.6.3 Feature store tri-temporal.............................................................................................................21
+6.6.4 Observability: OpenTelemetry + Grafana......................................................................................22
+Parte 7 — Roadmap consolidata.......................................................................................................................23
+Vincoli operativi della roadmap...................................................................................................................23
+Appendice — Configurazioni concrete.............................................................................................................24
+A.1 Iperparametri "nascosti" (non in CLAUDE.md/README)......................................................................24
+A.2 Monitoring & alerting (council/monitor.py)..........................................................................................24
+A.3 Performance metrics (backtest/report.py)...........................................................................................25
+Note di utilizzo..................................................................................................................................................25
+Prossimi passi consigliati...................................................................................................................................25
+Pag. 2 di 25
+
+===== PAGE 3 =====
+MLCouncil — Combined Codebase Analysis
+Sintesi esecutiva
+MLCouncil è una piattaforma end-to-end di paper trading multi-segnale (equity USA + crypto) con pipeline
+batch orchestrata da Dagster, serving e control plane via FastAPI, dashboard Streamlit, tracking MLflow,
+feature store point-in-time (ArcticDB + fallback Parquet) e adapter Alpaca Paper per l’esecuzione. Il
+percorso intraday è separato dal daily ed è governato da un supervisor dedicato.
+Architetturalmente, è molto più maturo di un PoC di ricerca. Profili local/paper, secret management, rate
+limiting API, test automatici, vulnerability scanning, bandit, mypy incrementale, artifact lineage, contract
+checks sui dati, pre-trade risk checks e kill switch denotano attenzione operativa sopra la media.
+La diagnosi consolidata, però, evidenzia tre debt strutturali:
+1. Divergenze documentazione ↔ codice ↔ teoria — README e docstring promettono spesso più
+(o cose diverse) di quanto il codice realmente faccia. Esempi: Alpha158 come "158 fattori", universo
+dichiarato vs reale, costanti di rischio non documentate, formula di Parkinson incompleta, "rolling
+100-day IR" che è in realtà EWM con halflife 20.
+2. Sostanza quantitativa euristica sotto un layer "institutional-grade" — Almgren-Chriss è una
+lookup table tabulare, il VaR Monte Carlo è univariato gaussiano sul portafoglio (non multivariato
+per asset), i pesi del council non vengono rinormalizzati dopo la penalizzazione di ortogonalità, la
+credibilità della fonte di sentiment è definita ma non applicata.
+3. MLOps artefact-security incompleto — il pickle viene ancora usato per persistere checkpoint; la
+sidecar hash SHA-256 è presente ma non sempre obbligatoriamente verificata in caricamento.
+Il TO-BE consolidato chiede quindi una sequenza precisa: prima chiudere queste tre debt (Parte 6.0 —
+Foundation cleanup), poi introdurre le iniziative disruptive (TFT/PatchTST, MoE gating, HRP, robust
+optimization, RL execution, online learning). Costruire layer avanzati sopra una base con divergenze
+documentali e VaR mal specificato amplifica il rischio anziché ridurlo.
+Verdetto: base architetturale valida, controlli operativi sopra la media, debito quantitativo e
+divergenze documentali rilevanti. Cleanup first, disruption next.
+Pag. 3 di 25
+
+===== PAGE 4 =====
+MLCouncil — Combined Codebase Analysis
+Parte 1 — Inventario AS-IS
+1.1 Stack a quattro layer
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 1 — INGEST (Dagster, schedulato 21:30 ET) │
+│ yfinance OHLCV │ FRED macro │ Yahoo RSS │ FINRA Short Int. │
+└────────────┬────────────────────────────────────────────────┘
+▼
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 2 — FEATURES │
+│ Alpha158 (~103 feat.) │ FinBERT sent. │ Sector │ Beta │
+│ Point-in-time bi-temporal store (ArcticDB/LMDB) │
+└────────────┬────────────────────────────────────────────────┘
+▼
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 3 — MODELLI ALPHA (3 modelli indipendenti) │
+│ Technical (LGBM + CPCV) │ Sentiment (FinBERT) │ Regime HMM │
+└────────────┬────────────────────────────────────────────────┘
+▼
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 4 — COUNCIL │
+│ Aggregator (regime-cond IR) → Conformal sizer (Jackknife+) │
+│ → CVXPY MV optimizer → Risk engine → OMS (Alpaca) │
+└─────────────────────────────────────────────────────────────┘
+1.2 Struttura del repository
+Top-level package coerenti con separazione per dominio:
+• Serving / control plane: api/, dashboard/, docker-compose.yml, run_admin.py
+• Stack quantitativo: council/, models/, backtest/
+• Data engineering: data/ingest/, data/features/, data/store/, data/pipeline.py
+• Execution & intraday: execution/, intraday/
+• Operazioni e DX: config/, scripts/, tests/, docs/
+1.3 Mappa moduli, classi ed entry point
+Area File principali Classi / funzioni Ruolo
+dominanti
+API e control api/main.py create_app Auth, CORS, rate limiting,
+plane TradingService preflight, reconcile, execute,
+api/services/trading_ser
+intraday execution
+vice.py
+Council core council/aggregator.py OrthogonalityMonitor Fusione segnali, sizing
+council/conformal.py CouncilAggregator uncertainty-aware, costruzione
+council/portfolio.py ConformalPositionSize
+portafoglio
+r
+PortfolioConstructor
+Risk & monitoring council/risk_engine.py RiskEngine VaR/CVaR, exposure limits,
+council/monitor.py RiskReport drift/decay monitoring,
+council/alerts.py CouncilMonitor
+dispatch alert
+AlertDispatcher
+Modelli ML models/base.py BaseModel Tecnico LightGBM, sentiment
+models/technical.py TechnicalModel FinBERT, regime HMM 3-stati
+models/sentiment.py SentimentModel
+models/regime.py RegimeModel
+Pag. 4 di 25
+
+===== PAGE 5 =====
+MLCouncil — Combined Codebase Analysis
+Area File principali Classi / funzioni Ruolo
+dominanti
+Data engineering data/ingest/ download_daily Ingestion, cleaning, feature
+market_data.py download_universe engineering, target gen., point-
+compute_alpha158
+in-time store, orchestrazione
+data/ingest/news_process compute_targets
+Dagster
+or.py FeatureStore
+data/features/alpha158.p
+y
+data/features/target.py
+data/store/arctic_store.
+py
+data/pipeline.py
+Backtesting & backtest/runner.py run_backtest Simulazione NautilusTrader,
+validation backtest/strategy.py run_paper_trading execution parity, diagnostics
+backtest/validation.py CouncilStrategy
+OOS, lookahead detection
+run_walk_forward_anal
+ysis
+Execution execution/oms.py OrderManager Lifecycle ordini, slicing
+execution/slicer.py Order TWAP/VWAP, adapter broker
+Fill
+execution/alpaca_adapter OrderSlicer
+.py AlpacaBrokerAdapter
+Intraday intraday/agent.py FallbackIntradayAgent Orchestrazione intraday
+OpenAIIntradayAgent separata, scoring 15m,
+api/services/intraday_ru
+esecuzione opzionale
+ntime_service.py
+1.4 Pipeline Dagster e asset principali
+Pipeline daily orchestrata come asset Dagster con partizionamento giornaliero, retry policy e metadata
+ricchi di lineage. Stadi:
+1. raw_ohlcv (Ingest) yfinance + halt detection + bi-temporal write
+2. raw_news (Ingest) Yahoo RSS + clean_headline + dedup
+3. raw_macro (Ingest) FRED: VIX, yield spread, S&P rolling
+4. alpha158_features (Features) compute_alpha158 (shift+1 anti-lookahead)
+5. sentiment_features (Features) FinBERT scoring + SQLite cache SHA-256
+6. lgbm_signals (Models) TechnicalModel.predict → cross-sect z-score
+7. sentiment_signals (Models) Aggregate sentiment per ticker
+8. current_regime (Models) HMM 3-state inference
+9. council_signal (Council) Aggregator regime-conditional + IR EWM
+10. conformal_sized_signal (Council) MAPIE Jackknife+ multiplier
+11. target_weights (Council) CVXPY MV optimizer + simplex projection
+12. risk_gated_weights (Risk) VaR/CVaR check + drawdown circuit
+13. orders (Execution) OMS + slicer TWAP/VWAP + Alpaca submit
+1.5 Stack operativo
+Servizi orchestrati da docker-compose:
+• admin-api — FastAPI control plane (auth, reconcile, kill switch)
+• dashboard — Streamlit per visualizzazione live
+• dagster — orchestrator pipeline daily
+• mlflow — tracking experiment e model registry
+• intraday-supervisor — agent intraday separato
+Pag. 5 di 25
+
+===== PAGE 6 =====
+MLCouncil — Combined Codebase Analysis
+CI GitHub Actions copre: test, lint (ruff/black), typecheck (mypy), security scan (bandit + safety/pip-audit),
+docker build.
+Pag. 6 di 25
+
+===== PAGE 7 =====
+MLCouncil — Combined Codebase Analysis
+Parte 2 — Divergenze doc ↔ codice ↔ teoria
+Questa sezione raccoglie i mismatch trovati incrociando docstring, README, configurazione YAML e codice
+realmente eseguito. Sono il punto di partenza obbligato per qualsiasi audit o evoluzione: vanno chiusi
+prima di introdurre nuove iniziative disruptive.
+Severità: ALTO = impatta comportamento di trading/risk; MEDIO = impatta correttezza statistica o trasparenza; BASSO
+= redazionale o residuo tecnico.
+M1 Alpha158 — il nome non corrisponde all’inventario [BASSO]
+Aspetto Contenuto
+Doc/teoria README e module name suggeriscono "Alpha158" come libreria di 158 fattori distinti
+dice tipo Qlib.
+Codice fa Implementazione espone decine di feature tecniche e macro, non una libreria
+equivalente a 158 indicatori distinti. Il nome è "brand", non inventario reale del set
+implementato.
+Impatto Disallineamento semantico in audit, replica e onboarding. Rischio di aspettative errate
+in chi confronta col paper di riferimento.
+Riferimenti data/features/alpha158.py:24-489
+M2 Vincoli di rischio — README ↔ codice [ALTO]
+Aspetto Contenuto
+Doc/teoria README dichiara vincoli di rischio e portafoglio più restrittivi.
+dice
+Codice fa Nel codice compaiono concretamente: max_vol_ann=0.30, sector_cap=0.35,
+beta_neutral=True, e una riserva di cassa dell’85% per portafogli grandi.
+Impatto Backtest e live operano con vincoli diversi da quanto la spec scritta lascia intendere;
+rischio di sorpresa in audit o quando si riproduce il sistema da documentazione.
+Riferimenti council/portfolio.py:106-525; README
+M3 Universo — README dichiara 19 equity, config ne ha di più (e crypto) [ALTO]
+Aspetto Contenuto
+Doc/teoria README descrive 19 equity in due segmenti specifici.
+dice
+Codice fa config/universe.yaml elenca un universo significativamente più ampio e include
+anche BTCUSD ed ETHUSD.
+Impatto Altera turnover atteso, distribuzione settoriale, complessità dell’ottimizzazione, profilo
+di rischio. Backtest replicati dal README darebbero risultati diversi da quelli del
+sistema live.
+Riferimenti config/universe.yaml; README
+M4 Parkinson volatility — fattore di scala mancante [MEDIO]
+Pag. 7 di 25
+
+===== PAGE 8 =====
+MLCouncil — Combined Codebase Analysis
+Aspetto Contenuto
+Doc/teoria Estimatore di Parkinson canonico:
+dice
+σ²_Park = 1 / (4n · ln 2) · Σ [ ln(H/L) ]²
+Codice fa Il codice usa la media di senza il fattore .
+Impatto È una feature monotona( ulnti lHe c−o mlne L i)n²put di modello, m1a/ (n4o lnn è 2 u)na stima calibrata
+della varianza. Se in futuro la feature viene usata come grandezza fisica (es.
+dimensionamento vol-target), introduce bias sistematico.
+Riferimenti data/features/alpha158.py — _volatility_features
+M5 "Rolling 100-day IR" — docstring vs EWM [MEDIO]
+Aspetto Contenuto
+Doc/teoria Docstring di CouncilAggregator parla di "rolling 100-day Information Ratio".
+dice
+Codice fa _compute_rolling_sharpe usa una stima esponenzialmente pesata (EWM) con
+halflife fino a 20 su finestra ≤100. Peso ~4× sul mese recente vs 60 giorni fa.
+Impatto Statisticamente accettabile (anzi spesso preferibile), ma il nome inganna.
+Comportamento di adattamento al regime è più rapido di quanto la doc lasci
+intendere.
+Riferimenti council/aggregator.py:410-475, ~514
+M6 Pesi council — non rinormalizzati dopo orthogonality penalty [MEDIO]
+Aspetto Contenuto
+Doc/teoria Comportamento implicito atteso: proiezione finale sul simplex con somma = 1.
+dice
+Codice fa Dopo la penalizzazione di ortogonalità (downweight ×0.5 se |corr_60d| > 0.7), i pesi
+NON vengono rinormalizzati per scelta intenzionale. Il segnale combinato viene poi z-
+scored, quindi la z-standardizzazione riassorbe la scala.
+Impatto Matematicamente coerente come ensemble score, ma meno trasparente di una vera
+proiezione finale. In certi regimi la somma effettiva dei pesi è < 1, il che riduce
+silenziosamente la confidenza dell’ensemble senza che la cosa sia esplicita.
+Riferimenti council/aggregator.py:242-323, 410-475
+M7 Credibilità della fonte di sentiment — definita ma non usata [MEDIO]
+Aspetto Contenuto
+Doc/teoria Il modulo definisce assign_source_weight come ponderazione di credibilità per
+dice fonte (Reuters, Bloomberg, tabloid…).
+Codice fa Nel path operativo di sentiment_features, l’aggregazione finale è una media
+semplice dei punteggi headline per ticker. La funzione esiste ma non è invocata.
+Impatto News di tabloid e Reuters pesano uguale. Il sentiment cattura più rumore di quanto
+potrebbe se la ponderazione venisse applicata.
+Pag. 8 di 25
+
+===== PAGE 9 =====
+MLCouncil — Combined Codebase Analysis
+Aspetto Contenuto
+Riferimenti data/ingest/news_processor.py; data/pipeline.py asset sentiment_features
+M8 compute_targets — assente dalla daily inference [BASSO]
+Aspetto Contenuto
+Doc/teoria Pipeline daily documentata include "target engineering".
+dice
+Codice fa La chiamata a compute_targets non risulta nel path daily di inferenza. La funzione
+esiste ed è probabilmente legata solo a training/backtest o utilità offline.
+Impatto Comportamento corretto (i target servono solo in training), ma la documentazione
+sull’asset daily è fuorviante. Da chiarire nel diagramma di flusso ufficiale.
+Riferimenti data/features/target.py:11-142; data/pipeline.py
+M9 Almgren-Chriss — nome ma non sostanza [ALTO]
+Aspetto Contenuto
+Doc/teoria Documentazione richiama "Almgren-Chriss square-root market impact" con formula
+dice slippage = σ √(Q/V) · κ.
+Codice fa Implementazione = lookup table per ticker × volume factor (V_ref/V_realized)^0.3,
+bounds [0.5, 2.0]. È un’euristica calibrata staticamente, non un modello di mercato.
+Impatto Backtest cost ≠ live cost (probabile divergenza). Mancanza di feedback loop: la realized
+slippage non torna a calibrare il modello pre-trade.
+Riferimenti council/transaction_costs.py:32-117
+M10 VaR Monte Carlo — univariato gaussiano, non multivariato per asset [ALTO]
+Aspetto Contenuto
+Doc/teoria Doc descrive VaR/CVaR con varianti historical, parametric e Monte Carlo.
+dice
+Codice fa Il Monte Carlo NON simula traiettorie multivariate per asset: simula una distribuzione
+gaussiana univariata di portafoglio ricavata da media e varianza aggregate.
+Impatto Sottostima VaR in code (no fat tails), non cattura correlation breakdown in shock di
+regime (es. covid-style), non distingue contributi marginali per posizione. È un VaR "di
+facciata".
+Riferimenti council/risk_engine.py:66-127
+M11 Pickle — sidecar hash presente ma non sempre obbligatoria in carico [ALTO]
+Aspetto Contenuto
+Doc/teoria Doc menziona checkpoint con hash sidecar SHA-256.
+dice
+Codice fa Pickle è ancora usato per persistere stato e checkpoint; la verifica della sidecar hash
+Pag. 9 di 25
+
+===== PAGE 10 =====
+MLCouncil — Combined Codebase Analysis
+Aspetto Contenuto
+non è sempre obbligatoria in load. Codice malevolo iniettato in un .pkl può eseguire
+all’unpickle.
+Impatto Supply chain risk: se un artefatto venisse compromesso, l’unpickle eseguirebbe codice
+arbitrario sull’host. Pattern noto come "pickle deserialization vulnerability".
+Riferimenti models/*.py — checkpoint load/save
+Sommario divergenze (compatto)
+# Divergenza Severità
+M1 Alpha158 nome ≠ inventario BASSO
+M2 Vincoli rischio README ≠ codice ALTO
+M3 Universo README ≠ config ALTO
+M4 Parkinson scaling mancante MEDIO
+M5 "Rolling IR" vs EWM halflife 20 MEDIO
+M6 Pesi non rinormalizzati post-ortogonalità MEDIO
+M7 Source weight definita ma non applicata MEDIO
+M8 compute_targets non in daily BASSO
+M9 Almgren-Chriss = lookup table ALTO
+M10 VaR Monte Carlo univariato ALTO
+M11 Pickle senza enforcement hash ALTO
+Pag. 10 di 25
+
+===== PAGE 11 =====
+MLCouncil — Combined Codebase Analysis
+Parte 3 — Teoria matematica per algoritmo
+Le formule sotto rappresentano la teoria di riferimento. Dove il codice implementa una versione semplificata o
+euristica, lo segnaliamo in Parte 2 (mismatches).
+3.1 Feature engineering (Layer 2)
+Parkinson Volatility (teorica)
+alpha158.py:172-175 — vedi M4: nel codice manca il fattore 1/(4 ln 2).
+Efficienza ~5× rispetto a σ cσla²s_sPicaor kcl o =se - 1to /-c (lo4sne, · r lonb u2s)t o · a Σ gₜa₌p₁ⁿ o v[e lrnn(igHhₜt /(s Leₜ c)a ]l²ibrato).
+Cross-sectional rank stabile
+alpha158.py:321-337 — denominatore fisso nₘₐₓ per evitare bias in giorni con universo sparso.
+Rolling returns log-stabili rank_pct = (rᵢ − 1) / (nₘₐₓ − 1)
+VWAP deviation R_N = exp( Σₜ₌₁ᴺ ln(1 + rₜ) ) − 1
+VWAPₙ = Σᵢ cᵢ vᵢ / Σᵢ vᵢ
+Indicatori momentum classici devₜ = ( cₜ − VWAPₙ ) / |cₜ|
+• RSI Wilder:
+• MACD:
+RSI = 100 − 100/(1+RS), RS = mean(gain)/mean(loss)
+• Bollinger:
+EMA₁₂(c) − EMA₂₆(c), signal = EMA₉(MACD)
+• Williams %R:
+μ₂₀ ± 2σ₂₀, position = (c − L)/(U − L)
+• Stochastic %K:
+−100 · (H₁₄ − c) / (H₁₄ − L₁₄)
+Target engineering (o1ffl00in ·e ()c − L₁₄) / (H₁₄ − L₁₄)
+target.py:53-158 — vedi M8: chiamato in training/backtest, non in daily.
+yₜ,ₕ = Pₜ₊ₕ / Pₜ − 1
+Complessità featỹuₜr,eₕ e=n g yinₜ,eₕ e/r i(nσgₜ + ε) winsorize a percentili 1/99 per ticker
+Per universo di ticker, orizzonte , feature: costo dominante per rolling window +
+per i rank cross-sectional per data.
+N T F O(NTF) O(TN log N)
+3.2 Modelli alpha (Layer 3)
+Technical — LightGBM + CPCV
+F_M(x) = Σₘ₌₁ᴹ ν · hₘ(x), hₘ = argmin_h Σᵢ L( yᵢ, F_{m−1}(xᵢ) + h(xᵢ) )
+Pag. 11 di 25
+
+===== PAGE 12 =====
+MLCouncil — Combined Codebase Analysis
+Iperparametri
+• n_estimators=500, learning_rate=0.05, num_leaves=64
+• min_child_samples=20, subsample=0.8, colsample_bytree=0.7
+• Regolarizzazione:
+• random_state=42, early stopping patience=50 su tail 15% del train.
+λ_L1 = 0.1, λ_L2 = 0.1
+Combinatorial Purged CV (López de Prado)
+N = 6 gruppi, k = 2 test → C(6,2) = 15 combinazioni. Purging + embargo (5 giorni) per evitare leakage
+temporale. Selezione su highest OOF IC Spearman cross-section. Fallback: train su full dataset se nessun
+fold valido.
+SHAP
+Output finaφleᵢ : =z-s cΣo r oe vcerors sS- s⊆ez Fio\n{ail}e p [e |rS d|a! t·a ( (|sFe| σ−= 0|S, f|a −llb 1ac)k! a/ s |−F μ|!) .] · [ f(S ∪ {i}) − f(S) ]
+Sentiment — FinBERT
+Transformer encoder pre-addestrato su corpus finanziario (ProsusAI/finbert, fallback
+yiyanghkust/finbert-tone). Output: probabilità su {positive, neutral, negative}.
+Attention multi-head
+Score scalare Attn(Q, K, V) = softmax( Q · Kᵀ / √dₖ ) · V
+Aggregazione con recesncocyr edₕe c =ay P(t(epooriscait)ive | h) − P(negative | h) ∈ [−1, +1]
+vedi M7: source weighting definita ma non usata nel path operativo.
+Calibrazione γ via bosudᵢn d=e d Σ Bₕr esncto srue ₕγ ·∈ γ [^0(.3d0ₕ,) 0 ·. 9w5]_,s mrca(shsi)m i/zz a Σ |ₕIC γ S^p(edarₕm) a· nw|_.src(h)
+Regime — Hidden Markov Model gaussiano
+3 stati latenti {bull, bear, transition} con emissioni gaussiane . Covariance type = full,
+n_iter=100.
+xₜ ~ 𝒩(μₖ, Σₖ)
+Forward-backward
+αₜ(k) = P( x₁:ₜ, zₜ = k )
+Baum-Welch (EM) αₜ(k) = 𝒩( xₜ | μₖ, Σₖ ) · Σⱼ αₜ₋₁(j) · Aⱼₖ
+Massimizza alternando E-step (forward-backward) e M-step (update di A, μₖ, Σₖ). State labelling
+deterministico: ordina stati per μ del primo feature → bull = max μ, bear = min μ.
+log P(X | θ)
+Training settimanale domenicale 23:00 ET, checkpoint con hash SHA-256 sidecar (vedi M11: enforcement
+non sempre obbligatorio in load).
+Pag. 12 di 25
+
+===== PAGE 13 =====
+MLCouncil — Combined Codebase Analysis
+3.3 Council aggregator (Layer 4)
+Regime-conditional weighting
+w_base[ model ] = w_regime[ model ]
+Adaptive IR (EWM, halflisf^ec =o 2u0n)c —il_ {iim,t}p l =em Σe_n{tmaz ∈io ℳne ₜr}e awleₘ,ₜ · s^(m)_{i,t}
+Vedi M5: il docstring parla di "100-day rolling" ma il codice usa EWM.
+ICsₘ(EWM) = EWM( ICₘ ; hl=20 )
+σₘ(EWM) = EWM_std( ICₘ ; hl=20 )
+Sharpeₘ = ICsₘ(EWM) / ( σₘ(EWM) + ε ) · √252
+Soft floor 0.1: un modello cown Sₘh(aardpje) n =eg a wtivₘo( bnoans ev)ie n· e m azazxe(r a0t.o1, , m Sah caarpppeeₘd )a 0.1·w_base per permettere
+recovery. Clipping finale [0.05, 0.70] via projection sul simplex vincolato in O(n).
+Orthogonality constraint
+Vedi M6: dopo questa penalizzazione i pesi NON vengono rinormalizzati.
+Conformal predicstie o |n ρ (ᵢMⱼ(6A0PdIE) J|a >ck k 0n.7if0e+ ) ⇒ w[ min(i,j) ] ← w[ min(i,j) ] · 0.5
+Base Ridge(α=1.0), CrossConformalRegressor(method="plus"), 5-fold CV, coverage target 0.85 → α =
+0.15.
+Rᵢ = | yᵢ − f|₋ᵢ(xᵢ) |
+Ĉₙ(x ; α) = [ f(| x) − q(1−α; {Rᵢ}), f|(x) + q(1−α; {Rᵢ}) ]
+Position multiplier — mappinPg( eys p∈o Ĉnₙe(nxz ;i aαle) ) ≥ 1 − 2α · n / (n+1)
+width_norm = ( u − l ) / median( u − l )
+Filtro low-confidence: segnamli c o=n wclidipth( ≥ e pxepr(c1e n−ti lwe(iwditdhth_ns,o 9r0m) v)e, n g0o.2n,o a2z.z0e r )ati.
+3.4 Portfolio construction (CVXPY)
+Problema convesso completo:
+max_w (α ⊙ m)ᵀ w − λ_tc · ‖ w − w_curr ‖₁
+s.t. 1ᵀ w = B (budget fraction)
+0 ≤ w ≤ u_max (long-only + cap)
+‖ w − w_curr ‖₁ ≤ T_max (turnover)
+wᵀ Σ w ≤ σ²_daily (vol cap)
+Pag. 13 di 25
+
+===== PAGE 14 =====
+MLCouncil — Combined Codebase Analysis
+Sᵀ w ≤ c_sec (sector cap)
+Costanti effettive (vedi M2 ) : m a x|_ βvᵀo lw_a n| n =≤0 . 3 β0_, mseacxto r _ c a p = 0 .(3b5e, btae tnae_unetruatrlaitly=T)rue, cash reserve 85% per
+portafogli grandi. Solver default + fallback SCS.
+Ledoit-Wolf shrinkage
+F = target strutturato; δ* ottimo anaΣli|ti_LcoW c h =e m δi*n i·m Fi z z +a l a (p 1er −dit δa *d )i F·r Sobenius attesa.
+Capped simplex projection
+wᵢ = clip( vᵢ − τ, 0, u_max ), τ* : Σᵢ wᵢ = B
+3.5 Esecuzione (Layer 4 — bottom)
+Almgren-Chriss square-root impact (teorico)
+Vedi M9: implementazione reale = lookup table.
+Cost estimation slippage_bps = σ · √( Q / V ) · κ
+VWAP executionc porsotfi =le ( Σ | wₜ − wₜ₋₁ | / 2 ) · ( c_bps + s_bps ) / 10000 · PV
+Volume profile a 7 bucket orari (mattina 20%, pre-close 30%). Adaptive slicing n ∈ [4, 16] in base a urgency.
+3.6 Risk management
+VaR — varianti
+• Historical:
+• Parametric:
+VaRα = − quantileα( r₁:T )
+• Monte Carlo (teorico): simulazione N traiettorie multivariate da modello fattoriale
+VaRα = − ( μ − zα · σ )
+Vedi M10: implementazione attuale = univariate gaussian sulla distribuzione di portfolio, non multivariate per asset.
+Expected Shortfall (CVaR)
+Drawdown circuit breaker CVaRα = − E[ r | r ≤ −VaRα ]
+cash_frac = { 0.50 se DD > DD_max
+{ c_min + (DD − DD_warn)/(DD_max − DD_warn) · (0.5 − c_min) se DD_warn
+< DD ≤ DD_max
+{ c_min altrimenti
+Pag. 14 di 25
+
+===== PAGE 15 =====
+MLCouncil — Combined Codebase Analysis
+Parte 4 — Diagrammi
+4.1 Flusso end-to-end
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+│ yfinance │ │ FRED │ │ Yahoo RSS│ │ FINRA SI │
+└────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+│ │ │ │
+▼ ▼ ▼ ▼
+┌──────────────────────────────────────────────────┐
+│ data/ingest/* (Dagster assets, retry ×2) │
+│ OHLCV + halt detect │ macro │ news │ short int. │
+└────────────────────┬─────────────────────────────┘
+▼
+┌──────────────────────────────────────────────────┐
+│ ArcticDB store (LMDB) │
+│ bi-temporal: (valid_time, transaction_time) │
+└────────────────────┬─────────────────────────────┘
+▼
+┌────────────────────┐ ┌─────────────────────────┐
+│ Alpha158 │ │ FinBERT sentiment │
+│ ~103 feat shift+1 │ │ + SQLite cache SHA-256 │
+│ Parkinson, RSI, │ │ + cross-sect. z-score │
+│ MACD, BB, VWAP │ │ │
+└─────────┬──────────┘ └────────┬────────────────┘
+│ │
+▼ ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│ LightGBM + CPCV │ │ Sentiment z │ │ HMM 3-state │
+│ + SHAP MLflow │ │ │ │ (Baum-Welch wk) │
+└────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
+│ │ │
+▼ ▼ ▼
+┌──────────────────────────────────────────────────────────────┐
+│ CouncilAggregator │
+│ base = regime_weights[regime] │
+│ adj = base ⊙ IR_EWM_hl20 (clip 5%–70%) │
+│ if |corr_60d| > 0.7 → downweight ×0.5 (no renorm) │
+└────────────────────────────────┬─────────────────────────────┘
+▼
+┌──────────────────────────────────────────────────────────────┐
+│ ConformalSizer (MAPIE Jackknife+) │
+│ multiplier = clip( exp(1 − width_norm), 0.2, 2.0 ) │
+└────────────────────────────────┬─────────────────────────────┘
+▼
+┌──────────────────────────────────────────────────────────────┐
+│ PortfolioConstructor (CVXPY) │
+│ max αᵀw − λ · turnover │
+│ s.t. budget, caps, vol≤0.30, sector≤0.35, β-neutral │
+│ Σ stimata con Ledoit-Wolf shrinkage │
+│ → capped simplex projection │
+└────────────────────────────────┬─────────────────────────────┘
+▼
+┌──────────────────────────────────────────────────────────────┐
+│ RiskEngine → VaR/CVaR breach? → RiskRules circuit breaker │
+└────────────────────────────────┬─────────────────────────────┘
+▼
+┌──────────────────────────────────────────────────────────────┐
+│ OMS → Slicer TWAP/VWAP (>5% ADV) → Alpaca adapter │
+└──────────────────────────────────────────────────────────────┘
+4.2 Architettura di servizio (docker-compose)
+┌────────────────────────────────────────────────────────────────┐
+│ USER / OPERATORE │
+└───────────┬───────────────────────────────┬────────────────────┘
+Pag. 15 di 25
+
+===== PAGE 16 =====
+MLCouncil — Combined Codebase Analysis
+│ │
+▼ ▼
+┌───────────────────────┐ ┌──────────────────────────┐
+│ dashboard │ │ admin-api (FastAPI) │
+│ Streamlit │◄─────►│ auth, rate limit, │
+│ │ │ reconcile, kill switch │
+└──────────┬────────────┘ └───────────┬──────────────┘
+│ │
+│ ▼
+│ ┌──────────────────────────┐
+│ │ TradingService │
+│ │ (council + execution) │
+│ └───────────┬──────────────┘
+│ │
+▼ ▼
+┌──────────────────────┐ ┌──────────────────────────┐
+│ mlflow │ │ Alpaca Paper │
+│ experiment + │ │ broker adapter │
+│ model registry │ └──────────────────────────┘
+└──────────────────────┘
+▲
+│
+┌──────────┴───────────┐ ┌──────────────────────────┐
+│ dagster │ │ intraday-supervisor │
+│ daily pipeline │ │ 15-min agent (LLM) │
+│ (asset graph) │ │ │
+└──────────────────────┘ └──────────────────────────┘
+4.3 Stati HMM
+A[bull→bull] A[bear→bear]
+↺ ↺
+┌────────┐ A[bull→trans] ┌───────────┐ A[trans→bear] ┌────────┐
+│ BULL │ ─────────────────► │TRANSITION │ ─────────────────► │ BEAR │
+│ μ_+ │ ◄───────────────── │ μ_~0 │ ◄───────────────── │ μ_− │
+│ σ_low │ A[trans→bull] │ σ_high │ A[bear→trans] │ σ_high │
+└────────┘ └───────────┘ └────────┘
+↺
+A[trans→trans]
+Emission: P(xₜ | zₜ = k) = 𝒩( xₜ | μₖ, Σₖ )
+Inference: Forward-backward (filtering + smoothing)
+Training: Baum-Welch EM, weekly Sunday 23:00 ET
+4.4 Risk waterfall
+┌─────────────────┐
+│ alpha signal │ → council aggregator (regime + IR EWM)
+└────────┬────────┘
+▼
+┌─────────────────┐
+│ × conformal │ → uncertainty haircut (clip 0.2–2.0)
+└────────┬────────┘
+▼
+┌─────────────────┐
+│ CVXPY weights │ → vincoli: vol≤0.30, sector≤0.35, β-neutral
+└────────┬────────┘
+▼
+┌─────────────────┐
+│ VaR/CVaR check │ → se breach: scale down 50% ⚠ vedi M10
+└────────┬────────┘
+▼
+┌─────────────────┐
+│ Drawdown gate │ → soft 10% / hard 15%, cash reserve fino 85%
+└────────┬────────┘
+▼
+┌─────────────────┐
+Pag. 16 di 25
+
+===== PAGE 17 =====
+MLCouncil — Combined Codebase Analysis
+│ Rebalance c/d │ → 5d/3d/1d cool-down per tier
+└────────┬────────┘
+▼
+┌─────────────────┐
+│ ADV / slicer │ → TWAP/VWAP se >5% ADV
+└────────┬────────┘
+▼
+┌─────────────────┐
+│ Alpaca submit │
+└─────────────────┘
+Pag. 17 di 25
+
+===== PAGE 18 =====
+MLCouncil — Combined Codebase Analysis
+Parte 5 — Analisi critica AS-IS
+Lista consolidata delle aree di debolezza. Le voci marcate ⚠ sono già state coperte da una scheda di
+mismatch dedicata in Parte 2.
+1. Modelli statici / re-train sporadico — LGBM e HMM hanno checkpoint scaricati da disco; nessun online
+learning. In regimi nuovi (es. shock covid-style) il modello impiega settimane prima di adattarsi.
+2. Sentiment limitato a FinBERT su RSS — FinBERT è 2019, vocabolario limitato, non cattura tono di
+earnings call, regulatory filings, X/Reddit. In aggiunta, la credibilità della fonte è definita ma non applicata
+(⚠ M7). ⚠
+3. Council a 3 modelli con pesi lineari — Pesatura lineare; non cattura interazioni non lineari (es. "il
+sentiment è informativo solo quando il regime è in transizione"). Pesi non rinormalizzati post-orthogonality
+(⚠ M6). ⚠
+4. Covarianza Ledoit-Wolf su 90 giorni — Troppo corta per fat tails e troppo lunga per shock. Manca
+conditional covariance (DCC-GARCH).
+5. Vincoli statici — max_position, sector_cap, turnover sono parametri scalari, non funzionali della
+volatilità realizzata. Inoltre non sempre coerenti col README (⚠ M2). ⚠
+6. Conformal Jackknife+ è prediction-set — Non è un quantile condizionato (CQR). Calibra coverage
+marginale ma non locale.
+7. Almgren-Chriss "tabulare" — Il modello di slippage è una lookup table per ticker, non un modello
+calibrato sui propri fills (⚠ M9). Nessun execution feedback loop: realized slippage non torna a calibrare il
+modello pre-trade. ⚠
+8. VaR Monte Carlo univariato gaussiano — Sottostima la coda e non cattura correlation breakdown (⚠
+M10). Manca anche stress testing scenario-based (LTCM, ’08, ’20). ⚠
+9. Backtest senza walk-forward MLOps — Una sola run su start..end. Manca purged + embargoed walk-
+forward con refit periodico champion-challenger.
+10. No causal inference — Il sistema correla feature → return, ma non separa effetti causali. Vulnerabile a
+spurious patterns.
+11. Single-asset modelling — Tutti i modelli sono per-ticker; non c’è un cross-asset attention/graph model.
+12. Artefact security (pickle) — Pickle ancora usato per checkpoint; sidecar hash presente ma non sempre
+enforced in load (⚠ M11). Supply chain risk concreto. ⚠
+13. Divergenza universo dichiarato — README ↔ config (⚠ M3): cambia profilo di rischio, turnover e
+attribuzione settoriale rispetto a quanto promesso. ⚠
+14. Documentazione "brand" sopra implementazione — Nomi come Alpha158 (⚠ M1), Almgren-Chriss
+(⚠ M9), "rolling 100-day IR" (⚠ M5) suggeriscono librerie/modelli più sofisticati dell’implementazione
+reale. Rischio in audit e in riproducibilità. ⚠
+Pag. 18 di 25
+
+===== PAGE 19 =====
+MLCouncil — Combined Codebase Analysis
+Parte 6 — Proposte TO-BE
+Il TO-BE è strutturato in due fasi: prima il foundation cleanup (6.0) che chiude i mismatch identificati, poi le
+iniziative disruptive (6.1–6.6).
+6.0 Foundation cleanup (P0 — pre-disruptive)
+Queste sono le iniziative obbligatorie prima di qualsiasi evoluzione architetturale. Sono operative, di basso
+rischio e ad alto ROI di trasparenza/correttezza.
+# Misma Iniziativa Descrizione Sforzo
+tch
+6.0.1 M2, M3 Doc reconciliation Allineare README ↔ config ↔ codice: vincoli di 1 settimana
+rischio (max_vol_ann, sector_cap, β-neutrality, cash
+reserve), universo (lista equity + crypto), parametri
+operativi. Single source of truth in config/, README
+rigenerato.
+6.0.2 M10 VaR Monte Carlo Sostituire la simulazione univariata con Monte Carlo 2 settimane
+multivariato multivariato per asset, usando matrice di covarianza
+Ledoit-Wolf (poi DCC-GARCH come step successivo).
+Aggiungere stress historical replay (LTCM, ’08,
+COVID).
+6.0.3 M11 Pickle hardening Enforcement obbligatorio della sidecar hash 1–2
+SHA-256 in caricamento (raise on mismatch). settimane
+Migrazione progressiva da pickle a formati safe
+(joblib + sicurezza, oppure ONNX per modelli ML).
+6.0.4 M9 Self-calibrating cost Loop feedback: realized slippage da OMS → fit 2–3
+model online di κ in σ √(Q/V) κ via Kalman filter. Sostituisce settimane
+la lookup tabulare con un modello calibrato sui fill
+reali.
+6.0.5 M6 Council weights Aggiungere proiezione finale sul simplex dopo la 2 giorni
+renormalization penalizzazione di ortogonalità. Documentare
+esplicitamente la nuova semantica.
+6.0.6 M7 Source weight Attivare assign_source_weight nel path operativo di 1 settimana
+activation sentiment_features. A/B test su 60 giorni per
+misurare delta IC.
+6.0.7 M5 Naming alignment Rinominare docstring/metodi: "EWM IC Sharpe 1 giorno
+(hl=20)" invece di "rolling 100-day IR". Includere
+assert su parametri effettivi.
+6.0.8 M1, M4 Feature inventory + Documentare il vero inventario di feature 3 giorni
+Parkinson fix (sostituendo "Alpha158" con un nome neutro o un
+README chiaro). Aggiungere fattore di scala 1/(4 ln
+2) a Parkinson o documentare che è una feature
+monotona non calibrata.
+6.1 Modelli alpha di nuova generazione
+6.1.1 LightGBM → Temporal Fusion Transformer (TFT) o PatchTST
+• Cattura dipendenze cross-asset e cross-time
+• Output multi-horizon nativo + interpretabilità via variable selection network
+Pag. 19 di 25
+
+===== PAGE 20 =====
+MLCouncil — Combined Codebase Analysis
+• Matematica: con gating
+6.1.2 Sentiment: FiznₜB =E RLTST →M (Fxin₁:Gₜ)P +T /SFeilnf-MAtAtn +( xR₁A:ₜG) su filingsσ(W_g · x)
+• Encoder LLM domain-tuned (FinMA-7B) + retrieval da 10-K/10-Q
+• Capacità zero-shot su nuovi eventi (M&A, guidance)
+• Multimodal: parsing trascrizioni earnings call (Whisper audio→testo + sentiment LLM)
+6.1.3 Regime: HMM → Switching State-Space Model (Variational Inference)
+• Regime continuo via Deep State Space (DSS / S4)
+• con Aθ NN
+zₜ ∈ ℝᵈ
+• Inference variazionale: amortized ELBO
+zₜ = Aθ(zₜ₋₁) + εₜ
+6.1.4 Quarto modello: Microstructure / Order Flow Imbalance
+• OFI = (Δ volume bid) − (Δ volume ask) su L2 book
+• Highly predictive a horizon intraday
+• Già parzialmente disponibile via intraday/market_data.py
+6.2 Council aggregation non lineare
+6.2.1 Mixture-of-Experts (MoE) gating regime-aware
+• Gating network
+•
+gθ(xₜ, regimeₜ)
+• Gating addestrato su backtest IC reward (REINFORCE / PPO)
+ŷ = Σₖ gₖ(x) · fₖ(x), Σ gₖ = 1
+6.2.2 Stacking con meta-learner conformal (CQR)
+• Meta-learner XGB/Linear su predizioni dei 3+ modelli base
+• Conformal calibration end-to-end via Conditional Quantile Regression (CQR):
+• Garanzia Ĉco(vxe)r a=ge [c oqnŽ(dαiz/io2n; axt)a :− p iqù_ sctarel(tt1o− inα )zo, n eq Ž"(f1a−cilαi"/, 2p;iù x l)a r+go q i_nc caol(d1e−. α) ]
+6.3 Portfolio construction evoluto
+6.3.1 HRP (Hierarchical Risk Parity, López de Prado)
+• Clustering gerarchico → quasi-diagonalizzazione → recursive bisection
+• Robusto al condition number alto (non serve invertire Σ)
+• Iniettare HRP come prior del CVXPY (vincolo soft)
+6.3.2 Robust optimization (Ben-Tal, Nemirovski)
+• Sostituire con su uncertainty set U
+max αᵀ w max min over α ∈ U: αᵀ w
+6.3.3U D=iff {e r αe n :ti ‖ab αle − p αoŽ r‖tf(oΣl⁻io¹- (ncovrxmpy)l a ≤ye rκs ) } ⇔ max over w : αŽᵀ w − κ · √( wᵀ Σ w )
+• Optimizer differenziabile end-to-end con il modello alpha
+• Loss = realized Sharpe → backprop dentro il QP
+Pag. 20 di 25
+
+===== PAGE 21 =====
+MLCouncil — Combined Codebase Analysis
+• Decision-focused learning: alpha + portfolio addestrati insieme
+6.3.4 Conditional covariance via DCC-GARCH o GNN
+• DCC: con univariate GARCH e dinamica
+• Alternativa: Graph Neural Network con edge = correlation, node feat = volatility regime
+Σₜ = Dₜ Rₜ Dₜ Dₜ Rₜ
+6.4 Esecuzione di nuova generazione
+6.4.1 RL-based execution
+• Agente PPO su simulator di order book (LOB) per slicing ottimo
+• Reward = − implementation shortfall
+• Feature: book depth, recent prints, volatility, time-of-day
+6.4.2 Smart Order Routing multi-venue
+• Oggi solo Alpaca. Aggiungere IBKR + Coinbase (crypto) + Tradeweb (fixed income)
+• Routing: minimizza
+expected_cost + λ · urgency
+6.5 Risk management
+6.5.1 Stress test con generative scenarios
+• Generative model (VAE / Diffusion) su returns storici condizionato su regimi rari
+• Genera 10k scenari per VaR/CVaR robust
+6.5.2 Causal inference per drift detection
+• Algoritmi PCMCI / causal discovery su feature-returns
+• Allerta quando la struttura causale cambia (più informativo del KS test)
+6.5.3 Crash early warning via topological data analysis
+• Persistent homology su returns multivariati
+• Spike in (loops) → segnale di market stress imminente (Gidea-Katz 2018)
+β₁
+6.6 Infrastruttura & MLOps
+6.6.1 Walk-forward CI con purged-embargoed CV
+• GitHub Action settimanale: re-fit + run backtest WF + open PR se IR migliora
+• Champion-challenger automatico
+6.6.2 Online learning
+• Sostituire lgbm_latest.pkl con update incrementale daily (River / TF Decision Forests streaming)
+• Concept drift detection (ADWIN / DDM) → trigger retrain pesante
+6.6.3 Feature store tri-temporal
+• Aggiungere arrival_time separato da transaction_time
+• Pattern Tecton/Feast: analisi as-of "se fossimo stati live" più rigorosa
+Pag. 21 di 25
+
+===== PAGE 22 =====
+MLCouncil — Combined Codebase Analysis
+6.6.4 Observability: OpenTelemetry + Grafana
+• Distributed tracing dei segnali (ingest → orders)
+• Latency SLO per layer
+• Audit trail completo per compliance
+Pag. 22 di 25
+
+===== PAGE 23 =====
+MLCouncil — Combined Codebase Analysis
+Parte 7 — Roadmap consolidata
+La roadmap è strutturata su quattro priorità. P0 = foundation cleanup, prima di tutto. P1 = high-impact
+quantitativo. P2 = capacità avanzate. P3 = ottimizzazioni di lungo periodo.
+Priorità Tema Stima impatto Stima sforzo
+🔴🔴 P0 Doc reconciliation + VaR multivariato + Pickle Eliminazione gap audit/risk 3–4 settimane
+hardening
+🔴🔴 P0 Self-calibrating cost model (M9) Cost backtest ≈ live cost 2–3 settimane
+🔴🔴 P0 Council renorm + source weight + naming (M5, Trasparenza statistica 2 settimane
+M6, M7)
+🔴 P1 RL execution + smart routing +20–50 bps Sharpe netto 1–2 mesi
+🔴 P1 Conformal CQR + decision-focused learning +0.2 Sharpe 2 mesi
+🟡 P2 DCC-GARCH covariance + robust optimization Drawdown −20% 3–6 settimane
+🟡 P2 TFT / PatchTST + MoE gating IC +0.02–0.05 2–3 mesi
+🟢 P3 Microstructure model + L2 OFI Execution +5–10 bps 3–6 mesi
+🟢 P3 Generative stress testing + causal drift Risk insight, no slittamento 2 mesi
+alpha
+🟢 P3 Online learning + tri-temporal store Adattamento real-time a 3–4 mesi
+nuovi regimi
+Vincoli operativi della roadmap
+• Ogni iniziativa P0 ha un mismatch identificato in Parte 2 → traceable da audit.
+• P1 e P2 vanno introdotte solo dopo che la baseline (Sharpe, IR, MDD, IC) è stata misurata su
+sistema cleanup-ed; altrimenti non si quantifica l’uplift.
+• Ogni nuova iniziativa richiede design doc (1-pager + ADR) prima dell’implementazione.
+• Champion-challenger automatico tramite walk-forward CI (6.6.1) è prerequisito infrastrutturale per
+validare tutte le iniziative P1+.
+Pag. 23 di 25
+
+===== PAGE 24 =====
+MLCouncil — Combined Codebase Analysis
+Appendice — Configurazioni concrete
+A.1 Iperparametri "nascosti" (non in CLAUDE.md/README)
+Aspetto Valore File:linea
+LGBM early stopping patience 50 iter technical.py:261
+Validation split LGBM 15% tail technical.py:244
+Min samples per fold CPCV 30 train, 5 test technical.py:235
+SHAP sample size min(500, 15%) technical.py:298
+Ridge α nel conformal 1.0 conformal.py:88
+Conformal CV folds 5 conformal.py:91
+EWM halflife IC Sharpe 20 giorni aggregator.py:514
+Soft Sharpe floor aggregator 0.1 aggregator.py:437
+Sentiment γ search bounds [0.30, 0.95] sentiment.py:310
+FinBERT batch size 32 models.yaml:29
+Min rebalance cool-down 1–5 giorni size-dep. portfolio.py:298-299
+Signal strength filter |z| ≥ 0.20 portfolio.py:310
+Sector cap (effettivo) 35% (dinamico) portfolio.py:81
+Vol cap (effettivo) max_vol_ann=0.30 portfolio.py
+Beta neutrality beta_neutral=True portfolio.py
+Cash reserve (portafogli grandi) 85% portfolio.py
+Conformal coverage 0.85 conformal.py:47
+Position multiplier range [0.2, 2.0] conformal.py:184
+A.2 Monitoring & alerting (council/monitor.py)
+Check Soglia File:linea
+Alpha decay IC < 0.01 per ≥5 giorni consecutivi (CRITICAL se ≥10) monitor.py:103-194
+Feature drift KS test p < 0.05 su ≥20% delle top-10 feature, baseline monitor.py:200-330
+60d
+SHAP stability Jaccard overlap top-10 < 0.70 vs baseline monitor.py:336-446
+Regime change regime cambia ∧ transition_prob ≥ 0.70 monitor.py:452-527
+Escalation ≥3 alert simultanei → tutti CRITICAL monitor.py:672-679
+Dispatch: INFO solo log, WARNING su dashboard, CRITICAL via email Gmail SMTP con dead-letter queue.
+Pag. 24 di 25
+
+===== PAGE 25 =====
+MLCouncil — Combined Codebase Analysis
+A.3 Performance metrics (backtest/report.py)
+Metrica Formula File:linea
+Sharpe annualizzato report.py:129-146
+Max Drawdown √252 · mean(r_exc) / σ_r report.py:148-160
+Calmar minₜ ( Eₜ / max(E_s : s ≤ t) − 1 ) report.py:162-174
+CAGR CAGR / |MDD| report.py:622-629
+IC (Spearman) ( E_T / E_0 ) ^ (1 / T_y) − 1 report.py:176-217
+IC Information Ratio ρ_S( signalₜ, rₜ₊₁ ) cross-section report.py:279-358
+mean(IC) / σ_IC · √252
+Note di utilizzo
+• Documento auto-contenuto: nessuna esecuzione di codice richiesta.
+• Per validare i riferimenti, aprire i file in VSCode con jump-to-line (file:linea).
+• Le formule usano notazione Unicode matematica (compatibile con qualsiasi viewer Word).
+• Le ⚠ in Parte 5 puntano alle schede di mismatch di Parte 2.
+Prossimi passi consigliati
+4. Iniziare con il foundation cleanup di Parte 6.0 (M2, M3, M10, M11 in particolare — alta severità).
+5. Misurare baseline (Sharpe, IR, MDD, IC) DOPO il cleanup, prima di introdurre P1+. Senza baseline
+pulita, l’uplift è invisibile.
+6. Aprire un design doc 1-pager + ADR per ogni iniziativa P1/P2/P3 selezionata.
+7. Convertire il flusso 4.1 in Mermaid per docs/architecture.md del repo.
+8. Setup walk-forward CI champion-challenger (6.6.1) come gating infrastrutturale per i merge di
+iniziative P1+.
+Pag. 25 di 25

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 
@@ -157,6 +158,74 @@ def test_monte_carlo_var_allows_seed_override():
     )
 
     assert (report_a.var_1d, report_a.cvar_1d) != (report_b.var_1d, report_b.cvar_1d)
+
+
+def test_monte_carlo_var_reflects_correlation_structure_with_same_marginals():
+    from council.risk_engine import RiskEngine
+
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    weights = {"AAPL": 0.5, "MSFT": 0.3, "NVDA": 0.2}
+    portfolio_value = 1_000_000.0
+
+    std = 0.02
+    corr_independent = np.eye(3)
+    corr_structured = np.array(
+        [
+            [1.0, 0.2, -0.3],
+            [0.2, 1.0, 0.0],
+            [-0.3, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    cov_scale = (std ** 2)
+    cov_independent = corr_independent * cov_scale
+    cov_structured = corr_structured * cov_scale
+
+    # Build deterministic return samples with exact sample covariance:
+    # sample_cov = X^T X / (n-1) = Sigma
+    n_obs = 8
+    rng = np.random.default_rng(123)
+    base = rng.normal(size=(n_obs, 3))
+    base = base - base.mean(axis=0, keepdims=True)
+    q, _ = np.linalg.qr(base)
+    q = q[:, :3]
+    x_independent = np.sqrt(n_obs - 1.0) * q @ np.linalg.cholesky(cov_independent).T
+    x_structured = np.sqrt(n_obs - 1.0) * q @ np.linalg.cholesky(cov_structured).T
+
+    returns_independent = pd.DataFrame(x_independent, columns=tickers)
+    returns_structured = pd.DataFrame(x_structured, columns=tickers)
+
+    # Marginal vol held constant across scenarios.
+    vol_ind = returns_independent.std(ddof=1)
+    vol_str = returns_structured.std(ddof=1)
+    assert np.allclose(vol_ind.values, vol_str.values, atol=1e-12)
+
+    # Portfolio variance is also held constant here, so univariate MC would
+    # generate identical paths under the same seed.
+    w = np.array([weights[t] for t in tickers], dtype=float)
+    port_var_ind = float(w @ returns_independent.cov().values @ w)
+    port_var_str = float(w @ returns_structured.cov().values @ w)
+    assert np.isclose(port_var_ind, port_var_str, atol=1e-12)
+
+    engine = RiskEngine(seed=7)
+    var_ind = engine.compute_var_monte_carlo(
+        returns=returns_independent,
+        weights=weights,
+        portfolio_value=portfolio_value,
+        n_simulations=4000,
+        confidence=0.99,
+        horizon=1,
+    )
+    var_str = engine.compute_var_monte_carlo(
+        returns=returns_structured,
+        weights=weights,
+        portfolio_value=portfolio_value,
+        n_simulations=4000,
+        confidence=0.99,
+        horizon=1,
+    )
+
+    assert var_ind != var_str
 
 
 def test_risk_engine_loads_sector_map_from_json(monkeypatch, tmp_path):
