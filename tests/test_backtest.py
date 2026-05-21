@@ -615,3 +615,40 @@ class TestDeterministicStrategyBacktest:
 
         assert result.equity_curve.iloc[1] < 100_000.0
         assert result.stats["estimated_costs_usd"] > 0.0
+
+    def test_compare_cost_modes_exposes_ab_sharpe_keys(self, tmp_path, monkeypatch):
+        from datetime import datetime, timezone
+
+        from backtest.simulator import compare_cost_modes
+        from council.cost_calibration import CalibrationArtifact, write_calibration
+
+        art = CalibrationArtifact(
+            generated_at=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            calibration_window_end=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            fill_sample_count=60,
+            min_fills=30,
+            kappa_by_ticker={"AAA": 20.0, "BBB": 20.0},
+            fill_count_by_ticker={"AAA": 60, "BBB": 60},
+            kappa_by_tier={},
+            fill_count_by_tier={},
+        )
+        calib_path = tmp_path / "cost_calibration.json"
+        write_calibration(art, path=calib_path)
+        monkeypatch.setenv("MLCOUNCIL_COST_CALIBRATION_PATH", str(calib_path))
+
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+        weights = pd.DataFrame({"AAA": [1.0, 0.5, 0.5], "BBB": [0.0, 0.5, 0.5]}, index=dates)
+        forward_returns = pd.DataFrame(
+            {"AAA": [0.01, 0.01, 0.01], "BBB": [0.01, 0.01, 0.01]},
+            index=dates,
+        )
+
+        ab = compare_cost_modes(
+            weights=weights,
+            forward_returns=forward_returns,
+            initial_capital=100_000.0,
+        )
+
+        assert "net_sharpe_static_costs" in ab
+        assert "net_sharpe_calibrated_costs" in ab
+        assert ab["net_sharpe_calibrated_costs"] <= ab["net_sharpe_static_costs"]

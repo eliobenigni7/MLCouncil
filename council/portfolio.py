@@ -23,9 +23,17 @@ TC = sum(|dw_i|) * (commission_bps + slippage_bps) / 10000 * portfolio_value
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import date as date_type
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from loguru import logger
+
+_ROOT = Path(__file__).resolve().parents[1]
+_DIAGNOSTICS_DIR = _ROOT / "data" / "results" / "optimization_diagnostics"
 
 from council.transaction_costs import (
     TransactionCostModel,
@@ -98,10 +106,10 @@ class PortfolioConstructor:
         self.crypto_enabled: bool = os.getenv("MLCOUNCIL_CRYPTO_ENABLED", "false").lower() == "true"
         self.max_crypto_position: float = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE", "0.20"))
         self.max_crypto_turnover: float = float(os.getenv("MLCOUNCIL_MAX_CRYPTO_TURNOVER", "0.40"))
-        self.cost_model = TransactionCostModel(
-            commission_bps=self.commission_bps,
-            slippage_bps=self.slippage_bps,
-        )
+        self.cost_model = TransactionCostModel.from_env()
+        self.commission_bps = self.cost_model.commission_bps
+        self.slippage_bps = self.cost_model.slippage_bps
+        self.last_optimization_diagnostics: dict | None = None
 
     def _get_portfolio_tier(self, portfolio_value: float) -> dict:
         """Return size-adaptive constraints based on portfolio value.
@@ -205,14 +213,12 @@ class PortfolioConstructor:
         w_new: np.ndarray,
         portfolio_value: float = 1.0,
     ) -> float:
-        self.cost_model = TransactionCostModel(
-            commission_bps=self.commission_bps,
-            slippage_bps=self.slippage_bps,
-        )
+        self.cost_model = TransactionCostModel.from_env()
         return self.cost_model.estimate_cost_from_weights(
             w_old,
             w_new,
             portfolio_value=portfolio_value,
+            tickers=list(w_new.index) if hasattr(w_new, "index") else None,
         )
 
     @staticmethod
@@ -370,6 +376,12 @@ class PortfolioConstructor:
         mults = position_multipliers.reindex(alpha_signals.index).fillna(1.0)
         effective_alpha = (alpha_signals * mults).reindex(tickers).fillna(0.0).values
 
+        greedy_raw = np.clip(effective_alpha, 0.0, None)
+        greedy_sum = float(greedy_raw.sum())
+        greedy_weights = (
+            greedy_raw / greedy_sum if greedy_sum > 1e-12 else np.zeros(n, dtype=float)
+        )
+
         w_curr = current_weights.reindex(tickers).fillna(0.0).values
 
         cov_raw = (
@@ -387,11 +399,10 @@ class PortfolioConstructor:
         alpha_objective = effective_alpha @ w
 
         turnover = cp.norm1(w - w_curr) / 2
-        self.cost_model = TransactionCostModel(
-            commission_bps=self.commission_bps,
-            slippage_bps=self.slippage_bps,
-        )
-        tc_cost = turnover * self.cost_model.total_cost_bps / 10000
+        self.cost_model = TransactionCostModel.from_env()
+        effective_slippage = self.cost_model.weighted_slippage_bps(w_curr, w_curr, tickers)
+        effective_total_bps = self.cost_model.commission_bps + effective_slippage
+        tc_cost = turnover * effective_total_bps / 10000
         objective = cp.Maximize(alpha_objective - self.tc_lambda * tc_cost)
 
         constraints: list = [
@@ -435,26 +446,134 @@ class PortfolioConstructor:
             except Exception as exc:
                 logger.debug(f"Solver {solver} failed: {exc}")
 
+        binding_constraints: dict[str, float] = {}
+        if solved and w.value is not None:
+            for idx, constraint in enumerate(prob.constraints):
+                try:
+                    dual = constraint.dual_value
+                    if dual is not None:
+                        binding_constraints[f"constraint_{idx}"] = float(
+                            np.max(np.abs(np.asarray(dual, dtype=float)))
+                        )
+                except Exception:  # noqa: BLE001
+                    continue
+
         if not solved or w.value is None:
             logger.warning(
                 f"Portfolio optimisation failed (status={prob.status!r}). "
                 "Returning sector-aware fallback."
             )
-            return self._feasible_fallback_weights(
+            fallback = self._feasible_fallback_weights(
                 alpha_signals=alpha_signals.reindex(tickers).fillna(0.0),
                 sector_cap=effective_sector_cap,
                 budget_fraction=budget_fraction,
                 max_position=effective_max_position,
             )
+            self._record_optimization_diagnostics(
+                tickers=tickers,
+                greedy_weights=greedy_weights,
+                cvxpy_weights=None,
+                final_weights=fallback.reindex(tickers).fillna(0.0).values,
+                solver_status=str(prob.status),
+                binding_constraints=binding_constraints,
+            )
+            return fallback
 
-        weights = np.clip(w.value, 0.0, None)
+        cvxpy_weights = np.clip(w.value, 0.0, None)
         weights = self._project_to_capped_simplex(
-            weights,
+            cvxpy_weights,
             budget_fraction=budget_fraction,
             upper_bounds=np.full(n, effective_max_position, dtype=float),
         )
 
+        hrp_blend = 0.0
+        hrp_weights_arr: np.ndarray | None = None
+        if os.getenv("MLCOUNCIL_HRP_SOFT_PRIOR", "false").lower() == "true" and n >= 2:
+            try:
+                from council.hrp import hrp_weights_from_covariance
+
+                hrp_blend = float(os.getenv("MLCOUNCIL_HRP_BLEND", "0.25"))
+                hrp_blend = min(1.0, max(0.0, hrp_blend))
+                cov_df = returns_covariance.reindex(index=tickers, columns=tickers)
+                hrp_w = hrp_weights_from_covariance(cov_df).reindex(tickers).fillna(0.0).values
+                hrp_weights_arr = hrp_w
+                weights = (1.0 - hrp_blend) * weights + hrp_blend * hrp_w
+                weights = self._project_to_capped_simplex(
+                    weights,
+                    budget_fraction=budget_fraction,
+                    upper_bounds=np.full(n, effective_max_position, dtype=float),
+                )
+                logger.debug(
+                    f"HRP soft prior applied (blend={hrp_blend:.0%}) after CVXPY solve"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"HRP soft prior skipped: {exc}")
+
+        self._record_optimization_diagnostics(
+            tickers=tickers,
+            greedy_weights=greedy_weights,
+            cvxpy_weights=cvxpy_weights,
+            final_weights=weights,
+            solver_status=str(prob.status),
+            binding_constraints=binding_constraints,
+            hrp_weights=hrp_weights_arr,
+            hrp_blend=hrp_blend,
+        )
+
         return pd.Series(weights, index=tickers, name="target_weight")
+
+    def _record_optimization_diagnostics(
+        self,
+        *,
+        tickers: list[str],
+        greedy_weights: np.ndarray,
+        cvxpy_weights: np.ndarray | None,
+        final_weights: np.ndarray,
+        solver_status: str,
+        binding_constraints: dict[str, float],
+        hrp_weights: np.ndarray | None = None,
+        hrp_blend: float = 0.0,
+    ) -> None:
+        diag: dict = {
+            "greedy_weights": {
+                str(t): float(greedy_weights[i]) for i, t in enumerate(tickers)
+            },
+            "cvxpy_weights": (
+                {str(t): float(cvxpy_weights[i]) for i, t in enumerate(tickers)}
+                if cvxpy_weights is not None
+                else {}
+            ),
+            "final_weights": {
+                str(t): float(final_weights[i]) for i, t in enumerate(tickers)
+            },
+            "solver_status": solver_status,
+            "binding_constraints": binding_constraints,
+            "hrp_blend": float(hrp_blend),
+        }
+        if hrp_weights is not None:
+            diag["hrp_weights"] = {
+                str(t): float(hrp_weights[i]) for i, t in enumerate(tickers)
+            }
+        self.last_optimization_diagnostics = diag
+
+    def save_optimization_diagnostics(
+        self,
+        as_of_date: date_type,
+        *,
+        path: Path | None = None,
+    ) -> Path | None:
+        """Persist last optimization diagnostics for dashboard math-trace."""
+        if not self.last_optimization_diagnostics:
+            return None
+        out_dir = _DIAGNOSTICS_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = path or (out_dir / f"{as_of_date.isoformat()}.json")
+        payload = {
+            "date": as_of_date.isoformat(),
+            **self.last_optimization_diagnostics,
+        }
+        out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return out_path
 
     def optimize_with_crypto(
         self,

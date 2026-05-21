@@ -13,6 +13,7 @@ logic, rather than a synthetic walk-forward proxy.
 
 from __future__ import annotations
 
+import argparse
 import json
 import pickle
 import sys
@@ -25,7 +26,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backtest.simulator import simulate_weight_backtest
+from backtest.simulator import compare_cost_modes, simulate_weight_backtest
 from backtest.validation import build_purged_walk_forward_splits, run_walk_forward_analysis
 from council.aggregator import CouncilAggregator
 from council.transaction_costs import TransactionCostModel
@@ -171,9 +172,28 @@ def _build_macro_today(macro: pl.DataFrame, d: pd.Timestamp) -> pl.DataFrame:
 
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run MLCouncil coherent strategy backtest")
+    parser.add_argument(
+        "--cost-mode",
+        choices=("static", "calibrated", "both"),
+        default="both",
+        help="Transaction cost assumption: static lookup, calibrated blend, or A/B both",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional path for cost A/B JSON (default: data/results/cost_ab.json when --cost-mode=both)",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
     print("=" * 72)
     print("MLCouncil — coherent strategy backtest")
+    print(f"Cost mode: {args.cost_mode}")
     print("=" * 72)
 
     print("[1/7] Load data")
@@ -359,12 +379,58 @@ def main() -> None:
     )
 
     print("[3/7] Simulate portfolio")
-    sim = simulate_weight_backtest(
-        weights=weights_df,
-        forward_returns=aligned_returns.reindex(weights_df.index),
-        initial_capital=100_000.0,
-        cost_model=TransactionCostModel.from_env(),
-    )
+    aligned_fwd = aligned_returns.reindex(weights_df.index)
+    cost_ab: dict | None = None
+    if args.cost_mode == "both":
+        cost_ab = compare_cost_modes(
+            weights=weights_df,
+            forward_returns=aligned_fwd,
+            initial_capital=100_000.0,
+        )
+        sim = cost_ab["calibrated_result"]
+        sim.stats = {
+            **sim.stats,
+            "net_sharpe_static_costs": cost_ab["net_sharpe_static_costs"],
+            "net_sharpe_calibrated_costs": cost_ab["net_sharpe_calibrated_costs"],
+            "net_sharpe_delta": cost_ab["net_sharpe_delta"],
+            "cost_calibration_version": cost_ab.get("calibration_version", ""),
+        }
+        ab_path = args.output or (RESULTS_DIR / "cost_ab.json")
+        ab_payload = {
+            "net_sharpe_static_costs": cost_ab["net_sharpe_static_costs"],
+            "net_sharpe_calibrated_costs": cost_ab["net_sharpe_calibrated_costs"],
+            "net_sharpe_delta": cost_ab["net_sharpe_delta"],
+            "calibration_version": cost_ab.get("calibration_version", ""),
+            "static_stats": cost_ab["static_stats"],
+            "calibrated_stats": cost_ab["calibrated_stats"],
+        }
+        with open(ab_path, "w", encoding="utf-8") as f:
+            json.dump(ab_payload, f, indent=2, default=float)
+        print(f"    Cost A/B written to {ab_path}")
+    elif args.cost_mode == "static":
+        sim = simulate_weight_backtest(
+            weights=weights_df,
+            forward_returns=aligned_fwd,
+            initial_capital=100_000.0,
+            cost_model=TransactionCostModel.static_lookup(),
+        )
+        sim.stats = {
+            **sim.stats,
+            "net_sharpe_static_costs": sim.stats.get("sharpe", 0.0),
+        }
+    else:
+        calib_model = TransactionCostModel.from_env(use_calibration=True)
+        sim = simulate_weight_backtest(
+            weights=weights_df,
+            forward_returns=aligned_fwd,
+            initial_capital=100_000.0,
+            cost_model=calib_model,
+        )
+        sim.stats = {
+            **sim.stats,
+            "net_sharpe_calibrated_costs": sim.stats.get("sharpe", 0.0),
+            "cost_calibration_version": calib_model.calibration_version,
+        }
 
     print("[4/7] Persist dashboard artifacts")
     with open(RESULTS_DIR / "backtest_result.pkl", "wb") as f:

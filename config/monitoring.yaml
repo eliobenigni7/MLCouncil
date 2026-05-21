@@ -1,0 +1,7 @@
+# MLCouncil monitoring thresholds (cost calibration track, ADR-0003).
+
+cost_calibration:
+  divergence_warning_bps: 5.0
+  divergence_critical_bps: 15.0
+  consecutive_sessions: 5
+  min_fills_per_tier: 30

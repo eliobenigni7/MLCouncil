@@ -1,7 +1,7 @@
 # ADR-0003: Self-Calibrating Transaction Cost Model From Realized Fills
 
 - Date: 2026-05-21
-- Status: Proposed
+- Status: Accepted
 - Decision owners: MLCouncil quant platform
 - Related PR/Issue: Foundation P0 cost-model feedback (M9)
 

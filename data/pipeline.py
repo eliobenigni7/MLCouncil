@@ -1440,13 +1440,23 @@ def daily_orders(
             "model_version": "unknown",
         }
 
+    from council.transaction_costs import get_active_calibration_version
+
+    cost_calib_version = get_active_calibration_version()
+
     if portfolio_weights.empty:
         context.log.warning(
             f"daily_orders [{partition_date}]: nessun peso → nessun ordine"
         )
-        empty_orders = pd.DataFrame(
-            columns=["ticker", "direction", "quantity", "target_weight", *dataframe_lineage_columns(lineage, 0).keys()]
-        )
+        empty_cols = [
+            "ticker",
+            "direction",
+            "quantity",
+            "target_weight",
+            "cost_calibration_version",
+            *dataframe_lineage_columns(lineage, 0).keys(),
+        ]
+        empty_orders = pd.DataFrame(columns=empty_cols)
         empty_path = _ORDERS_DIR / f"{partition_date}.parquet"
         empty_orders.to_parquet(empty_path, index=False)
         if empty_path.exists():
@@ -1468,7 +1478,12 @@ def daily_orders(
         portfolio_value=portfolio_value,
     )
     if orders.empty:
-        orders = pd.DataFrame(columns=["ticker", "direction", "quantity", "target_weight"])
+        orders = pd.DataFrame(
+            columns=["ticker", "direction", "quantity", "target_weight", "cost_calibration_version"]
+        )
+
+    if len(orders) > 0:
+        orders["cost_calibration_version"] = cost_calib_version
 
     for key, values in dataframe_lineage_columns(lineage, len(orders)).items():
         orders[key] = values

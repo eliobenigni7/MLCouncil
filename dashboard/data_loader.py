@@ -770,3 +770,84 @@ def load_sidebar_metrics() -> dict:
         "dd_delta": dd_delta,
         "ic_delta": round(ic_30d - ic_prev, 4),
     }
+
+
+@st.cache_data(ttl=3600)
+def load_optimization_diagnostics(as_of: date) -> dict:
+    """Load persisted portfolio optimizer diagnostics for a date."""
+    path = _RESULTS_DIR / "optimization_diagnostics" / f"{as_of.isoformat()}.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def load_council_weights_log_entry(as_of: date) -> dict:
+    """Load council aggregator weights_log entry for math-trace panel."""
+    agg_pkl = _RESULTS_DIR / "aggregator.pkl"
+    if not agg_pkl.exists():
+        return {}
+    try:
+        from council.pickle_security import trusted_pickle_load
+
+        agg = trusted_pickle_load(agg_pkl, require_hash=True)
+        key = as_of
+        if key not in agg._weights_log:
+            for k in sorted(agg._weights_log.keys(), reverse=True):
+                if k <= as_of:
+                    key = k
+                    break
+            else:
+                return {}
+        return dict(agg._weights_log.get(key, {}))
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def load_fill_quality_summary() -> pd.DataFrame:
+    """Per-ticker fill quality: median IS, lookup slippage, calibrated kappa."""
+    from council.cost_calibration import DEFAULT_CALIBRATION_PATH, load_calibration
+    from council.transaction_costs import estimate_slippage_bps, get_calibration_path
+    from execution.fill_log import read_fills
+
+    fills_dir = _OPERATIONS_DIR / "fills"
+    if not fills_dir.exists():
+        return pd.DataFrame()
+
+    try:
+        fills = read_fills(base=fills_dir)
+    except Exception:
+        return pd.DataFrame()
+
+    import polars as pl
+    from council.cost_calibration import compute_is_bps
+
+    if fills.height == 0:
+        return pd.DataFrame()
+
+    if "is_bps" not in fills.columns:
+        fills = compute_is_bps(fills)
+
+    summary = fills.group_by("ticker").agg(
+        pl.col("is_bps").median().alias("median_is_bps"),
+        pl.len().alias("fill_count"),
+    )
+    pdf = summary.to_pandas()
+    pdf["lookup_slippage_bps"] = pdf["ticker"].map(estimate_slippage_bps)
+
+    calib_path = get_calibration_path() or DEFAULT_CALIBRATION_PATH
+    kappa_map: dict[str, float] = {}
+    if calib_path.exists():
+        try:
+            artifact = load_calibration(calib_path)
+            kappa_map = {**artifact.kappa_by_ticker, **artifact.kappa_by_tier}
+        except Exception:
+            pass
+    pdf["kappa_calibrated_bps"] = pdf["ticker"].map(
+        lambda t: kappa_map.get(t, float("nan"))
+    )
+    return pdf

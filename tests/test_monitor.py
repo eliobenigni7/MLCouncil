@@ -413,6 +413,47 @@ class TestAlertResult:
 # Utility helper tests
 # ---------------------------------------------------------------------------
 
+class TestCostCalibrationDivergence:
+    def test_no_artifact_is_info(self, monitor: CouncilMonitor, tmp_path, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_COST_CALIBRATION_PATH", str(tmp_path / "missing.json"))
+        result = monitor.check_cost_calibration_divergence()
+        assert not result.is_alert
+        assert result.check_type == "cost_calibration_divergence"
+
+    def test_warning_on_sustained_divergence(self, monitor: CouncilMonitor, tmp_path, monkeypatch):
+        from council.cost_calibration import write_calibration
+
+        art = _artifact_for_monitor(kappa_by_tier={"mega": 10.0})
+        calib = tmp_path / "cost_calibration.json"
+        write_calibration(art, path=calib)
+        monkeypatch.setenv("MLCOUNCIL_COST_CALIBRATION_PATH", str(calib))
+
+        result = monitor.check_cost_calibration_divergence(
+            streak_by_tier={"mega": 5},
+        )
+        assert result.is_alert
+        assert result.severity in {Severity.WARNING, Severity.CRITICAL}
+
+
+def _artifact_for_monitor(**kwargs):
+    from datetime import datetime, timezone
+
+    from council.cost_calibration import CalibrationArtifact
+
+    defaults = dict(
+        generated_at=datetime(2026, 5, 21, tzinfo=timezone.utc),
+        calibration_window_end=datetime(2026, 5, 21, tzinfo=timezone.utc),
+        fill_sample_count=60,
+        min_fills=30,
+        kappa_by_ticker={},
+        fill_count_by_ticker={},
+        kappa_by_tier={"mega": 20.0},
+        fill_count_by_tier={"mega": 60},
+    )
+    defaults.update(kwargs)
+    return CalibrationArtifact(**defaults)
+
+
 class TestInternalHelpers:
     def test_count_trailing_true_all_true(self) -> None:
         s = pd.Series([True, True, True, True])

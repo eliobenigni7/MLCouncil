@@ -17,6 +17,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 # Ensure project root is importable
@@ -28,10 +29,12 @@ import dashboard.charts as charts
 from council.alerts import load_current_alerts
 from dashboard.data_loader import (
     load_benchmark,
+    load_council_weights_log_entry,
     load_daily_returns,
     load_equity_curve,
     load_ic_history,
     load_model_attribution,
+    load_optimization_diagnostics,
     load_regime_history,
     load_current_regime,
     load_sidebar_metrics,
@@ -208,6 +211,35 @@ def render_attribution_tab(start_date: date, end_date: date) -> None:
         use_container_width=True,
         key="attribution_weight_evolution",
     )
+
+    # Math-trace panel (council weights_log)
+    if selected_date is not None:
+        trace = load_council_weights_log_entry(selected_date)
+        if trace:
+            st.subheader("Council math trace")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Effective weight sum", f"{trace.get('weight_sum', 0):.3f}")
+            c2.metric(
+                "Orthogonality shrinkage",
+                "yes" if trace.get("orthogonality_shrinkage") else "no",
+            )
+            c3.metric("Regime", str(trace.get("regime", "n/a")))
+            weights_trace = trace.get("weights", {})
+            if weights_trace:
+                st.dataframe(
+                    pd.DataFrame(
+                        [{"model": k, "weight": v} for k, v in weights_trace.items()]
+                    ),
+                    use_container_width=True,
+                )
+
+        diagnostics = load_optimization_diagnostics(selected_date)
+        if diagnostics:
+            st.plotly_chart(
+                charts.optimizer_waterfall(diagnostics),
+                use_container_width=True,
+                key=f"optimizer_waterfall_{selected_date}",
+            )
 
     # Raw table
     with st.expander("Attribution data table"):

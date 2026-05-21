@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -811,3 +812,85 @@ def validate_no_lookahead(
         raise ValueError(f"Lookahead bias detected: {msg}")
 
     return all_warnings
+
+
+# ---------------------------------------------------------------------------
+# Cost calibration promotion gate (ADR-0003)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CostCalibrationPromotionResult:
+    passed: bool
+    reasons: list[str]
+
+
+def validate_cost_calibration_promotion(
+    stats_static: Mapping[str, float],
+    stats_calibrated: Mapping[str, float],
+    *,
+    artifact: Any | None = None,
+    median_is_bps: float | None = None,
+    median_lookup_bps: float | None = None,
+    sharpe_tolerance: float = 0.1,
+    turnover_tolerance: float = 0.10,
+    min_fills_per_tier: int = 30,
+) -> CostCalibrationPromotionResult:
+    """Champion/challenger gate for promoting calibrated transaction costs."""
+    reasons: list[str] = []
+
+    static_sharpe = float(stats_static.get("net_sharpe_static_costs", stats_static.get("sharpe", 0.0)))
+    calib_sharpe = float(
+        stats_calibrated.get("net_sharpe_calibrated_costs", stats_calibrated.get("sharpe", 0.0))
+    )
+    if calib_sharpe < static_sharpe - sharpe_tolerance:
+        reasons.append(
+            f"Calibrated net Sharpe {calib_sharpe:.3f} below static {static_sharpe:.3f} "
+            f"minus tolerance {sharpe_tolerance:.2f}"
+        )
+
+    static_turnover = float(stats_static.get("turnover", 0.0))
+    calib_turnover = float(stats_calibrated.get("turnover", 0.0))
+    if static_turnover > 0:
+        turnover_delta = abs(calib_turnover - static_turnover) / static_turnover
+        if turnover_delta > turnover_tolerance:
+            reasons.append(
+                f"Turnover delta {turnover_delta:.1%} exceeds ±{turnover_tolerance:.0%}"
+            )
+
+    if median_is_bps is not None and median_lookup_bps is not None:
+        if median_is_bps >= median_lookup_bps:
+            reasons.append(
+                f"Median IS {median_is_bps:.1f} bps not better than lookup {median_lookup_bps:.1f} bps"
+            )
+
+    if artifact is not None:
+        fill_counts = getattr(artifact, "fill_count_by_tier", {}) or {}
+        kappa_tiers = getattr(artifact, "kappa_by_tier", {}) or {}
+        for tier in kappa_tiers:
+            if int(fill_counts.get(tier, 0)) < min_fills_per_tier:
+                reasons.append(
+                    f"Tier '{tier}' fill count {fill_counts.get(tier, 0)} < {min_fills_per_tier}"
+                )
+
+    return CostCalibrationPromotionResult(passed=not reasons, reasons=reasons)
+
+
+def revert_to_static_cost_calibration(
+    root: Path | None = None,
+    *,
+    reason: str = "",
+) -> Path:
+    """Disable calibrated costs by writing config/runtime_override.env."""
+    base = root or Path(__file__).resolve().parents[1]
+    override_path = base / "config" / "runtime_override.env"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Auto-generated: cost calibration promotion gate failed.",
+        "MLCOUNCIL_COST_CALIBRATION_PATH=",
+    ]
+    if reason:
+        lines.insert(1, f"# Reason: {reason}")
+    override_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ["MLCOUNCIL_COST_CALIBRATION_PATH"] = ""
+    return override_path

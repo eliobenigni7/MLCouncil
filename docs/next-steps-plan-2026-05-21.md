@@ -243,7 +243,7 @@ dagster asset materialize -f data/pipeline.py --select cost_calibration_artifact
 
 ---
 
-## Fase 4 — Wire calibration in TransactionCostModel  ⏳ PROSSIMA
+## Fase 4 — Wire calibration in TransactionCostModel  ✅ COMPLETATA
 
 **Obiettivo:** far consumare la calibrazione al modello di costo che entra in CVXPY + backtest, con rollback.
 
@@ -301,7 +301,7 @@ python -m pytest tests/test_backtest_validation.py -v
 
 ---
 
-## Fase 5 — Validation, alerting, promotion  ⏳ PENDING
+## Fase 5 — Validation, alerting, promotion  ✅ COMPLETATA
 
 **Obiettivo:** governance per evitare che una calibrazione tossica entri in produzione.
 
@@ -392,7 +392,11 @@ Mostrare per ticker: IS mediano, slippage realized vs assunto (lookup), trend ka
 
 ---
 
-## Fase 7 — Selezione del prossimo track avanzato  ⏳ PENDING
+## Fase 7 — Selezione del prossimo track avanzato  ✅ SPIKE + HRP MVP
+
+**HRP soft-prior (2026-05-21):** `council/hrp.py`, blend opzionale in `PortfolioConstructor` via `MLCOUNCIL_HRP_SOFT_PRIOR=true` e `MLCOUNCIL_HRP_BLEND=0.25`. ADR Accepted.
+
+## Fase 7 (originale) — Selezione del prossimo track avanzato
 
 **Obiettivo:** decidere se il secondo P2 è HRP-soft-prior, robust optimization, o dashboard product redesign.
 
@@ -428,8 +432,8 @@ Fase 0 (sync)                                       ✅
     │
     └──> Fase 2 (fill telemetry)                    ✅
               └──> Fase 3 (calibration engine)      ✅
-                        └──> Fase 4 (wire in TCM)   ⏳ PROSSIMA
-                                  └──> Fase 5       ⏳
+                        └──> Fase 4 (wire in TCM)   ✅
+                                  └──> Fase 5       ✅
                                             ├──> Fase 6 (dashboard)
                                             └──> Fase 7 (next track)
 ```

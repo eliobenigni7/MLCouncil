@@ -238,6 +238,7 @@ def test_daily_orders_contract_requires_lineage_columns():
             "direction": ["buy"],
             "quantity": [10],
             "target_weight": [0.25],
+            "cost_calibration_version": [""],
         }
     )
 
@@ -469,13 +470,19 @@ class TestAssetDependencies:
             assert isinstance(a.partitions_def, dg.DailyPartitionsDefinition), (
                 f"Asset {a.key} non usa DailyPartitionsDefinition"
             )
-        assert unpartitioned == ["AssetKey(['train_hmm'])"]
+        assert set(unpartitioned) == {
+            "AssetKey(['train_hmm'])",
+            "AssetKey(['cost_calibration_artifact'])",
+        }
 
     def test_retry_policy_configured(self):
         """Ogni asset ha RetryPolicy con max_retries=2."""
         for a in _pipeline.defs.assets:
             if a.partitions_def is None:
-                assert str(a.key) == "AssetKey(['train_hmm'])"
+                assert str(a.key) in {
+                    "AssetKey(['train_hmm'])",
+                    "AssetKey(['cost_calibration_artifact'])",
+                }
                 continue
             op = a.op
             retry = op.retry_policy
@@ -557,6 +564,7 @@ class TestQualityChecks:
             "data_version",
             "feature_version",
             "model_version",
+            "cost_calibration_version",
         }
         assert expected_cols.issubset(orders.columns)
         assert orders["pipeline_run_id"].nunique() == 1

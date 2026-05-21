@@ -45,6 +45,14 @@ except ImportError:  # pragma: no cover
     _MLFLOW_AVAILABLE = False
 
 from council.alerts import AlertResult, AlertDispatcher, Severity
+from council.cost_calibration import (
+    DEFAULT_CALIBRATION_PATH,
+    TIER_BY_TICKER,
+    load_calibration,
+
+)
+from council.monitoring_config import load_monitoring_config
+from council.transaction_costs import estimate_slippage_bps, get_calibration_path
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +535,114 @@ class CouncilMonitor:
         )
 
     # ------------------------------------------------------------------
-    # 5. Full daily run
+    # 5. Cost calibration divergence
+    # ------------------------------------------------------------------
+
+    def check_cost_calibration_divergence(
+        self,
+        *,
+        streak_by_tier: dict[str, int] | None = None,
+        calibration_path: "Path | None" = None,
+    ) -> AlertResult:
+        """Alert when calibrated kappa diverges from static lookup for several sessions."""
+        from pathlib import Path
+
+        cfg = load_monitoring_config().get("cost_calibration", {})
+        warn_bps = float(cfg.get("divergence_warning_bps", 5.0))
+        crit_bps = float(cfg.get("divergence_critical_bps", 15.0))
+        min_sessions = int(cfg.get("consecutive_sessions", 5))
+
+        path = calibration_path or get_calibration_path() or DEFAULT_CALIBRATION_PATH
+        if not Path(path).exists():
+            return AlertResult(
+                is_alert=False,
+                severity=Severity.INFO,
+                model_name="cost_calibration",
+                check_type="cost_calibration_divergence",
+                message="No calibration artifact — static lookup only.",
+                recommendation="Accumulate fills before enabling calibration.",
+                metric_value=0.0,
+                threshold=warn_bps,
+            )
+
+        try:
+            artifact = load_calibration(Path(path))
+        except Exception as exc:  # noqa: BLE001
+            return AlertResult(
+                is_alert=True,
+                severity=Severity.WARNING,
+                model_name="cost_calibration",
+                check_type="cost_calibration_divergence",
+                message=f"Calibration artifact unreadable: {exc}",
+                recommendation="Revert to static lookup until manifest is repaired.",
+                metric_value=0.0,
+                threshold=warn_bps,
+            )
+
+        streaks = dict(streak_by_tier or {})
+        max_div = 0.0
+        worst_tier = ""
+        worst_severity = Severity.INFO
+
+        tier_tickers: dict[str, list[str]] = {}
+        for ticker, tier in TIER_BY_TICKER.items():
+            tier_tickers.setdefault(tier, []).append(ticker)
+
+        for tier, kappa in artifact.kappa_by_tier.items():
+            tickers = tier_tickers.get(tier, [])
+            if not tickers:
+                continue
+            lookup_median = float(
+                np.median([estimate_slippage_bps(t) for t in tickers])
+            )
+            divergence = abs(float(kappa) - lookup_median)
+            max_div = max(max_div, divergence)
+
+            if divergence > warn_bps:
+                streaks[tier] = streaks.get(tier, 0) + 1
+            else:
+                streaks[tier] = 0
+
+            if divergence >= crit_bps and streaks[tier] >= min_sessions:
+                worst_tier = tier
+                worst_severity = Severity.CRITICAL
+            elif divergence >= warn_bps and streaks[tier] >= min_sessions:
+                if worst_severity != Severity.CRITICAL:
+                    worst_tier = tier
+                    worst_severity = Severity.WARNING
+
+        if worst_severity in {Severity.WARNING, Severity.CRITICAL}:
+            return AlertResult(
+                is_alert=True,
+                severity=worst_severity,
+                model_name="cost_calibration",
+                check_type="cost_calibration_divergence",
+                message=(
+                    f"Tier '{worst_tier}' kappa diverges from lookup by "
+                    f">{warn_bps:.0f} bps for {min_sessions}+ sessions "
+                    f"(max divergence {max_div:.1f} bps)."
+                ),
+                recommendation=(
+                    "Review fill quality and consider reverting to static lookup "
+                    "via MLCOUNCIL_COST_CALIBRATION_PATH=."
+                ),
+                metric_value=max_div,
+                threshold=crit_bps if worst_severity == Severity.CRITICAL else warn_bps,
+            )
+
+        return AlertResult(
+            is_alert=False,
+            severity=Severity.INFO,
+            model_name="cost_calibration",
+            check_type="cost_calibration_divergence",
+            message=f"Cost calibration within tolerance (max divergence {max_div:.1f} bps).",
+            recommendation="No action required.",
+            metric_value=max_div,
+            threshold=warn_bps,
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Full daily run
     # ------------------------------------------------------------------
 
     def run_daily_checks(
@@ -543,6 +658,8 @@ class CouncilMonitor:
         regime_yesterday: str | None = None,
         transition_prob: float | None = None,
         top_shap_features: list[str] | None = None,
+        run_cost_calibration_check: bool = True,
+        cost_calibration_streaks: dict[str, int] | None = None,
         dispatch: bool = True,
     ) -> list[AlertResult]:
         """Run all monitoring checks for a given date.
@@ -609,6 +726,13 @@ class CouncilMonitor:
         ):
             result = self.check_regime_change(
                 regime_today, regime_yesterday, transition_prob
+            )
+            results.append(result)
+            _log_check(result, check_date)
+
+        if run_cost_calibration_check:
+            result = self.check_cost_calibration_divergence(
+                streak_by_tier=cost_calibration_streaks,
             )
             results.append(result)
             _log_check(result, check_date)

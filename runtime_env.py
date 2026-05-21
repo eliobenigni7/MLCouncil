@@ -252,6 +252,13 @@ def load_runtime_env(*, override: bool = False) -> dict[str, str]:
                 os.environ[key] = value
                 _LOADED_ENV_VALUES[key] = value
 
+    override_path = _ROOT / "config" / "runtime_override.env"
+    if override_path.exists():
+        for key, value in dotenv_values(override_path).items():
+            if value is not None:
+                os.environ[key] = value
+                _LOADED_ENV_VALUES[key] = value
+
     _apply_legacy_aliases()
     return loaded
 

@@ -87,6 +87,7 @@ ASSET_CONTRACTS: dict[str, AssetContract] = {
             "direction",
             "quantity",
             "target_weight",
+            "cost_calibration_version",
             *LINEAGE_COLUMNS,
         ),
         non_null_columns=(
@@ -94,6 +95,7 @@ ASSET_CONTRACTS: dict[str, AssetContract] = {
             "direction",
             "quantity",
             "target_weight",
+            "cost_calibration_version",
             *LINEAGE_COLUMNS,
         ),
         allow_empty=True,

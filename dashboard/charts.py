@@ -666,3 +666,52 @@ def current_weights_radar(weights: dict) -> go.Figure:
         height=380,
     )
     return fig
+
+
+def optimizer_waterfall(diagnostics: dict, top_n: int = 8) -> go.Figure:
+    """Waterfall of greedy → CVXPY → final portfolio weights (L1 budget deployed)."""
+    fig = go.Figure()
+    if not diagnostics:
+        fig.update_layout(**_DARK_LAYOUT, title="Optimizer waterfall — no diagnostics")
+        return fig
+
+    greedy = diagnostics.get("greedy_weights", {})
+    cvxpy = diagnostics.get("cvxpy_weights", {})
+    final = diagnostics.get("final_weights", {})
+
+    def _deployed(weights: dict) -> float:
+        return float(sum(abs(float(v)) for v in weights.values()))
+
+    measures = ["absolute", "relative", "relative", "total"]
+    x = ["Greedy (α×m)", "CVXPY Δ", "Projection Δ", "Final"]
+    greedy_total = _deployed(greedy)
+    cvxpy_total = _deployed(cvxpy) if cvxpy else greedy_total
+    final_total = _deployed(final)
+    y = [
+        greedy_total,
+        cvxpy_total - greedy_total,
+        final_total - cvxpy_total,
+        final_total,
+    ]
+
+    fig.add_trace(
+        go.Waterfall(
+            name="Weight budget",
+            orientation="v",
+            measure=measures,
+            x=x,
+            y=y,
+            connector={"line": {"color": "#444"}},
+            increasing={"marker": {"color": "#2ca02c"}},
+            decreasing={"marker": {"color": "#d62728"}},
+            totals={"marker": {"color": "#1f77b4"}},
+        )
+    )
+    status = diagnostics.get("solver_status", "unknown")
+    fig.update_layout(
+        **_DARK_LAYOUT,
+        title=f"Optimizer constraint waterfall (solver: {status})",
+        yaxis_title="Deployed weight (L1)",
+        height=400,
+    )
+    return fig

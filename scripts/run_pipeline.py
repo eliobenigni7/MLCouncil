@@ -396,6 +396,7 @@ def step_portfolio(
                 **optimize_kwargs,
                 portfolio_value=portfolio_value,
             )
+            constructor.save_optimization_diagnostics(last_date)
         except TypeError:
             # Backward compatibility for lightweight/dummy constructors used in tests.
             target_w = constructor.optimize(**optimize_kwargs)

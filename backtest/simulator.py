@@ -133,7 +133,12 @@ def simulate_weight_backtest(
 
         gross_ret = float((w_t * r_t).sum())
         turnover = cost_model.estimate_turnover(prev_weights.values, w_t.values)
-        cost_usd = cost_model.estimate_cost_from_turnover(turnover, portfolio_value=net_capital)
+        cost_usd = cost_model.estimate_cost_from_weights(
+            prev_weights.values,
+            w_t.values,
+            portfolio_value=net_capital,
+            tickers=list(common_cols),
+        )
         net_ret = gross_ret - (cost_usd / net_capital if net_capital > 0 else 0.0)
 
         gross_capital *= 1.0 + gross_ret
@@ -205,3 +210,41 @@ def simulate_weight_backtest(
         stats=stats,
         strategy_fills=strategy_fills,
     )
+
+
+def compare_cost_modes(
+    *,
+    weights: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+    initial_capital: float = 100_000.0,
+) -> dict:
+    """Run identical weights under static lookup vs calibrated cost models."""
+    static_model = TransactionCostModel.static_lookup()
+    calibrated_model = TransactionCostModel.from_env(use_calibration=True)
+
+    static_result = simulate_weight_backtest(
+        weights=weights,
+        forward_returns=forward_returns,
+        initial_capital=initial_capital,
+        cost_model=static_model,
+    )
+    calibrated_result = simulate_weight_backtest(
+        weights=weights,
+        forward_returns=forward_returns,
+        initial_capital=initial_capital,
+        cost_model=calibrated_model,
+    )
+
+    static_sharpe = float(static_result.stats.get("sharpe", 0.0))
+    calibrated_sharpe = float(calibrated_result.stats.get("sharpe", 0.0))
+
+    return {
+        "net_sharpe_static_costs": static_sharpe,
+        "net_sharpe_calibrated_costs": calibrated_sharpe,
+        "net_sharpe_delta": calibrated_sharpe - static_sharpe,
+        "static_stats": static_result.stats,
+        "calibrated_stats": calibrated_result.stats,
+        "static_result": static_result,
+        "calibrated_result": calibrated_result,
+        "calibration_version": calibrated_model.calibration_version,
+    }
