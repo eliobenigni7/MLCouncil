@@ -4,9 +4,12 @@ Architecture
 ------------
 * Base weights per market regime are loaded from ``config/regime_weights.yaml``.
 * After ``min_history_days`` of observed IC history, weights are scaled by each
-  model's rolling 100-day Information Ratio (mean IC / std IC * sqrt(252)).
-* Models with consistently negative Sharpe are down-weighted toward their floor
-  (``weight_clip.min``); no model can exceed ``weight_clip.max``.
+  model's **EWM IC-Sharpe** (halflife up to 20 days, bounded by the configured
+  history window) — mean IC / std IC * sqrt(252). Legacy config keys
+  ``ic_rolling_window`` and ``sharpe_rolling_window`` only bound the history
+  window passed to the EWM; they do not switch to a simple rolling mean.
+* Models with consistently negative IC-Sharpe are down-weighted toward their
+  floor (``weight_clip.min``); no model can exceed ``weight_clip.max``.
 * Orthogonality constraints: correlated models are down-weighted to maintain
   maximum pairwise correlation below threshold.
 * Every call to ``aggregate()`` is logged (weights + contributions) so that
