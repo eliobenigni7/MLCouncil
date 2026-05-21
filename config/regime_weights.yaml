@@ -23,8 +23,9 @@ regime_weights:
     lgbm:      0.45
     sentiment: 0.25
     hmm:       0.30
-  # Placeholder weights (sum with active models only after promotion):
-  # microstructure: 0.00
+  # Enabled in production_manifest experts.* after walk-forward promotion:
+  # tft: 0.15
+  # microstructure: 0.10
 
 # Adaptive weight bounds applied after Sharpe-based adjustment.
 # No model falls below min or above max after renormalization.

@@ -115,6 +115,31 @@ export MLCOUNCIL_ONLINE_LEARNING=true
 - Dagster `lgbm_signals` refits champion before predict when enabled; walk-forward CI still owns promotion
 - ADR: `docs/adr/2026-05-21-online-learning.md`
 
+## Production profile (gated — default)
+
+```bash
+cp .env.example .env
+# Set ALPACA_*, POLYGON_*, MLCOUNCIL_API_KEY, ALERT_EMAIL, SMTP_PASSWORD
+python scripts/setup_prod.py
+dagster dev -f data/pipeline.py
+```
+
+- `MLCOUNCIL_ENV_PROFILE=prod` + `MLCOUNCIL_USE_PRODUCTION_MANIFEST=true`
+- Champions: `config/production_manifest.yaml` (LightGBM, FinBERT, HMM, linear/conformal/Ledoit/CVXPY)
+- Weekly: `model_promotion_gate` asset / GitHub `walk-forward-ci.yml`
+- Promote after 3 passes: `python scripts/promote_model.py --model lightgbm`
+
+ADR: `docs/adr/2026-05-21-production-promotion-gate.md`
+
+## Frontier profile (R&D only — no gate)
+
+```bash
+MLCOUNCIL_ENV_PROFILE=frontier
+python scripts/bootstrap_frontier.py
+```
+
+Bypasses promotion gate; not for paper/live without explicit acceptance of risk.
+
 ## Wave 3 council/portfolio (T3.x — off by default)
 
 Production paths unchanged unless env flags are set. Train checkpoints before enabling shadow modes:

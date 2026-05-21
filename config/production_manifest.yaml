@@ -1,0 +1,44 @@
+# Production manifest — updated ONLY via walk-forward promotion gate + promote_model.py
+# Daily pipeline reads this when MLCOUNCIL_ENV_PROFILE=prod|paper (see council/production_config.py)
+#
+# Do not hand-edit promoted checkpoints without a gate report and audit entry.
+
+schema_version: 1
+updated_at: null
+updated_by: null
+
+models:
+  technical:
+    family: lightgbm
+    checkpoint: models/checkpoints/lgbm_latest.pkl
+  sentiment:
+    family: finbert
+    checkpoint: models/checkpoints/sentiment_latest.pkl
+  regime:
+    family: hmm
+    checkpoint: models/checkpoints/hmm_latest.pkl
+
+council:
+  aggregator_mode: linear
+  position_sizing: conformal
+  covariance_estimator: ledoit
+  portfolio_mode: cvxpy
+  use_stacked_council: false
+  regime_mode: label
+
+experts:
+  tft:
+    enabled: false
+    checkpoint: models/checkpoints/tft_challenger.pkl
+  microstructure:
+    enabled: false
+  moe:
+    enabled: false
+    gate_checkpoint: models/checkpoints/moe_gate.pkl
+
+features:
+  online_learning: false
+  otel_enabled: false
+  hrp_soft_prior: false
+
+promotion_history: []

@@ -16,11 +16,38 @@ LEGACY_ENV_ALIASES = {
     "ALPACA_PAPER_SECRET": "ALPACA_SECRET_KEY",
 }
 
-SUPPORTED_RUNTIME_PROFILES = {"local", "paper"}
+SUPPORTED_RUNTIME_PROFILES = {"local", "paper", "prod", "production", "frontier"}
 
 PROFILE_REQUIRED_KEYS = {
     "local": [],
     "paper": [
+        "ALPACA_BASE_URL",
+        "ALPACA_PAPER_KEY",
+        "ALPACA_PAPER_SECRET",
+        "MLCOUNCIL_MAX_DAILY_ORDERS",
+        "MLCOUNCIL_MAX_TURNOVER",
+        "MLCOUNCIL_MAX_POSITION_SIZE",
+        "MLCOUNCIL_AUTOMATION_PAUSED",
+    ],
+    "prod": [
+        "ALPACA_BASE_URL",
+        "ALPACA_PAPER_KEY",
+        "ALPACA_PAPER_SECRET",
+        "MLCOUNCIL_MAX_DAILY_ORDERS",
+        "MLCOUNCIL_MAX_TURNOVER",
+        "MLCOUNCIL_MAX_POSITION_SIZE",
+        "MLCOUNCIL_AUTOMATION_PAUSED",
+    ],
+    "production": [
+        "ALPACA_BASE_URL",
+        "ALPACA_PAPER_KEY",
+        "ALPACA_PAPER_SECRET",
+        "MLCOUNCIL_MAX_DAILY_ORDERS",
+        "MLCOUNCIL_MAX_TURNOVER",
+        "MLCOUNCIL_MAX_POSITION_SIZE",
+        "MLCOUNCIL_AUTOMATION_PAUSED",
+    ],
+    "frontier": [
         "ALPACA_BASE_URL",
         "ALPACA_PAPER_KEY",
         "ALPACA_PAPER_SECRET",

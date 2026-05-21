@@ -317,3 +317,108 @@ def run_model_promotion_gate(
 
     _write_json(Path(report["report_path"]), report)
     return report
+
+
+def promote_model_to_production(
+    model: str,
+    *,
+    root: Path | None = None,
+    force: bool = False,
+    promoted_by: str = "promote_model.py",
+) -> dict[str, Any]:
+    """Promote challenger to champion after gate pass + consecutive streak.
+
+    Updates checkpoints, champion metrics cache, and ``production_manifest.yaml``.
+    """
+    import shutil
+
+    from council.production_config import (
+        copy_checkpoint,
+        load_manifest,
+        record_promotion,
+        save_manifest,
+    )
+
+    base = root or _ROOT
+    cfg = model_config(model)
+    report_path = base / "data" / "operations" / f"walkforward_promotion_{model}.json"
+    gate_report = _read_json(report_path)
+
+    if not gate_report:
+        raise RuntimeError(
+            f"No gate report at {report_path}. Run run_walkforward_promotion.py first."
+        )
+
+    streak_path = base / cfg["streak_file"]
+    streak = _read_json(streak_path)
+    consecutive = int(streak.get("consecutive_passes", 0))
+    eligible = bool(streak.get("auto_promote_eligible")) or consecutive >= CONSECUTIVE_PASSES_REQUIRED
+
+    if not gate_report.get("promotion_passed") and not force:
+        raise RuntimeError(
+            f"Gate did not pass for {model}: {gate_report.get('reasons')}. Use --force to override."
+        )
+    if not eligible and not force:
+        raise RuntimeError(
+            f"Need {CONSECUTIVE_PASSES_REQUIRED} consecutive passes (have {consecutive}). "
+            "Use --force to override."
+        )
+
+    manifest = load_manifest(base / "config" / "production_manifest.yaml")
+    promotion_result: dict[str, Any] = {
+        "model": model,
+        "promoted_at": None,
+        "checkpoint": "",
+        "manifest_updates": [],
+        "status": "ok",
+    }
+
+    challenger = base / cfg["challenger_checkpoint"]
+    champion = base / cfg["champion_checkpoint"]
+
+    if model == "lightgbm":
+        if challenger.exists():
+            copy_checkpoint(challenger, champion)
+        promotion_result["checkpoint"] = str(champion)
+        _write_json(
+            base / cfg["champion_metrics"],
+            gate_report.get("challenger_metrics") or {},
+        )
+    elif model == "tft":
+        if not challenger.exists():
+            raise FileNotFoundError(f"TFT challenger missing: {challenger}")
+        manifest.setdefault("models", {})["technical"] = {
+            "family": "tft",
+            "checkpoint": str(cfg["challenger_checkpoint"]),
+        }
+        manifest.setdefault("experts", {}).setdefault("tft", {})["enabled"] = True
+        promotion_result["manifest_updates"].append("models.technical=tft")
+        promotion_result["checkpoint"] = str(challenger)
+        _write_json(base / cfg["champion_metrics"], gate_report.get("challenger_metrics") or {})
+    elif model in ("sentiment", "hmm"):
+        if challenger.exists():
+            copy_checkpoint(challenger, champion)
+        elif champion.exists() and not force:
+            raise FileNotFoundError(f"Challenger missing: {challenger}")
+        key = "sentiment" if model == "sentiment" else "regime"
+        manifest.setdefault("models", {})[key] = {
+            "family": model,
+            "checkpoint": str(cfg["champion_checkpoint"]),
+        }
+        promotion_result["checkpoint"] = str(champion)
+        _write_json(base / cfg["champion_metrics"], gate_report.get("challenger_metrics") or {})
+    else:
+        raise ValueError(f"Promotion not implemented for model={model}")
+
+    manifest_path = base / "config" / "production_manifest.yaml"
+    manifest = record_promotion(
+        model,
+        gate_report_path=str(report_path),
+        promoted_by=promoted_by,
+        manifest_path=manifest_path,
+        manifest=manifest,
+    )
+
+    promotion_result["promoted_at"] = manifest.get("updated_at")
+    logger.info("Promoted %s to production champion", model)
+    return promotion_result

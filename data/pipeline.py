@@ -48,6 +48,13 @@ from observability.tracing import init_tracing, trace_span
 
 init_tracing(service_name="mlcouncil-dagster")
 
+try:
+    from council.production_config import apply_manifest_to_environ
+
+    apply_manifest_to_environ()
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Path bootstrap — consente import relativi da qualsiasi working directory
 # ---------------------------------------------------------------------------
@@ -1110,7 +1117,28 @@ def council_signal(
         )
         return pd.Series(dtype=float, name="council_signal")
 
-    combined = aggregator.aggregate(signals, regime=current_regime, date=today).rename("council_signal")
+    from council.frontier import (
+        apply_stacked_council_override,
+        enrich_council_experts,
+        load_regime_context,
+    )
+
+    tickers = sorted({t for s in signals.values() for t in s.index})
+    signals = enrich_council_experts(
+        signals, tickers=tickers, partition_date=partition_date
+    )
+    raw_macro = _load_macro_context_from_disk()
+    regime_embedding, regime_centroids = load_regime_context(raw_macro, current_regime)
+
+    combined = aggregator.aggregate(
+        signals,
+        regime=current_regime,
+        date=today,
+        regime_embedding=regime_embedding,
+        regime_centroids=regime_centroids,
+    ).rename("council_signal")
+
+    combined = apply_stacked_council_override(combined, signals, partition_date)
 
     from council.cqr import (
         DEFAULT_STACKING_CHECKPOINT,
@@ -1769,6 +1797,45 @@ def cost_calibration_gate(
     return report
 
 
+@dg.asset(
+    retry_policy=_RETRY,
+    description=(
+        "Weekly alpha model promotion gate (T1.1). Evaluates shadow challengers vs "
+        "champion walk-forward metrics. Production promotion requires "
+        "scripts/promote_model.py after 3 consecutive passes."
+    ),
+)
+def model_promotion_gate(context: AssetExecutionContext) -> dict:
+    """Run walk-forward gate for production alpha models (shadow only)."""
+    from council.walkforward_promotion_gate import SUPPORTED_MODELS, run_model_promotion_gate
+
+    auto_promote = os.getenv("MLCOUNCIL_AUTO_PROMOTE_MODELS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    reports: dict[str, dict] = {}
+    for model in sorted(SUPPORTED_MODELS):
+        report = run_model_promotion_gate(model, dry_run=False)
+        reports[model] = report
+        context.log.info(
+            f"model_promotion_gate [{model}]: status={report.get('status')} "
+            f"passed={report.get('promotion_passed')} "
+            f"eligible={report.get('auto_promote_eligible')}"
+        )
+        if auto_promote and report.get("auto_promote_eligible"):
+            try:
+                from council.walkforward_promotion_gate import promote_model_to_production
+
+                promote_model_to_production(model, force=False)
+                context.log.info(f"model_promotion_gate: auto-promoted {model}")
+            except Exception as exc:
+                context.log.warning(f"model_promotion_gate: auto-promote {model} failed: {exc}")
+
+    return {"models": reports, "auto_promote": auto_promote}
+
+
 cost_calibration_job = dg.define_asset_job(
     name="cost_calibration_job",
     selection=dg.AssetSelection.assets(
@@ -1790,6 +1857,23 @@ cost_calibration_job = dg.define_asset_job(
 def cost_calibration_schedule(context: "dg.ScheduleEvaluationContext"):
     """Nightly recalibration at 23:00 ET after market close + paper trade settlement."""
     return dg.RunRequest(tags={"mlcouncil/job": "cost_calibration"})
+
+
+walkforward_promotion_job = dg.define_asset_job(
+    name="walkforward_promotion_job",
+    selection=dg.AssetSelection.assets(model_promotion_gate),
+    description="Weekly walk-forward champion/challenger gate (alpha models).",
+)
+
+
+@dg.schedule(
+    cron_schedule="0 2 * * 1",
+    execution_timezone="UTC",
+    job=walkforward_promotion_job,
+)
+def walkforward_promotion_schedule(context: "dg.ScheduleEvaluationContext"):
+    """Monday 02:00 UTC — aligns with .github/workflows/walk-forward-ci.yml."""
+    return dg.RunRequest(tags={"mlcouncil/job": "walkforward_promotion"})
 
 
 # ===========================================================================
