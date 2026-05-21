@@ -22,7 +22,8 @@ python run_admin.py                              # FastAPI admin API at :8000
 streamlit run dashboard/app.py                   # Public dashboard at :8501
 dagster dev -f data/pipeline.py                  # Dagster pipeline UI at :3000
 python scripts/run_pipeline.py                   # Standalone demo run
-docker-compose up                                # Full stack (API + Dashboard + Dagster + MLflow)
+docker compose up -d                             # Core stack (API, dashboard, Dagster, MLflow, intraday)
+docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
 ```
 
 ### Tests

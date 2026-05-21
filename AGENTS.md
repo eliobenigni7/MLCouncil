@@ -19,6 +19,10 @@ python -m pytest tests/ -k "test_aggregator"
 python run_admin.py                 # FastAPI :8000
 streamlit run dashboard/app.py      # Dashboard :8501
 dagster dev -f data/pipeline.py     # Pipeline UI :3000
+
+# Docker
+docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
 ```
 
 No lint or typecheck commands configured in this repo.
@@ -178,11 +182,15 @@ export MLCOUNCIL_PORTFOLIO_MODE=diff
 OpenTelemetry tracing is **off by default**. Enable for local/debug runs:
 
 ```bash
-docker compose -f docker-compose.observability.yml up -d   # Grafana :3001, Tempo :3200
+# Host processes → collector on localhost
+docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
 export MLCOUNCIL_OTEL_ENABLED=true
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/v1/traces
-export OTEL_SERVICE_NAME=mlcouncil-dagster
 python scripts/run_pipeline.py --partition 2026-05-20
+
+# All services in compose (default in docker-compose.yml):
+# MLCOUNCIL_OTEL_ENABLED=true
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
 ```
 
 - `observability/tracing.py` — `init_tracing()`, `trace_span()` (no-op when disabled)

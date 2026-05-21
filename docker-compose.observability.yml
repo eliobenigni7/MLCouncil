@@ -1,16 +1,22 @@
-# Observability stack for MLCouncil (Track T1.4).
-# Tempo (traces) + Prometheus (metrics) + Grafana (UI) + OTel Collector (OTLP gateway).
+# Observability stack (T1.4): OTel Collector → Tempo + Prometheus; Grafana dashboards.
 #
-# Usage:
-#   docker compose -f docker-compose.observability.yml up -d
-#   export MLCOUNCIL_OTEL_ENABLED=true
-#   export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/v1/traces
-#   python scripts/run_pipeline.py --partition 2026-05-20
+# Run with core stack on shared network mlcouncil-net:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
+#
+# Or standalone (creates network if core stack not running):
+#   docker compose -f docker-compose.observability.yml --profile observability up -d
+#
+# Then in .env (or compose env):
+#   MLCOUNCIL_OTEL_ENABLED=true
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
 #
 # Grafana: http://localhost:3001 (admin / admin)
 
+name: mlcouncil-observability
+
 services:
   otel-collector:
+    profiles: [observability]
     image: otel/opentelemetry-collector-contrib:0.96.0
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
@@ -19,12 +25,15 @@ services:
       - "127.0.0.1:4317:4317"
       - "127.0.0.1:4318:4318"
       - "127.0.0.1:8889:8889"
+    networks:
+      - mlcouncil
     depends_on:
       tempo:
         condition: service_started
     restart: unless-stopped
 
   tempo:
+    profiles: [observability]
     image: grafana/tempo:2.4.0
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
@@ -32,9 +41,12 @@ services:
       - tempo-data:/var/tempo
     ports:
       - "127.0.0.1:3200:3200"
+    networks:
+      - mlcouncil
     restart: unless-stopped
 
   prometheus:
+    profiles: [observability]
     image: prom/prometheus:v2.49.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -45,27 +57,37 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
+    networks:
+      - mlcouncil
     depends_on:
       - otel-collector
     restart: unless-stopped
 
   grafana:
+    profiles: [observability]
     image: grafana/grafana:10.3.1
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_AUTH_ANONYMOUS_ENABLED=false
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./dashboards/grafana:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    networks:
+      - mlcouncil
     depends_on:
       - tempo
       - prometheus
     restart: unless-stopped
+
+networks:
+  mlcouncil:
+    name: mlcouncil-net
+    driver: bridge
 
 volumes:
   tempo-data:
