@@ -196,8 +196,9 @@ def _try_load_equity_from_disk(mode: str) -> Optional[pd.Series]:
     result_pkl = _RESULTS_DIR / "backtest_result.pkl"
     if result_pkl.exists():
         try:
-            with open(result_pkl, "rb") as f:
-                result = pickle.load(f)
+            from council.pickle_security import trusted_pickle_load
+
+            result = trusted_pickle_load(result_pkl, require_hash=True)
             curve = getattr(result, "equity_curve", None)
             if curve is not None and not curve.empty:
                 return curve
@@ -359,8 +360,9 @@ def _try_load_attribution_from_disk(
     agg_pkl = _RESULTS_DIR / "aggregator.pkl"
     if agg_pkl.exists():
         try:
-            with open(agg_pkl, "rb") as f:
-                agg = pickle.load(f)
+            from council.pickle_security import trusted_pickle_load
+
+            agg = trusted_pickle_load(agg_pkl, require_hash=True)
             # Build multi-date attribution
             dates = sorted(agg._weights_log.keys())
             if start:

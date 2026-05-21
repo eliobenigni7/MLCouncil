@@ -1,4 +1,8 @@
-"""Alpha158 feature computation on Polars DataFrames.
+"""Alpha158-inspired technical feature computation on Polars DataFrames.
+
+The module name references the Qlib Alpha158 family, but the runtime inventory
+is smaller and explicit — see :func:`alpha158_feature_columns` for the exact
+factor list and count (currently ~100 numeric factors plus metadata columns).
 
 All features are shifted(1) so that feature[T] uses only data available
 at the close of T-1.  This prevents any look-ahead bias.
@@ -22,6 +26,10 @@ from __future__ import annotations
 import math
 
 import polars as pl
+
+# Canonical Parkinson variance scale: sigma^2 = E[(ln H/L)^2] / (4 ln 2)
+_PARKINSON_VAR_SCALE = 1.0 / (4.0 * math.log(2.0))
+_METADATA_COLS = frozenset({"ticker", "valid_time", "transaction_time"})
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +176,13 @@ def _volatility_features(df: pl.LazyFrame) -> pl.LazyFrame:
         # Using E[r³]/σ³ approximation via rolling_skew (Polars 1.x)
         ret_s.rolling_skew(20).alias("skew_20d"),
 
-        # Normalised range-based vol (Parkinson)
-        _rolling_mean(
-            (pl.col("high").log(base=math.e) - pl.col("low").log(base=math.e)).shift(1) ** 2,
-            20
+        # Parkinson variance estimator (canonical 1 / (4 ln 2) scaling on ln range^2)
+        (
+            _rolling_mean(
+                (pl.col("high").log(base=math.e) - pl.col("low").log(base=math.e)).shift(1) ** 2,
+                20,
+            )
+            * _PARKINSON_VAR_SCALE
         ).alias("park_vol_20d"),
 
         # Vol ratio: short / long
@@ -341,6 +352,17 @@ def _stable_rank_percentile(raw_rank: pl.Expr, over: str = "valid_time") -> pl.E
 # Public API
 # ---------------------------------------------------------------------------
 
+def alpha158_feature_columns(features_df: pl.DataFrame) -> list[str]:
+    """Return numeric feature column names from a :func:`compute_alpha158` output frame."""
+    raw_cols = {"open", "high", "low", "close", "adj_close", "volume", "transaction_time"}
+    return [c for c in features_df.columns if c not in _METADATA_COLS and c not in raw_cols]
+
+
+def alpha158_feature_count(features_df: pl.DataFrame) -> int:
+    """Return the number of numeric factors in a compute_alpha158 output frame."""
+    return len(alpha158_feature_columns(features_df))
+
+
 def compute_alpha158(
     ohlcv_df: pl.DataFrame,
     macro_df: pl.DataFrame | None = None,
@@ -362,6 +384,8 @@ def compute_alpha158(
     pl.DataFrame
         Features with ticker + valid_time index.
         All features use only data available at T-1 (look-ahead safe).
+        Use :func:`alpha158_feature_count` on the returned frame for the exact
+        runtime factor inventory (typically ~60 numeric columns, not 158).
     """
     # Sort by ticker + date for correct rolling windows
     base = ohlcv_df.sort(["ticker", "valid_time"])

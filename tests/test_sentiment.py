@@ -256,6 +256,27 @@ def test_clean_headline_truncates_to_512():
     assert len(clean_headline(long_text)) <= 512
 
 
+def test_aggregate_scored_headlines_source_weight_not_equal():
+    """Reuters and unknown sources must not contribute equally when metadata exists."""
+    model = _make_model(decay=1.0)
+    today = date(2024, 3, 1)
+    ticker_news = {
+        "AAPL": [
+            ("bullish headline", today, assign_source_weight("Reuters")),
+            ("bearish headline", today, assign_source_weight("Random Blog")),
+        ],
+    }
+    scores = {"bullish headline": 1.0, "bearish headline": -1.0}
+    agg, meta = model.aggregate_scored_headlines(ticker_news, scores)
+
+    unweighted_mean = 0.0
+    weighted_score = (1.0 * 1.0 + (-1.0) * 0.5) / (1.0 + 0.5)
+    assert agg["AAPL"] == pytest.approx(weighted_score, rel=1e-6)
+    assert agg["AAPL"] != pytest.approx(unweighted_mean, abs=1e-6)
+    assert meta["headline_count"] == 2
+    assert meta["fallback_count"] == 1
+
+
 def test_assign_source_weight_tiers():
     assert assign_source_weight("Reuters") == 1.0
     assert assign_source_weight("Bloomberg") == 1.0

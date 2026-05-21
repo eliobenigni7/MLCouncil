@@ -274,19 +274,21 @@ class CouncilAggregator:
             total = sum(raw.values()) or 1.0
             weights = {m: v / total for m, v in raw.items()}
 
+        weight_sum_before_ortho = sum(weights.values())
+        ortho_applied = False
         if self._ortho_monitor and self._ortho_monitor.auto_downweight:
             penalties = self._ortho_monitor.compute_orthogonality_penalty(
                 active_models, weights, date
             )
             for m in weights:
                 weights[m] *= penalties.get(m, 1.0)
-            # Do NOT re-normalise here: doing so negates the penalty entirely
-            # (penalised models' share is redistributed back to the others).
-            # The combined signal is z-scored downstream, so the absolute sum
-            # does not affect scale. We only cap at max_weight to prevent a
-            # single un-penalised model from dominating.
+            ortho_applied = True
+            # Confidence shrinkage: do NOT re-normalise after orthogonality.
+            # Effective weights may sum to < 1.0; combined signal is z-scored
+            # downstream so scale is preserved while penalised models contribute less.
             for m in weights:
                 weights[m] = min(weights[m], self._max_weight)
+        effective_weight_sum = sum(weights.values())
 
         all_tickers: set[str] = set()
         for m in active_models:
@@ -308,6 +310,9 @@ class CouncilAggregator:
             "weights": weights.copy(),
             "regime": regime,
             "contributions": contributions,
+            "weight_sum": effective_weight_sum,
+            "weight_sum_before_ortho": weight_sum_before_ortho,
+            "orthogonality_shrinkage": ortho_applied,
         }
 
         if self._ortho_monitor:
@@ -317,7 +322,7 @@ class CouncilAggregator:
             self._weights_log[date]["orthogonality"] = ortho_report
 
         logger.debug(
-            f"[{date}] regime={regime} weights={weights} "
+            f"[{date}] regime={regime} weights={weights} weight_sum={effective_weight_sum:.4f} "
             f"n_tickers={len(tickers)} active_models={active_models}"
         )
 
@@ -414,10 +419,21 @@ class CouncilAggregator:
                 "pnl_contribution": contributions.get(model_name, np.nan),
             })
 
-        return pd.DataFrame(
-            rows,
-            columns=["model_name", "weight", "ic_rolling_30d", "sharpe_rolling_60d", "pnl_contribution"],
-        )
+        weight_sum = log.get("weight_sum", np.nan)
+        if rows and not np.isnan(weight_sum):
+            for row in rows:
+                row["effective_weight_sum"] = weight_sum
+
+        columns = [
+            "model_name",
+            "weight",
+            "ic_rolling_30d",
+            "sharpe_rolling_60d",
+            "pnl_contribution",
+        ]
+        if rows and "effective_weight_sum" in rows[0]:
+            columns.append("effective_weight_sum")
+        return pd.DataFrame(rows, columns=columns)
 
     def get_orthogonality_status(self, date: Optional[date] = None) -> dict:
         if not self._ortho_monitor:
@@ -530,20 +546,22 @@ class CouncilAggregator:
         Saves all internal state needed to reconstruct the aggregator exactly:
         base weights config, IC history, weights log, and orthogonality monitor.
         """
+        from council.pickle_security import write_pickle_hash_sidecar
+
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump(self.__dict__, f, protocol=pickle.HIGHEST_PROTOCOL)
+        write_pickle_hash_sidecar(path)
         logger.info(f"CouncilAggregator saved to {path}")
 
     @classmethod
-    def load(cls, path: str | Path) -> "CouncilAggregator":
+    def load(cls, path: str | Path, *, require_hash: bool = True) -> "CouncilAggregator":
         """Reconstruct a CouncilAggregator from a pickled state file."""
+        from council.pickle_security import trusted_pickle_load
+
         path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"Aggregator state not found: {path}")
-        with open(path, "rb") as f:
-            state = pickle.load(f)
+        state = trusted_pickle_load(path, require_hash=require_hash)
         instance = cls.__new__(cls)
         instance.__dict__.update(state)
         logger.info(f"CouncilAggregator loaded from {path}")

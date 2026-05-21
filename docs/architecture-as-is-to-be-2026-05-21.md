@@ -42,17 +42,17 @@ Operationally, the daily path is:
 
 | ID | Area | Current mismatch | Severity | Target decision |
 |---|---|---|---|---|
-| M1 | Feature naming | `Alpha158` branding suggests a fuller Qlib-style feature set than the actual inventory. | Low | Either document the exact inventory or rename the feature family to a neutral internal name. |
+| M1 | Feature naming | `Alpha158` branding suggests a fuller Qlib-style feature set than the actual inventory. | Low | **Resolved (2026-05-21):** module documents Alpha158-inspired inventory; use `alpha158_feature_count()` for exact runtime factor count (~60, not 158). |
 | M2 | Portfolio/risk docs | README risk constraints drift from code values such as `max_vol_ann=0.30`, dynamic sector cap around `0.35`, beta neutrality, and cash reserve behavior. | High | Make config the source of truth and regenerate docs from actual values where practical. |
 | M3 | Universe docs | README still describes a smaller 19-equity universe, while `config/universe.yaml` now has a broader equity set plus BTCUSD/ETHUSD. | High | Document the real universe and the bucketed config contract. |
-| M4 | Parkinson volatility | The feature uses mean squared log high/low range without the canonical `1 / (4 ln 2)` scale factor. | Medium | Add the scaling factor if the value is treated as variance; otherwise document it as monotonic range-vol feature. |
+| M4 | Parkinson volatility | The feature uses mean squared log high/low range without the canonical `1 / (4 ln 2)` scale factor. | Medium | **Resolved (2026-05-21):** `park_vol_20d` applies canonical Parkinson variance scaling `1/(4 ln 2)`. |
 | M5 | Council IR naming | Docs/docstrings say rolling 100-day IR; implementation uses EWM IC-Sharpe with halflife up to 20 over recent history. | Medium | Rename docs and internal comments to "EWM IC-Sharpe". |
-| M6 | Orthogonality penalty | Council weights are intentionally not renormalized after orthogonality downweighting, then the combined signal is z-scored. | Medium | Decide whether to preserve "confidence shrinkage" semantics or project back to simplex. Make it explicit. |
-| M7 | Sentiment source weighting | Source credibility weighting exists conceptually, but the daily `sentiment_features` path averages headline scores per ticker. | Medium | Apply source/recency weighting in the operational path and measure IC delta. |
+| M6 | Orthogonality penalty | Council weights are intentionally not renormalized after orthogonality downweighting, then the combined signal is z-scored. | Medium | **Resolved (2026-05-21):** option 1 confidence shrinkage — `weight_sum` may be &lt; 1; exposed in `_weights_log` and attribution as `effective_weight_sum`. |
+| M7 | Sentiment source weighting | Source credibility weighting exists conceptually, but the daily `sentiment_features` path averages headline scores per ticker. | Medium | **Resolved (2026-05-21):** daily `sentiment_features` uses `SentimentModel.aggregate_scored_headlines()` with source/recency weights. |
 | M8 | Target engineering | Daily docs imply target engineering in inference, but targets belong to training/backtesting. | Low | Separate daily inference diagrams from offline training diagrams. |
-| M9 | Transaction cost model | Almgren-Chriss wording overstates a static lookup/heuristic cost model. | High | Rename honestly now; later add realized-slippage feedback calibration. |
+| M9 | Transaction cost model | Almgren-Chriss wording overstates a static lookup/heuristic cost model. | High | **Resolved (2026-05-21):** docs describe heuristic bps model; ADR `docs/adr/2026-05-21-self-calibrating-cost-model.md` designs realized-fill calibration. |
 | M10 | Monte Carlo VaR | Current Monte Carlo VaR simulates a univariate Gaussian portfolio distribution, not multivariate asset paths. | High | Implement multivariate Monte Carlo with covariance shrinkage and stress replay. |
-| M11 | Pickle artifact security | Pickle is still used and hash sidecars are not enforced everywhere as mandatory before loading. | High | Fail closed on missing/mismatched hash for trusted pickle paths, then migrate critical artifacts to safer formats. |
+| M11 | Pickle artifact security | Pickle is still used and hash sidecars are not enforced everywhere as mandatory before loading. | High | **Resolved (2026-05-21):** `council/pickle_security.trusted_pickle_load()` fails closed without `.hash` on critical paths. |
 
 ## TO BE Concept
 

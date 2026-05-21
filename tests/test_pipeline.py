@@ -100,6 +100,14 @@ def test_load_universe_flattens_bucketed_config():
     assert len(tickers) == len(set(tickers))
 
 
+def test_safe_pickle_load_rejects_missing_hash_sidecar(tmp_path):
+    checkpoint = tmp_path / "hmm_latest.pkl"
+    checkpoint.write_bytes(pickle.dumps({"ok": True}))
+
+    with pytest.raises(ValueError, match="Missing hash sidecar"):
+        _pipeline._safe_pickle_load(checkpoint)
+
+
 def test_safe_pickle_load_rejects_tampered_checkpoint(tmp_path):
     checkpoint = tmp_path / "hmm_latest.pkl"
     checkpoint.write_bytes(pickle.dumps({"ok": True}))
@@ -107,6 +115,16 @@ def test_safe_pickle_load_rejects_tampered_checkpoint(tmp_path):
 
     with pytest.raises(ValueError, match="Checkpoint hash mismatch"):
         _pipeline._safe_pickle_load(checkpoint)
+
+
+def test_safe_pickle_load_accepts_valid_hash_sidecar(tmp_path):
+    checkpoint = tmp_path / "hmm_latest.pkl"
+    checkpoint.write_bytes(pickle.dumps({"ok": True}))
+    digest = __import__("hashlib").sha256(checkpoint.read_bytes()).hexdigest()
+    (tmp_path / "hmm_latest.pkl.hash").write_text(digest, encoding="utf-8")
+
+    loaded = _pipeline._safe_pickle_load(checkpoint)
+    assert loaded == {"ok": True}
 
 
 def test_save_regime_results_uses_safe_pickle_loader_for_both_sites(monkeypatch, tmp_path):

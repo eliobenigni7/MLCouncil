@@ -74,23 +74,10 @@ _RETRY            = dg.RetryPolicy(max_retries=2, delay=30)
 
 
 def _safe_pickle_load(path: Path):
-    """Load a pickle checkpoint only after verifying its SHA256 hash sidecar.
+    """Carica un checkpoint pickle solo con sidecar SHA-256 obbligatorio."""
+    from council.pickle_security import trusted_pickle_load
 
-    Raises ValueError if a .hash sidecar exists and the digest does not match,
-    preventing execution of tampered checkpoint files.
-    """
-    hash_path = path.with_suffix(path.suffix + ".hash")
-    if hash_path.exists():
-        expected = hash_path.read_text().strip()
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != expected:
-            raise ValueError(
-                f"Checkpoint hash mismatch for {path}: "
-                f"expected {expected}, got {actual}. "
-                "File may be corrupted or tampered with."
-            )
-    with open(path, "rb") as fh:
-        return pickle.load(fh)
+    return trusted_pickle_load(path, require_hash=True)
 
 
 def _load_universe(include_crypto: bool = True) -> list[str]:
@@ -551,9 +538,11 @@ def sentiment_features(
     today = date_type.fromisoformat(partition_date)
 
     _empty = pl.DataFrame({
-        "ticker":          pl.Series([], dtype=pl.Utf8),
-        "valid_time":      pl.Series([], dtype=pl.Date),
-        "sentiment_score": pl.Series([], dtype=pl.Float64),
+        "ticker":                  pl.Series([], dtype=pl.Utf8),
+        "valid_time":              pl.Series([], dtype=pl.Date),
+        "sentiment_score":         pl.Series([], dtype=pl.Float64),
+        "sentiment_headline_count": pl.Series([], dtype=pl.Int64),
+        "sentiment_fallback_count": pl.Series([], dtype=pl.Int64),
     })
 
     news_path = _DATA_DIR / "raw" / "news" / f"{partition_date}.parquet"
@@ -568,7 +557,6 @@ def sentiment_features(
 
     try:
         from models.sentiment import SentimentModel
-        from data.ingest.news_processor import clean_headline
     except ImportError as exc:
         context.log.warning(
             f"sentiment_features [{partition_date}]: "
@@ -576,38 +564,45 @@ def sentiment_features(
         )
         tickers = raw_news["ticker"].unique().to_list()
         fallback = pl.DataFrame({
-            "ticker":          tickers,
-            "valid_time":      [today] * len(tickers),
-            "sentiment_score": [0.0] * len(tickers),
+            "ticker":                  tickers,
+            "valid_time":              [today] * len(tickers),
+            "sentiment_score":         [0.0] * len(tickers),
+            "sentiment_headline_count": [0] * len(tickers),
+            "sentiment_fallback_count": [0] * len(tickers),
         })
         _record_asset_metadata(context, "sentiment_features", fallback, partition_date)
         return fallback
 
-    news_pd = raw_news.to_pandas()
-    news_pd["clean_title"] = news_pd["title"].apply(clean_headline)
     model = SentimentModel()
+    date_col = "valid_time" if "valid_time" in raw_news.columns else "date"
+    ticker_news = model._build_ticker_news(raw_news, date_col)
 
-    # Batch all headlines across tickers into a single forward pass so that
-    # the transformer's cache and GPU batching are used efficiently.
-    all_headlines: list[str] = news_pd["clean_title"].tolist()
-    all_tickers:   list[str] = news_pd["ticker"].tolist()
+    all_headlines = [
+        item[0]
+        for items in ticker_news.values()
+        for item in items
+        if item[0]
+    ]
     try:
-        all_scores = model.score_headlines(all_headlines)
+        scored = model.score_headlines(all_headlines)
+        headline_scores = dict(zip(all_headlines, scored))
     except Exception:
-        all_scores = [0.0] * len(all_headlines)
+        headline_scores = {h: 0.0 for h in all_headlines}
 
-    # Aggregate per-ticker: simple mean of headline scores.
-    from collections import defaultdict
-    ticker_scores: dict[str, list[float]] = defaultdict(list)
-    for ticker, score in zip(all_tickers, all_scores):
-        ticker_scores[ticker].append(score)
+    ticker_scores, agg_meta = model.aggregate_scored_headlines(
+        ticker_news, headline_scores
+    )
 
     records: list[dict] = []
-    for ticker, scores in ticker_scores.items():
+    for ticker, score in ticker_scores.items():
+        n_headlines = len(ticker_news.get(ticker, []))
+        n_fallback = sum(1 for _, _, sw in ticker_news.get(ticker, []) if sw == 0.5)
         records.append({
-            "ticker":          ticker,
-            "valid_time":      today,
-            "sentiment_score": float(sum(scores) / len(scores)) if scores else 0.0,
+            "ticker":                  ticker,
+            "valid_time":              today,
+            "sentiment_score":         float(score),
+            "sentiment_headline_count": n_headlines,
+            "sentiment_fallback_count": n_fallback,
         })
 
     if not records:
@@ -617,7 +612,9 @@ def sentiment_features(
     df = pl.DataFrame(records)
     context.log.info(
         f"sentiment_features [{partition_date}]: "
-        f"{len(records)} ticker con sentiment"
+        f"{len(records)} ticker con sentiment | "
+        f"headlines={agg_meta.get('headline_count', 0)} "
+        f"fallback_sources={agg_meta.get('fallback_count', 0)}"
     )
     _record_asset_metadata(context, "sentiment_features", df, partition_date)
     return df
@@ -1107,20 +1104,26 @@ def save_council_results(
                     if len(recent_60) >= 2
                     else float("nan")
                 )
-                attr_rows.append({
+                row = {
                     "date": pd.Timestamp(log_date),
                     "model_name": model_name,
                     "weight": weights_used.get(model_name, float("nan")),
                     "ic_rolling_30d": ic_30d,
                     "sharpe_rolling_60d": sharpe_60d,
                     "pnl_contribution": contributions.get(model_name, float("nan")),
-                })
+                }
+                if "weight_sum" in log_entry:
+                    row["effective_weight_sum"] = log_entry.get("weight_sum")
+                attr_rows.append(row)
 
         if attr_rows:
-            attr_df = pd.DataFrame(attr_rows, columns=[
+            attr_columns = [
                 "date", "model_name", "weight",
                 "ic_rolling_30d", "sharpe_rolling_60d", "pnl_contribution",
-            ])
+            ]
+            if attr_rows and "effective_weight_sum" in attr_rows[0]:
+                attr_columns.append("effective_weight_sum")
+            attr_df = pd.DataFrame(attr_rows, columns=attr_columns)
             attr_df.to_parquet(_RESULTS_DIR / "attribution.parquet", index=False)
             write_artifact_manifest(
                 _RESULTS_DIR / "attribution.parquet",

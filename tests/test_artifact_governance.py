@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _clear_runtime_env(monkeypatch):
     try:
@@ -316,6 +318,29 @@ def test_write_artifact_manifest_raises_when_artifact_missing(tmp_path):
         assert False, "expected FileNotFoundError"
     except FileNotFoundError:
         pass
+
+
+def test_trusted_pickle_load_requires_hash_sidecar(tmp_path):
+    from council.pickle_security import PickleHashPolicyError, trusted_pickle_load
+    import pickle
+
+    artifact = tmp_path / "model.pkl"
+    artifact.write_bytes(pickle.dumps({"state": 1}))
+
+    with pytest.raises(PickleHashPolicyError, match="Missing hash sidecar"):
+        trusted_pickle_load(artifact, require_hash=True)
+
+
+def test_trusted_pickle_load_accepts_matching_sidecar(tmp_path):
+    from council.pickle_security import trusted_pickle_load, write_pickle_hash_sidecar
+    import pickle
+
+    artifact = tmp_path / "model.pkl"
+    artifact.write_bytes(pickle.dumps({"state": 42}))
+    write_pickle_hash_sidecar(artifact)
+
+    loaded = trusted_pickle_load(artifact, require_hash=True)
+    assert loaded == {"state": 42}
 
 
 def test_manifest_sidecar_suffix_is_stable():

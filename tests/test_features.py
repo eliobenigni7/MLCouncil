@@ -13,7 +13,7 @@ Coverage
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -133,6 +133,44 @@ def targets_df(ohlcv_df):
 # ---------------------------------------------------------------------------
 
 class TestAlpha158:
+    def test_parkinson_volatility_canonical_scaling(self):
+        """park_vol_20d uses the canonical 1/(4 ln 2) Parkinson variance scale."""
+        import math
+        from data.features.alpha158 import compute_alpha158
+
+        rows = []
+        for i in range(30):
+            rows.append(
+                {
+                    "ticker": "TEST",
+                    "valid_time": date(2024, 1, 2) + timedelta(days=i),
+                    "transaction_time": datetime(2024, 1, 2 + i),
+                    "open": 100.0,
+                    "high": 110.0,
+                    "low": 100.0,
+                    "close": 105.0,
+                    "adj_close": 105.0,
+                    "volume": 1_000_000,
+                }
+            )
+        ohlcv = pl.DataFrame(rows).with_columns(pl.col("valid_time").cast(pl.Date))
+        feats = compute_alpha158(ohlcv, macro_df=None)
+        last = feats.filter(pl.col("park_vol_20d").is_not_null()).tail(1)
+        assert not last.is_empty()
+
+        log_hl_sq = math.log(110.0 / 100.0) ** 2
+        expected = log_hl_sq / (4.0 * math.log(2.0))
+        actual = float(last["park_vol_20d"][0])
+        assert actual == pytest.approx(expected, rel=1e-6)
+
+    def test_alpha158_feature_inventory_count(self, features_df):
+        from data.features.alpha158 import alpha158_feature_count
+
+        n_features = alpha158_feature_count(features_df)
+        assert 50 <= n_features <= 80, (
+            f"Expected ~60 Alpha158-inspired factors, got {n_features}"
+        )
+
     def test_output_is_dataframe(self, features_df):
         assert isinstance(features_df, pl.DataFrame)
         assert not features_df.is_empty()

@@ -100,16 +100,9 @@ class BaseModel(ABC):
         if not path.exists():
             raise FileNotFoundError(f"Model file not found: {path}")
 
-        hash_path = path.with_suffix(path.suffix + ".hash")
-        if hash_path.exists():
-            expected_hash = hash_path.read_text().strip()
-            actual_hash = self._compute_file_hash(path)
-            if actual_hash != expected_hash:
-                raise ValueError(
-                    f"Model hash mismatch for {path}. "
-                    f"Expected {expected_hash}, got {actual_hash}. "
-                    "Model may be corrupted."
-                )
+        from council.pickle_security import verify_pickle_hash_sidecar
+
+        verify_pickle_hash_sidecar(path)
 
         loaded = joblib.load(path)
         self.__dict__.update(loaded.__dict__)

@@ -267,25 +267,11 @@ class RegimeModel:
         digest = hashlib.sha256(p.read_bytes()).hexdigest()
         p.with_suffix(p.suffix + ".hash").write_text(digest)
 
-    def load(self, path: str) -> None:
-        """Load from pickle file with SHA-256 hash verification.
+    def load(self, path: str, *, require_hash: bool = True) -> None:
+        """Load from pickle file with mandatory SHA-256 hash sidecar by default."""
+        from council.pickle_security import trusted_pickle_load
 
-        Raises ``ValueError`` when a ``.hash`` sidecar exists and the
-        digest does not match, preventing execution of tampered files.
-        """
-        p = Path(path)
-        hash_path = p.with_suffix(p.suffix + ".hash")
-        if hash_path.exists():
-            expected = hash_path.read_text().strip()
-            actual = hashlib.sha256(p.read_bytes()).hexdigest()
-            if actual != expected:
-                raise ValueError(
-                    f"Checkpoint hash mismatch for {p}: "
-                    f"expected {expected}, got {actual}. "
-                    "File may be corrupted or tampered with."
-                )
-        with open(p, "rb") as f:
-            saved = pickle.load(f)
+        saved = trusted_pickle_load(path, require_hash=require_hash)
         self.__dict__.update(saved.__dict__)
 
     def get_metadata(self) -> dict:

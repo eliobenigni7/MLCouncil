@@ -88,19 +88,46 @@ def constructor():
 # ---------------------------------------------------------------------------
 
 class TestCouncilAggregator:
-    def test_weights_sum_to_one(self, aggregator):
-        """Aggregated model weights must sum to 1.0 for every regime."""
+    def test_weights_sum_to_one_without_orthogonality(self):
+        """Base/adaptive weights sum to 1.0 when orthogonality shrinkage is disabled."""
+        from council.aggregator import CouncilAggregator
+
+        agg = CouncilAggregator(use_orthogonality=False)
         signals = _make_signals()
         base_date = date(2024, 1, 15)
 
         for i, regime in enumerate(("bull", "bear", "transition")):
             d = base_date + timedelta(days=i)
-            aggregator.aggregate(signals, regime, date=d)
-            weights = aggregator._weights_log[d]["weights"]
+            agg.aggregate(signals, regime, date=d)
+            weights = agg._weights_log[d]["weights"]
             total = sum(weights.values())
             assert abs(total - 1.0) < 1e-9, (
                 f"regime={regime}: weights sum to {total:.9f}, expected 1.0"
             )
+
+    def test_orthogonality_confidence_shrinkage_exposes_weight_sum(self):
+        """Orthogonality penalty intentionally leaves effective weights summing below 1."""
+        from council.aggregator import CouncilAggregator
+
+        agg = CouncilAggregator(use_orthogonality=True)
+        signals = _make_signals(tickers=["AAPL", "MSFT", "GOOGL"], seed=7)
+        result_date = date(2024, 3, 10)
+        penalties = {"lgbm": 1.0, "sentiment": 0.5}
+
+        with patch.object(
+            agg._ortho_monitor,
+            "compute_orthogonality_penalty",
+            return_value=penalties,
+        ):
+            agg.aggregate(signals, "bull", date=result_date)
+
+        log = agg._weights_log[result_date]
+        assert log.get("orthogonality_shrinkage") is True
+        assert log["weight_sum"] < 1.0 - 1e-6
+        assert log["weight_sum_before_ortho"] == pytest.approx(1.0, abs=1e-6)
+        attr = agg.get_attribution(result_date)
+        assert "effective_weight_sum" in attr.columns
+        assert attr["effective_weight_sum"].iloc[0] == pytest.approx(log["weight_sum"])
 
     def test_regime_shift_changes_weights(self, aggregator):
         """Bull and bear regimes must produce different weight compositions."""

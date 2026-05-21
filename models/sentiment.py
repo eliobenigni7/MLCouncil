@@ -430,6 +430,65 @@ class SentimentModel(BaseModel):
 
         return result
 
+    def aggregate_scored_headlines(
+        self,
+        ticker_news: dict[str, list[tuple[str, date, float]]],
+        headline_scores: dict[str, float],
+    ) -> tuple[dict[str, float], dict[str, int]]:
+        """Aggregate pre-scored headlines with recency and source weighting.
+
+        Parameters
+        ----------
+        ticker_news:
+            ``{ticker: [(headline, pub_date, source_weight), ...]}``
+        headline_scores:
+            Mapping from cleaned headline text to FinBERT score.
+
+        Returns
+        -------
+        (ticker_scores, metadata) where metadata contains
+        ``headline_count`` and ``fallback_count`` (rows with default source weight).
+        """
+        result: dict[str, float] = {}
+        headline_count = 0
+        fallback_count = 0
+
+        for ticker, news_list in ticker_news.items():
+            if not news_list:
+                continue
+
+            dates = [item[1] for item in news_list if item[1] is not None]
+            ref = max(dates, key=_to_date) if dates else None
+
+            ws = tw = 0.0
+            for headline, pub_date, sw in news_list:
+                headline_count += 1
+                if sw == 0.5:
+                    fallback_count += 1
+                score = headline_scores.get(headline)
+                if score is None:
+                    continue
+
+                if ref is not None and pub_date is not None:
+                    try:
+                        days = max(0, (_to_date(ref) - _to_date(pub_date)).days)
+                    except Exception:
+                        days = 0
+                else:
+                    days = 0
+
+                w = (self._decay ** days) * sw
+                ws += score * w
+                tw += w
+
+            if tw > 0:
+                result[ticker] = ws / tw
+
+        return result, {
+            "headline_count": headline_count,
+            "fallback_count": fallback_count,
+        }
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

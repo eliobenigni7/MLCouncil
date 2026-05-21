@@ -80,7 +80,7 @@ Feature versioning is tracked for point-in-time correctness, with historical ret
 
 **File:** `models/technical.py`
 
-The technical model uses a point-in-time OHLCV/macro feature set inspired by the Qlib Alpha158 family, computed via Polars and deliberately shifted 1 day to eliminate lookahead bias. The exact feature inventory is defined by `data/features/alpha158.py`; do not assume the name means the runtime output always contains exactly 158 factors.
+The technical model uses a point-in-time OHLCV/macro feature set inspired by the Qlib Alpha158 family, computed via Polars and deliberately shifted 1 day to eliminate lookahead bias. The exact runtime inventory is defined by `data/features/alpha158.py` (~60 numeric factors via `alpha158_feature_count()`); do not assume the name means exactly 158 factors. `park_vol_20d` uses the canonical Parkinson variance scale `1/(4 ln 2)`.
 
 **Training protocol:**
 - Combinatorial Purged Cross-Validation (CPCV): dates split into 6 folds, all C(6,2) = 15 (train, test) combinations generated
@@ -277,7 +277,7 @@ Candidates are rejected if gross/net metrics diverge implausibly from the estima
 
 ### Adaptive Weight Stability
 
-The council's adaptive reweighting requires at least 30 days of IC history before it activates. The implementation computes an EWM IC-Sharpe over recent observations with halflife up to 20 days and a configured history window. No model weight falls below 5% or exceeds 70% after performance reweighting; orthogonality downweighting may then reduce effective weight mass by design.
+The council's adaptive reweighting requires at least 30 days of IC history before it activates. The implementation computes an EWM IC-Sharpe over recent observations with halflife up to 20 days and a configured history window. No model weight falls below 5% or exceeds 70% after performance reweighting. Orthogonality downweighting uses confidence shrinkage: effective model weights are not renormalized afterward, so `weight_sum` may be below 1.0 by design; the combined signal is z-scored downstream. Attribution exports `effective_weight_sum` when shrinkage applies.
 
 ### What to Expect in Paper Trading
 

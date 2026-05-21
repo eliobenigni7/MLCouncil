@@ -30,16 +30,11 @@ def get_default_slippage_bps() -> float:
 
 
 def estimate_slippage_bps(ticker: str, dollar_volume: float | None = None) -> float:
-    """Estimate slippage in basis points based on asset liquidity.
-    
-    Uses the Almgren-Chriss square-root model:
-    slippage = sigma * sqrt(Q/V) * market_impact_coefficient
-    
-    Simplified for daily rebalancing:
-    - Mega-cap (AAPL, MSFT, GOOGL, AMZN, META, NVDA): 2-3 bps
-    - Large-cap (JPM, V, TSLA, UBER, PLTR, CRWD, DDOG, SHOP): 4-6 bps
-    - Mid-cap (ETSY, FVRR, ROKU, DOCU, ABNB, NET, SQ): 8-15 bps
-    - Crypto (BTCUSD, ETHUSD): 1-3 bps (24/7 high liquidity)
+    """Estimate slippage in basis points from a static per-ticker liquidity table.
+
+    This is a configurable heuristic lookup, not a calibrated Almgren-Chriss
+    optimal-execution solver. An optional volume multiplier nudges illiquid names
+    higher when ``dollar_volume`` is provided.
     """
     ILLIQUIDITY_MAP = {
         # Mega-cap — tight spreads ($50B+ market cap, >$5B daily volume)
