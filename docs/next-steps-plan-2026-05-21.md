@@ -1,5 +1,11 @@
 # MLCouncil — Piano Operativo Post-AS-IS/TO-BE (2026-05-21)
 
+> **Aggiornamento 2026-05-21:** Fasi 0-3 **completate** sul branch
+> `claude/codebase-algorithm-analysis-JmoBp`. Drift register 11/11 ✅, fill
+> telemetry attiva (FillRecord parquet + OMS hook + backfill script), motore
+> di calibrazione costi pronto con manifest SHA-256 e asset Dagster notturno
+> registrato. Le Fasi 4-7 restano da eseguire (vedi marcatori "STATUS" inline).
+
 ## Executive summary
 
 Questo piano nasce **dopo** l'ispezione AS-IS / TO-BE prodotta in `docs/codebase_analysis.md` ed è riconciliato con lo stato attuale di `origin/master` (HEAD `21b63af`). Il team ha già chiuso 8 degli 11 mismatch del drift register (`docs/architecture-as-is-to-be-2026-05-21.md`) e ha selezionato come **prima traccia avanzata** il *Self-Calibrating Cost Model* (ADR `docs/adr/2026-05-21-self-calibrating-cost-model.md`).
@@ -10,18 +16,18 @@ Le 7 fasi qui sotto sono progettate per essere eseguite **in sequenza da un agen
 
 ## Stato di partenza (riferimento, 2026-05-21)
 
-### Drift register — stato
+### Drift register — stato (aggiornato 2026-05-21 dopo Fase 1)
 
-| ID | Item | Stato master |
+| ID | Item | Stato |
 |---|---|---|
 | M1 | Alpha158 naming → "Alpha158-inspired" | ✅ Risolto (21b63af) |
-| M2 | Portfolio/risk docs vs config | ⚠️ Parzialmente risolto |
-| M3 | Universe docs (54 ticker + crypto) | ⚠️ Da verificare end-to-end |
+| M2 | Portfolio/risk docs vs config | ✅ Risolto (Fase 1.2 — `scripts/generate_risk_doc.py`) |
+| M3 | Universe docs (26+6+2 bucket structure) | ✅ Risolto (Fase 1.3) |
 | M4 | Parkinson `1/(4 ln 2)` canonical | ✅ Risolto (21b63af) |
-| M5 | EWM IC-Sharpe (no "rolling 100-day IR") | ⚠️ Parziale — README ok, aggregator docstring linea 7 ancora vecchia |
+| M5 | EWM IC-Sharpe (no "rolling 100-day IR") | ✅ Risolto (Fase 1.1) |
 | M6 | Orthogonality confidence shrinkage | ✅ Risolto (21b63af) |
 | M7 | Sentiment source weighting nel daily | ✅ Risolto (21b63af) |
-| M8 | Target engineering separato da inference | ❌ Da fare |
+| M8 | Target engineering separato da inference | ✅ Risolto (Fase 1.4 — `docs/data-flow-daily-vs-training.md`) |
 | M9 | Cost model "heuristic" non Almgren-Chriss | ✅ Risolto (21b63af) |
 | M10 | Multivariate MC VaR | ✅ Risolto (12276e8) |
 | M11 | Pickle hash sidecar (`trusted_pickle_load`) | ✅ Risolto (21b63af) |
@@ -39,23 +45,21 @@ Le 7 fasi qui sotto sono progettate per essere eseguite **in sequenza da un agen
 
 ---
 
-## Fase 0 — Sync del branch di lavoro con master
+## Fase 0 — Sync del branch di lavoro con master  ✅ COMPLETATA
 
 **Obiettivo:** allineare il branch `claude/codebase-algorithm-analysis-JmoBp` con `origin/master` per evitare conflitti quando si toccano file modificati di recente (aggregator, alpha158, pipeline, dashboard).
 
-**Pre-requisiti:** working tree pulito.
-
-**Step:**
-1. `git fetch origin master`
-2. `git rebase origin/master` sul branch corrente. Risolvere conflitti su `docs/` se il PDF è coinvolto (preferire `--ours` per i file `codebase_analysis.{md,pdf}` aggiunti dal mio branch).
-3. Verificare: `python -m pytest tests/test_council.py tests/test_features.py tests/test_artifact_governance.py -v`
-4. `git push --force-with-lease origin claude/codebase-algorithm-analysis-JmoBp`
-
-**Done quando:** `git log origin/master..HEAD --oneline` mostra solo il commit di docs analysis e tutti i test sopra passano.
+**Esito:** rebase pulito su `origin/master` (HEAD `21b63af`); 64 test target (test_council/test_features/test_artifact_governance) verdi; force-push completato.
 
 ---
 
-## Fase 1 — Chiusura drift residui (M2, M3, M5, M8)
+## Fase 1 — Chiusura drift residui (M2, M3, M5, M8)  ✅ COMPLETATA
+
+**Esito:**
+- M5 residue: docstring `council/aggregator.py:7` aggiornato a EWM IC-Sharpe (commit `e130367`).
+- M2: nuovo `scripts/generate_risk_doc.py` che rigenera il blocco `<!-- BEGIN risk-table -->` da `PortfolioConstructor` live (commit `dbaf2e5`).
+- M3: sezione "Asset Universe" del README rifatta con la struttura 26+6+2 e distinzione research vs trading universe (commit `fb243e3`).
+- M8: nuovo `docs/data-flow-daily-vs-training.md` con due diagrammi Mermaid che separano daily inference dal training (commit `70f0f59`).
 
 **Obiettivo:** completare l'allineamento doc/config/code prima di iniziare ogni lavoro avanzato.
 
@@ -115,7 +119,13 @@ Documentare: 54 ticker su 11 settori + BTCUSD/ETHUSD (crypto bucket separato), d
 
 ---
 
-## Fase 2 — Telemetria fill: prerequisito per cost calibration
+## Fase 2 — Telemetria fill: prerequisito per cost calibration  ✅ COMPLETATA
+
+**Esito:**
+- `execution/fill_log.py` nuovo: `FillRecord` dataclass + `append_fill/append_fills/read_fills` con parquet mensile atomico (commit `6b3599c`).
+- `execution/oms.py` esteso: `Order.decision_price` + hook `_append_fill_record` best-effort in `add_fill`; fix di bug pre-esistente in `_save_fill` (JSON serialization); 4 nuovi test di integrazione (commit `b0ad587`).
+- `scripts/backfill_fill_log.py` per importare `data/paper_trades/*.json` storici; idempotente e cross-month-safe; 7 nuovi test (commit `037ff77`).
+- Test suite: 24 nuovi test (`test_fill_log.py`, `test_oms_fill_log.py`, `test_backfill_fill_log.py`), tutti verdi.
 
 **Obiettivo:** raccogliere fill normalizzati in formato strutturato per alimentare la calibrazione di Fase 3.
 
@@ -165,7 +175,12 @@ python -m pytest tests/test_oms.py tests/test_alpaca_adapter.py -v
 
 ---
 
-## Fase 3 — Calibration engine (ADR-0003 Stage B core)
+## Fase 3 — Calibration engine (ADR-0003 Stage B core)  ✅ COMPLETATA
+
+**Esito:**
+- `council/cost_calibration.py` nuovo: `CalibrationArtifact` dataclass, `compute_is_bps`, `CostCalibrator` (mediana per ticker e per tier `{mega, large, mid, crypto, default}` con soglia `min_fills=30`), `write_calibration` con manifest SHA-256 sidecar, `load_calibration` fail-closed, `run_calibration_job` end-to-end (commit `3835f32`).
+- 13 nuovi test in `tests/test_cost_calibration.py` coprono math, tier mapping, esclusione sotto soglia, round-trip, tamper detection, e job end-to-end.
+- Asset Dagster `cost_calibration_artifact` + `cost_calibration_job` + `cost_calibration_schedule` (cron `0 23 * * *`, America/New_York) registrati in `data/pipeline.py` Definitions (commit `9cb7e79`).
 
 **Obiettivo:** modulo che legge `FillRecord` e produce `cost_calibration.json` con `kappa_slippage_bps` per ticker/tier.
 
@@ -228,7 +243,7 @@ dagster asset materialize -f data/pipeline.py --select cost_calibration_artifact
 
 ---
 
-## Fase 4 — Wire calibration in TransactionCostModel
+## Fase 4 — Wire calibration in TransactionCostModel  ⏳ PROSSIMA
 
 **Obiettivo:** far consumare la calibrazione al modello di costo che entra in CVXPY + backtest, con rollback.
 
@@ -286,7 +301,7 @@ python -m pytest tests/test_backtest_validation.py -v
 
 ---
 
-## Fase 5 — Validation, alerting, promotion
+## Fase 5 — Validation, alerting, promotion  ⏳ PENDING
 
 **Obiettivo:** governance per evitare che una calibrazione tossica entri in produzione.
 
@@ -330,7 +345,7 @@ Catturare: Sharpe lordo/netto, turnover, IS medio, breach count, runtime. Confro
 
 ---
 
-## Fase 6 — Dashboard math-trace MVP (P1 observability)
+## Fase 6 — Dashboard math-trace MVP (P1 observability)  ⏳ PENDING
 
 **Obiettivo:** rendere ogni decisione tracciabile dall'UI senza redesign completo.
 
@@ -377,7 +392,7 @@ Mostrare per ticker: IS mediano, slippage realized vs assunto (lookup), trend ka
 
 ---
 
-## Fase 7 — Selezione del prossimo track avanzato
+## Fase 7 — Selezione del prossimo track avanzato  ⏳ PENDING
 
 **Obiettivo:** decidere se il secondo P2 è HRP-soft-prior, robust optimization, o dashboard product redesign.
 
@@ -408,18 +423,18 @@ Aprire ExitPlanMode con l'utente per scegliere: HRP / Robust / Dashboard redesig
 ## Riassunto dipendenze tra fasi
 
 ```
-Fase 0 (sync)
-    ├──> Fase 1 (drift residui)         [independent]
+Fase 0 (sync)                                       ✅
+    ├──> Fase 1 (drift residui)                     ✅
     │
-    └──> Fase 2 (fill telemetry)
-              └──> Fase 3 (calibration engine)
-                        └──> Fase 4 (wire in TransactionCostModel)
-                                  └──> Fase 5 (validation + promotion)
-                                            ├──> Fase 6 (dashboard math-trace)
-                                            └──> Fase 7 (next track ADRs)
+    └──> Fase 2 (fill telemetry)                    ✅
+              └──> Fase 3 (calibration engine)      ✅
+                        └──> Fase 4 (wire in TCM)   ⏳ PROSSIMA
+                                  └──> Fase 5       ⏳
+                                            ├──> Fase 6 (dashboard)
+                                            └──> Fase 7 (next track)
 ```
 
-Le Fasi 1 e 2 possono essere eseguite **in parallelo** da due agenti.
+Le Fasi 4 e 6 possono partire **in parallelo** appena Fase 3 è ferma (lo è ora): Fase 4 tocca solo `council/transaction_costs.py` + backtest, Fase 6 tocca solo `dashboard/`. Fase 5 (governance) dipende strettamente da Fase 4.
 
 ## Acceptance criteria globale
 
