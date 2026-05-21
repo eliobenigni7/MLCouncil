@@ -171,6 +171,9 @@ def step_split(
 # Step 5 — Addestramento modelli
 # ---------------------------------------------------------------------------
 
+_CHECKPOINTS = ROOT / "models" / "checkpoints"
+
+
 def step_train_lgbm(feat_train: pl.DataFrame, targets_train: pd.Series):
     from models.technical import TechnicalModel
 
@@ -180,6 +183,40 @@ def step_train_lgbm(feat_train: pl.DataFrame, targets_train: pd.Series):
     model.fit(feat_train, targets_train)
     print(f"    LightGBM pronto. Features: {model._n_features}\n")
     return model
+
+
+def step_online_lgbm(
+    lgbm,
+    features: pl.DataFrame,
+    targets_df: pl.DataFrame,
+    ohlcv: pl.DataFrame,
+    as_of: date,
+) -> None:
+    """Salva champion e prova refit incrementale (stesso gate della pipeline Dagster)."""
+    from models.online import build_targets_series, run_daily_incremental_update
+
+    _CHECKPOINTS.mkdir(parents=True, exist_ok=True)
+    checkpoint = _CHECKPOINTS / "lgbm_latest.pkl"
+    lgbm.save(checkpoint)
+    print(f"[5a-online] Checkpoint salvato in {checkpoint}")
+
+    targets_pl = targets_df.filter(pl.col("valid_time") <= as_of)
+    targets = build_targets_series(targets_pl, horizon_col="rank_fwd_1d")
+    if len(targets) == 0:
+        print("[5a-online] Nessun target disponibile — skip refit incrementale\n")
+        return
+
+    _, result = run_daily_incremental_update(
+        lgbm,
+        checkpoint,
+        features_history=features.filter(pl.col("valid_time") <= as_of),
+        targets=targets,
+        ohlcv=ohlcv.filter(pl.col("valid_time") <= as_of),
+    )
+    print(
+        f"[5a-online] {result.message} | IC baseline={result.ic_baseline:.4f} "
+        f"IC today={result.ic_today:.4f} drift={result.drift_detected}\n"
+    )
 
 
 def step_train_hmm(cutoff: date):
@@ -290,7 +327,7 @@ def step_council(
 # ---------------------------------------------------------------------------
 
 def step_conformal(lgbm, feat_train: pl.DataFrame, targets_df: pl.DataFrame):
-    from council.conformal import ConformalPositionSizer
+    from council.cqr import get_position_sizer, position_sizing_mode
 
     feat_cols = [c for c in feat_train.columns if c not in _EXCLUDE_COLS]
 
@@ -309,10 +346,11 @@ def step_conformal(lgbm, feat_train: pl.DataFrame, targets_df: pl.DataFrame):
     X = merged[feat_cols].values
     y = merged["ret_fwd_1d"].values
 
-    print(f"[8] Calibrazione conformal su {len(y):,} campioni…")
-    sizer = ConformalPositionSizer(coverage=0.90)
+    mode = position_sizing_mode()
+    print(f"[8] Calibrazione position sizing ({mode}) su {len(y):,} campioni…")
+    sizer = get_position_sizer(coverage=0.90)
     sizer.fit(X, y)
-    print("    ConformalPositionSizer pronto (coverage=90%)\n")
+    print(f"    {type(sizer).__name__} pronto (coverage=90%)\n")
     return sizer, feat_cols
 
 
@@ -332,7 +370,7 @@ def step_portfolio(
     save_orders: bool = True,
     emit_report: bool = True,
 ) -> pd.Series:
-    from council.portfolio import PortfolioConstructor
+    from council.portfolio_diff import get_portfolio_constructor
 
     # Feature row per l'ultimo giorno (allineata ai ticker del council_signal)
     tickers = sorted(council_signal.index.tolist())
@@ -375,7 +413,7 @@ def step_portfolio(
         np.ones(len(cov_tickers)) / len(cov_tickers), index=cov_tickers
     )
 
-    constructor = PortfolioConstructor()
+    constructor = get_portfolio_constructor()
     if getattr(constructor, "crypto_enabled", False) and any(t.upper().replace("-", "").replace("/", "").endswith("USD") for t in cov_tickers):
         target_w = constructor.optimize_with_crypto(
             alpha_signals=filtered.reindex(cov_tickers).fillna(0.0),
@@ -451,6 +489,11 @@ def main(args: argparse.Namespace) -> None:
     lgbm            = step_train_lgbm(feat_train, targets_train)
     hmm_model, _, macro = step_train_hmm(cutoff)
 
+    _test_dates = sorted(feat_test["valid_time"].unique().to_list())
+    _last_date = _test_dates[-1] if _test_dates else cutoff
+    if args.online:
+        step_online_lgbm(lgbm, features, targets_df, ohlcv, _last_date)
+
     signals, last_date, regime = step_signals(
         lgbm, hmm_model, feat_test, macro,
         with_sentiment=args.with_sentiment,
@@ -479,5 +522,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--with-sentiment", dest="with_sentiment", action="store_true",
         help="Attiva il modello sentiment FinBERT (richiede PyTorch + GPU consigliata)",
+    )
+    parser.add_argument(
+        "--online",
+        action="store_true",
+        help="Salva lgbm_latest.pkl e esegue refit incrementale con gate IC (demo locale)",
     )
     main(parser.parse_args())

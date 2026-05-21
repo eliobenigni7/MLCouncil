@@ -9,6 +9,56 @@ from typing import Any, Protocol
 import httpx
 from runtime_env import get_secret
 
+DEFAULT_OFI_LEVELS = 5
+
+
+@dataclass(slots=True, frozen=True)
+class BookLevel:
+    """Single price level on the bid or ask side of an L2 book."""
+
+    price: float
+    size: float
+
+
+@dataclass(slots=True)
+class BookSnapshot:
+    """Point-in-time L2 book snapshot for OFI computation."""
+
+    symbol: str
+    as_of: datetime
+    bids: list[BookLevel]
+    asks: list[BookLevel]
+    levels: int = DEFAULT_OFI_LEVELS
+
+    def cumulative_bid_volume(self, levels: int | None = None) -> float:
+        n = levels or self.levels or DEFAULT_OFI_LEVELS
+        return sum(level.size for level in self.bids[:n])
+
+    def cumulative_ask_volume(self, levels: int | None = None) -> float:
+        n = levels or self.levels or DEFAULT_OFI_LEVELS
+        return sum(level.size for level in self.asks[:n])
+
+
+def compute_ofi(
+    book_snapshot: BookSnapshot,
+    previous_snapshot: BookSnapshot | None = None,
+    *,
+    levels: int | None = None,
+) -> float:
+    """Order Flow Imbalance: Δ cumulative bid depth − Δ cumulative ask depth.
+
+    Per Lo & MacKinlay (microstructure), using the top ``levels`` (default 5)
+    price levels on each side:
+
+    ``OFI_t = Δ Σ_b q^b_t − Δ Σ_a q^a_t``
+    """
+    n = levels or book_snapshot.levels or DEFAULT_OFI_LEVELS
+    if previous_snapshot is None:
+        return 0.0
+    delta_bid = book_snapshot.cumulative_bid_volume(n) - previous_snapshot.cumulative_bid_volume(n)
+    delta_ask = book_snapshot.cumulative_ask_volume(n) - previous_snapshot.cumulative_ask_volume(n)
+    return float(delta_bid - delta_ask)
+
 
 @dataclass(slots=True)
 class MarketSnapshot:

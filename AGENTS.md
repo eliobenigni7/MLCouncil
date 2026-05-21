@@ -86,6 +86,82 @@ MLCOUNCIL_MAX_TURNOVER=0.30
 MLCOUNCIL_MAX_POSITION_SIZE=0.10
 ```
 
+## TFT alpha challenger (T2.1 — shadow only)
+
+Temporal Fusion Transformer challenger is **not** in the daily Dagster path.
+
+```bash
+python scripts/train_tft.py --start 2021-01-01 --end 2024-12-31
+python scripts/run_walkforward_promotion.py --model tft --dry-run
+python -m pytest tests/test_tft.py -v
+```
+
+- `models/tft.py` — `TemporalFusionAlpha` (PyTorch VSN+GRU+attention; CPU inference SLO <300ms on fixture)
+- Shadow outputs: `data/results/tft_shadow_signals.parquet`, `data/results/walkforward_signals_tft.parquet`
+- Promotion compares TFT vs LightGBM champion via T1.1 gate (`torch>=2.0` in requirements)
+- ADR: `docs/adr/2026-05-21-tft-alpha-challenger.md`
+
+## Online learning (T1.2)
+
+Daily incremental LightGBM refit is **off by default**. Enable for staging/paper:
+
+```bash
+export MLCOUNCIL_ONLINE_LEARNING=true
+# optional: MLCOUNCIL_ONLINE_IC_THRESHOLD=0.05  MLCOUNCIL_ONLINE_REFIT_DAYS=60
+```
+
+- `models/online.py` — `IncrementalLightGBM`, IC gate, `run_daily_incremental_update()`
+- `council/drift.py` — ADWIN on 60d equal-weight returns; DDM on binary error indicators
+- Dagster `lgbm_signals` refits champion before predict when enabled; walk-forward CI still owns promotion
+- ADR: `docs/adr/2026-05-21-online-learning.md`
+
+## Wave 3 council/portfolio (T3.x — off by default)
+
+Production paths unchanged unless env flags are set. Train checkpoints before enabling shadow modes:
+
+```bash
+python scripts/train_moe_gating.py              # → models/checkpoints/moe_gate.pkl
+python scripts/train_stacking_cqr.py --cqr --stacking
+python scripts/train_alpha_portfolio_end2end.py # E2E scaffold summary
+
+# MoE gating (default linear)
+export MLCOUNCIL_AGGREGATOR_MODE=moe
+
+# CQR sizing (default conformal / MAPIE); pipeline loads cqr_sizer.pkl or conformal_sizer.pkl
+export MLCOUNCIL_POSITION_SIZING=cqr
+export MLCOUNCIL_STACKING_SHADOW=true           # logs data/results/shadow_stacking/
+export MLCOUNCIL_STACKING_BACKEND=ridge         # or xgb when installed
+
+# DCC-GARCH covariance (default ledoit in pipeline)
+export MLCOUNCIL_COVARIANCE_ESTIMATOR=dcc
+
+# Differentiable portfolio (default cvxpy; uses get_portfolio_constructor())
+export MLCOUNCIL_PORTFOLIO_MODE=diff
+```
+
+- Factories: `get_position_sizer()`, `get_portfolio_constructor()`, `compute_covariance_from_returns()`
+- Modules: `council/moe_gating.py`, `council/cqr.py`, `council/covariance_dynamic.py`, `council/portfolio_diff.py`
+- Pipeline: `council_signal` (stacking shadow), `portfolio_weights` (sizer + portfolio factories)
+- ADRs: `docs/adr/2026-05-21-moe-gating.md`, `stacking-cqr.md`, `dynamic-covariance.md`, `differentiable-portfolio.md`
+- Tests: `tests/test_moe_gating.py`, `test_cqr.py`, `test_dcc_garch.py`, `test_portfolio_diff.py`
+
+## Observability
+
+OpenTelemetry tracing is **off by default**. Enable for local/debug runs:
+
+```bash
+docker compose -f docker-compose.observability.yml up -d   # Grafana :3001, Tempo :3200
+export MLCOUNCIL_OTEL_ENABLED=true
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/v1/traces
+export OTEL_SERVICE_NAME=mlcouncil-dagster
+python scripts/run_pipeline.py --partition 2026-05-20
+```
+
+- `observability/tracing.py` — `init_tracing()`, `trace_span()` (no-op when disabled)
+- Dagster spans on `raw_ohlcv`, `alpha158_features`, `lgbm_signals`, `daily_orders`
+- Dashboard: `dashboards/grafana/mlcouncil.json` (provisioned by observability compose)
+- ADR: `docs/adr/2026-05-21-otel-grafana.md`
+
 ## Known Issues
 
 - `scripts/run_pipeline.py:252` — Sentiment now downloads real news via Yahoo Finance RSS (use `--with-sentiment` to enable)

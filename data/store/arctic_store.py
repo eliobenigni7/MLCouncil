@@ -3,10 +3,15 @@
 Point-in-time correctness
 --------------------------
 Each ``write()`` call appends a new ArcticDB version for the symbol.
-The ``transaction_time`` column records *when* the data was written.
-``read()`` filters rows to ``transaction_time <= as_of_transaction_time``
-when supplied, so you can reconstruct what the store looked like at any
-past point in time.
+The ``transaction_time`` column records *when* the data was written to the store.
+The ``arrival_time`` column records *when* the data became available in the
+source feed (RSS ``published``, FRED release proxy, or ingest time).
+``read()`` filters rows to ``transaction_time <= as_of_transaction_time`` and
+``arrival_time <= as_of_arrival_time`` when supplied, so you can reconstruct
+what was knowable at any past point in time.
+
+If ``arrival_time`` is omitted on ``write()``, it defaults to ``transaction_time``
+for backward compatibility.
 
 LMDB is used for local PoC work; no S3 configuration required.
 
@@ -72,6 +77,51 @@ class FeatureStore:
         safe_symbol = symbol.replace("/", "_")
         return self._base_path / f"{safe_symbol}.parquet"
 
+    @staticmethod
+    def _ensure_transaction_time(df: pl.DataFrame) -> pl.DataFrame:
+        if "transaction_time" not in df.columns:
+            tx = datetime.now(timezone.utc)
+            df = df.with_columns(
+                pl.lit(tx).cast(pl.Datetime("us", "UTC")).alias("transaction_time")
+            )
+        return df
+
+    @staticmethod
+    def _ensure_arrival_time(
+        df: pl.DataFrame,
+        arrival_time: datetime | None = None,
+    ) -> pl.DataFrame:
+        """Attach ``arrival_time``; default to ``transaction_time`` when omitted."""
+        if "arrival_time" in df.columns:
+            return df
+        if arrival_time is not None:
+            return df.with_columns(
+                pl.lit(arrival_time).cast(pl.Datetime("us", "UTC")).alias("arrival_time")
+            )
+        return df.with_columns(pl.col("transaction_time").alias("arrival_time"))
+
+    @staticmethod
+    def _apply_temporal_filters(
+        df: pl.DataFrame,
+        as_of_transaction_time: datetime | None = None,
+        as_of_arrival_time: datetime | None = None,
+    ) -> pl.DataFrame:
+        if as_of_transaction_time is not None and "transaction_time" in df.columns:
+            cutoff = pl.lit(as_of_transaction_time).cast(pl.Datetime("us", "UTC"))
+            df = df.filter(pl.col("transaction_time") <= cutoff)
+
+        if as_of_arrival_time is not None:
+            arrival_col = (
+                "arrival_time"
+                if "arrival_time" in df.columns
+                else "transaction_time"
+            )
+            if arrival_col in df.columns:
+                cutoff = pl.lit(as_of_arrival_time).cast(pl.Datetime("us", "UTC"))
+                df = df.filter(pl.col(arrival_col) <= cutoff)
+
+        return df
+
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
@@ -81,6 +131,7 @@ class FeatureStore:
         ticker: str,
         df: pl.DataFrame,
         metadata: dict | None = None,
+        arrival_time: datetime | None = None,
     ) -> None:
         """Write or append features for a ticker.
 
@@ -92,12 +143,13 @@ class FeatureStore:
             Polars DataFrame with at least ``valid_time`` column.
         metadata:
             Optional dict stored alongside the version (ArcticDB only).
+        arrival_time:
+            Optional UTC timestamp applied to all rows in this batch when the
+            DataFrame does not already include an ``arrival_time`` column.
+            Defaults to each row's ``transaction_time``.
         """
-        if "transaction_time" not in df.columns:
-            tx = datetime.now(timezone.utc)
-            df = df.with_columns(
-                pl.lit(tx).cast(pl.Datetime("us", "UTC")).alias("transaction_time")
-            )
+        df = self._ensure_transaction_time(df)
+        df = self._ensure_arrival_time(df, arrival_time=arrival_time)
 
         if self._backend == "arcticdb":
             symbol = self._TICKER_PREFIX + ticker
@@ -132,6 +184,7 @@ class FeatureStore:
         start: date | None = None,
         end: date | None = None,
         as_of_transaction_time: datetime | None = None,
+        as_of_arrival_time: datetime | None = None,
     ) -> pl.DataFrame:
         """Read features for a single ticker.
 
@@ -144,6 +197,10 @@ class FeatureStore:
         as_of_transaction_time:
             Point-in-time filter. Only rows with
             ``transaction_time <= as_of_transaction_time`` are returned.
+        as_of_arrival_time:
+            Feed-availability filter. Only rows with
+            ``arrival_time <= as_of_arrival_time`` are returned. Rows without
+            ``arrival_time`` fall back to ``transaction_time``.
 
         Returns
         -------
@@ -166,11 +223,11 @@ class FeatureStore:
             pd_df = vitem.data.reset_index()
             df = pl.from_pandas(pd_df)
 
-            if as_of_transaction_time is not None and "transaction_time" in df.columns:
-                cutoff = pl.lit(as_of_transaction_time).cast(pl.Datetime("us", "UTC"))
-                df = df.filter(pl.col("transaction_time") <= cutoff)
-
-            return df
+            return self._apply_temporal_filters(
+                df,
+                as_of_transaction_time=as_of_transaction_time,
+                as_of_arrival_time=as_of_arrival_time,
+            )
         else:
             # Parquet backend
             path = self._symbol_path(ticker)
@@ -186,11 +243,11 @@ class FeatureStore:
                     if end is not None:
                         df = df.filter(pl.col("valid_time") <= pl.date(end.year, end.month, end.day))
 
-            if as_of_transaction_time is not None and "transaction_time" in df.columns:
-                cutoff = pl.lit(as_of_transaction_time).cast(pl.Datetime("us", "UTC"))
-                df = df.filter(pl.col("transaction_time") <= cutoff)
-
-            return df
+            return self._apply_temporal_filters(
+                df,
+                as_of_transaction_time=as_of_transaction_time,
+                as_of_arrival_time=as_of_arrival_time,
+            )
 
     # ------------------------------------------------------------------
     # Read universe
@@ -201,6 +258,7 @@ class FeatureStore:
         tickers: list[str],
         as_of_date: date,
         as_of_transaction_time: datetime | None = None,
+        as_of_arrival_time: datetime | None = None,
     ) -> pl.DataFrame:
         """Read features for all tickers on a specific valid_time date.
 
@@ -212,6 +270,8 @@ class FeatureStore:
             The valid_time date to retrieve.
         as_of_transaction_time:
             Point-in-time filter applied to each ticker.
+        as_of_arrival_time:
+            Feed-availability filter applied to each ticker.
 
         Returns
         -------
@@ -225,6 +285,7 @@ class FeatureStore:
                 start=as_of_date,
                 end=as_of_date,
                 as_of_transaction_time=as_of_transaction_time,
+                as_of_arrival_time=as_of_arrival_time,
             )
             if not df.is_empty():
                 frames.append(df)

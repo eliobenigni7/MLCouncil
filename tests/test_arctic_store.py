@@ -223,3 +223,141 @@ def test_feature_store_parquet_backend_read_universe_and_list_versions(
     assert len(versions) == 1
     assert versions[0]["version"] == 1
     assert "timestamp" in versions[0]
+
+
+def test_tri_temporal_write_defaults_arrival_to_transaction_time(monkeypatch):
+    store_module = _load_store_module(monkeypatch)
+    store = store_module.FeatureStore(uri="lmdb://test/")
+
+    tx = datetime(2026, 4, 7, 20, 30, tzinfo=timezone.utc)
+    df = pl.DataFrame(
+        {
+            "valid_time": [date(2026, 4, 7)],
+            "feature": [1.0],
+            "transaction_time": [tx],
+        }
+    )
+    store.write("AAPL", df)
+
+    loaded = store.read("AAPL")
+    assert "arrival_time" in loaded.columns
+    assert loaded["arrival_time"][0] == tx
+
+
+def test_tri_temporal_write_accepts_arrival_time_kwarg(monkeypatch):
+    store_module = _load_store_module(monkeypatch)
+    store = store_module.FeatureStore(uri="lmdb://test/")
+
+    tx = datetime(2026, 4, 7, 20, 30, tzinfo=timezone.utc)
+    arrival = datetime(2026, 4, 7, 14, 0, tzinfo=timezone.utc)
+    df = pl.DataFrame(
+        {
+            "valid_time": [date(2026, 4, 7)],
+            "feature": [1.0],
+            "transaction_time": [tx],
+        }
+    )
+    store.write("AAPL", df, arrival_time=arrival)
+
+    loaded = store.read("AAPL")
+    assert loaded["arrival_time"][0] == arrival
+    assert loaded["transaction_time"][0] == tx
+
+
+def test_tri_temporal_read_respects_as_of_arrival_time(monkeypatch):
+    store_module = _load_store_module(monkeypatch)
+    store = store_module.FeatureStore(uri="lmdb://test/")
+
+    early_arrival = datetime(2026, 4, 7, 10, 0, tzinfo=timezone.utc)
+    late_arrival = datetime(2026, 4, 8, 16, 0, tzinfo=timezone.utc)
+    tx = datetime(2026, 4, 7, 20, 30, tzinfo=timezone.utc)
+
+    store.write(
+        "AAPL",
+        pl.DataFrame(
+            {
+                "valid_time": [date(2026, 4, 7), date(2026, 4, 8)],
+                "feature": [1.0, 2.0],
+                "transaction_time": [tx, tx],
+                "arrival_time": [early_arrival, late_arrival],
+            }
+        ),
+    )
+
+    at_noon = store.read("AAPL", as_of_arrival_time=datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc))
+    at_close = store.read("AAPL", as_of_arrival_time=late_arrival)
+
+    assert at_noon.height == 1
+    assert at_noon["feature"][0] == 1.0
+    assert at_close.height == 2
+
+
+def test_tri_temporal_pit_and_arrival_filters_combine(monkeypatch):
+    store_module = _load_store_module(monkeypatch)
+    store = store_module.FeatureStore(uri="lmdb://test/")
+
+    old_tx = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+    new_tx = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)
+    early_arrival = datetime(2026, 4, 7, 15, 0, tzinfo=timezone.utc)
+    late_arrival = datetime(2026, 4, 8, 18, 0, tzinfo=timezone.utc)
+
+    store.write(
+        "AAPL",
+        pl.DataFrame(
+            {
+                "valid_time": [date(2026, 4, 7), date(2026, 4, 8)],
+                "feature": [1.0, 2.0],
+                "transaction_time": [old_tx, new_tx],
+                "arrival_time": [early_arrival, late_arrival],
+            }
+        ),
+    )
+
+    # Store knew about both rows at new_tx, but feed only exposed the first by arrival cutoff.
+    replay = store.read(
+        "AAPL",
+        as_of_transaction_time=new_tx,
+        as_of_arrival_time=early_arrival,
+    )
+    assert replay.height == 1
+    assert replay["feature"][0] == 1.0
+
+
+def test_tri_temporal_read_universe_filters_arrival(monkeypatch):
+    store_module = _load_store_module(monkeypatch)
+    store = store_module.FeatureStore(uri="lmdb://test/")
+
+    early = datetime(2026, 4, 7, 9, 0, tzinfo=timezone.utc)
+    late = datetime(2026, 4, 7, 17, 0, tzinfo=timezone.utc)
+    tx = datetime(2026, 4, 7, 20, 30, tzinfo=timezone.utc)
+
+    store.write(
+        "AAPL",
+        pl.DataFrame(
+            {
+                "valid_time": [date(2026, 4, 7)],
+                "feature": [1.0],
+                "transaction_time": [tx],
+                "arrival_time": [early],
+            }
+        ),
+    )
+    store.write(
+        "MSFT",
+        pl.DataFrame(
+            {
+                "valid_time": [date(2026, 4, 7)],
+                "feature": [2.0],
+                "transaction_time": [tx],
+                "arrival_time": [late],
+            }
+        ),
+    )
+
+    universe = store.read_universe(
+        ["AAPL", "MSFT"],
+        as_of_date=date(2026, 4, 7),
+        as_of_arrival_time=datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+    )
+    assert universe.height == 1
+    assert universe["feature"][0] == 1.0

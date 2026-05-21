@@ -16,6 +16,7 @@ Per avviare il server:
 """
 
 import hashlib
+import os
 import pickle
 import sys
 from datetime import date as date_type, timedelta
@@ -43,6 +44,9 @@ from data.lineage import (
     merge_lineage,
     merge_versions,
 )
+from observability.tracing import init_tracing, trace_span
+
+init_tracing(service_name="mlcouncil-dagster")
 
 # ---------------------------------------------------------------------------
 # Path bootstrap — consente import relativi da qualsiasi working directory
@@ -389,22 +393,28 @@ def raw_ohlcv(context: AssetExecutionContext) -> None:
     from data.ingest.market_data import download_daily
 
     partition_date = context.partition_key
-    tickers = _load_universe()
+    with trace_span(
+        "mlcouncil.ingest.raw_ohlcv",
+        layer="ingest",
+        asset="raw_ohlcv",
+        partition_date=partition_date,
+    ):
+        tickers = _load_universe()
 
-    df = download_daily(tickers=tickers, date=partition_date, data_dir=_DATA_DIR)
+        df = download_daily(tickers=tickers, date=partition_date, data_dir=_DATA_DIR)
 
-    # Quality checks
-    assert df.shape[0] > 0, "Nessun dato scaricato"
-    assert "valid_time" in df.columns, "Campo bi-temporale mancante"
-    if df["close"].dtype in (pl.Float32, pl.Float64):
-        nan_close = df["close"].is_nan().sum()
-        assert nan_close == 0, f"NaN nei prezzi di chiusura: {nan_close}"
+        # Quality checks
+        assert df.shape[0] > 0, "Nessun dato scaricato"
+        assert "valid_time" in df.columns, "Campo bi-temporale mancante"
+        if df["close"].dtype in (pl.Float32, pl.Float64):
+            nan_close = df["close"].is_nan().sum()
+            assert nan_close == 0, f"NaN nei prezzi di chiusura: {nan_close}"
 
-    context.log.info(
-        f"raw_ohlcv [{partition_date}]: {df.shape[0]} righe, "
-        f"{df['ticker'].n_unique()} ticker"
-    )
-    _record_asset_metadata(context, "raw_ohlcv", df, partition_date)
+        context.log.info(
+            f"raw_ohlcv [{partition_date}]: {df.shape[0]} righe, "
+            f"{df['ticker'].n_unique()} ticker"
+        )
+        _record_asset_metadata(context, "raw_ohlcv", df, partition_date)
 
 
 @dg.asset(
@@ -476,10 +486,24 @@ def alpha158_features(
     Per le rolling window (fino a 252 giorni) carica l'intera storia
     disponibile su disco, poi restituisce solo le righe del giorno corrente.
     """
-    from data.features.alpha158 import compute_alpha158
-
     partition_date = context.partition_key
     today = date_type.fromisoformat(partition_date)
+
+    with trace_span(
+        "mlcouncil.features.alpha158_features",
+        layer="features",
+        asset="alpha158_features",
+        partition_date=partition_date,
+    ):
+        return _run_alpha158_features(context, partition_date, today)
+
+
+def _run_alpha158_features(
+    context: AssetExecutionContext,
+    partition_date: str,
+    today: date_type,
+) -> pl.DataFrame:
+    from data.features.alpha158 import compute_alpha158
 
     # Alpha158 richiede la storia completa per le rolling window
     all_ohlcv = _load_all_ohlcv()
@@ -635,6 +659,49 @@ def lgbm_signals(
 ) -> pd.Series:
     """Carica il checkpoint LightGBM e genera segnali cross-sezionali."""
     partition_date = context.partition_key
+    with trace_span(
+        "mlcouncil.signals.lgbm_signals",
+        layer="signals",
+        asset="lgbm_signals",
+        partition_date=partition_date,
+    ):
+        return _run_lgbm_signals(context, alpha158_features, partition_date)
+
+
+def _build_online_refit_history(
+    partition_date: str,
+    *,
+    lookback_days: int = 60,
+) -> tuple[pl.DataFrame, pd.Series, pl.DataFrame]:
+    """Feature + target history for incremental refit (full OHLCV window)."""
+    from data.features.alpha158 import compute_alpha158
+    from data.features.target import compute_targets
+    from models.online import build_targets_series, filter_features_from_date
+
+    today = date_type.fromisoformat(partition_date)
+    all_ohlcv = _load_all_ohlcv()
+    if all_ohlcv.is_empty():
+        return pl.DataFrame(), pd.Series(dtype=float), all_ohlcv
+
+    ohlcv = filter_features_from_date(
+        all_ohlcv,
+        as_of=today,
+        lookback_days=lookback_days,
+    )
+    macro_ctx = _load_macro_context_from_disk()
+    if macro_ctx.is_empty():
+        macro_ctx = None
+    features = compute_alpha158(ohlcv, macro_df=macro_ctx)
+    targets_pl = compute_targets(ohlcv, horizons=[1], risk_adjusted=False)
+    targets = build_targets_series(targets_pl, horizon_col="rank_fwd_1d")
+    return features, targets, ohlcv
+
+
+def _run_lgbm_signals(
+    context: AssetExecutionContext,
+    alpha158_features: pl.DataFrame,
+    partition_date: str,
+) -> pd.Series:
     checkpoint = _CHECKPOINTS / "lgbm_latest.pkl"
     tickers = alpha158_features["ticker"].unique().to_list()
 
@@ -660,11 +727,46 @@ def lgbm_signals(
         return attach_lineage(fallback, **lineage)
 
     model = TechnicalModel()
+    online_meta: dict | None = None
     if checkpoint.exists():
         model.load(str(checkpoint))
         context.log.info(
             f"lgbm_signals [{partition_date}]: checkpoint caricato da {checkpoint}"
         )
+        try:
+            from models.online import online_learning_enabled, run_daily_incremental_update
+
+            if online_learning_enabled():
+                feat_hist, targets, ohlcv = _build_online_refit_history(partition_date)
+                if not feat_hist.is_empty() and len(targets) > 0:
+                    model, online_result = run_daily_incremental_update(
+                        model,
+                        checkpoint,
+                        features_history=feat_hist,
+                        targets=targets,
+                        ohlcv=ohlcv,
+                    )
+                    online_meta = {
+                        "accepted": online_result.accepted,
+                        "ic_baseline": online_result.ic_baseline,
+                        "ic_today": online_result.ic_today,
+                        "drift_detected": online_result.drift_detected,
+                        "message": online_result.message,
+                    }
+                    context.log.info(
+                        f"lgbm_signals [{partition_date}]: online learning — "
+                        f"{online_result.message}"
+                    )
+                    if online_result.drift_detected:
+                        context.log.warning(
+                            f"lgbm_signals [{partition_date}]: ADWIN drift su returns "
+                            "60d — schedulare walk-forward retrain"
+                        )
+        except Exception as exc:
+            context.log.warning(
+                f"lgbm_signals [{partition_date}]: online learning fallito ({exc}), "
+                "checkpoint champion invariato"
+            )
     else:
         context.log.warning(
             f"lgbm_signals [{partition_date}]: checkpoint non trovato, "
@@ -697,7 +799,10 @@ def lgbm_signals(
     context.log.info(
         f"lgbm_signals [{partition_date}]: segnali per {len(signals)} ticker"
     )
-    context.add_output_metadata(lineage_artifact_payload(lineage, signal_count=len(signals)))
+    meta = lineage_artifact_payload(lineage, signal_count=len(signals))
+    if online_meta:
+        meta = {**meta, "online_learning": online_meta}
+    context.add_output_metadata(meta)
     return signals
 
 
@@ -1006,6 +1111,29 @@ def council_signal(
         return pd.Series(dtype=float, name="council_signal")
 
     combined = aggregator.aggregate(signals, regime=current_regime, date=today).rename("council_signal")
+
+    from council.cqr import (
+        DEFAULT_STACKING_CHECKPOINT,
+        StackingMetaLearner,
+        log_stacking_shadow,
+        stacking_shadow_enabled,
+    )
+
+    if stacking_shadow_enabled() and len(signals) >= 2:
+        base_df = pd.DataFrame({m: s for m, s in signals.items()}).fillna(0.0)
+        if DEFAULT_STACKING_CHECKPOINT.exists():
+            try:
+                meta = StackingMetaLearner.load(DEFAULT_STACKING_CHECKPOINT)
+                stacked = meta.predict(base_df)
+            except Exception as exc:
+                context.log.warning(
+                    f"council_signal [{partition_date}]: stacking shadow failed ({exc})"
+                )
+                stacked = base_df.mean(axis=1)
+        else:
+            stacked = base_df.mean(axis=1)
+        log_stacking_shadow(partition_date, combined, stacked.rename("stacked_signal"))
+
     hmm_version = checkpoint_version(_CHECKPOINTS / "hmm_latest.pkl", "hmm-inline")
     lineage = merge_lineage(
         lgbm_signals,
@@ -1251,8 +1379,8 @@ def portfolio_weights(
     Se il conformal sizer non è disponibile usa moltiplicatori unitari.
     La matrice di covarianza è calcolata sulle ultime 90 sessioni disponibili.
     """
-    from council.portfolio import PortfolioConstructor
-    from council.conformal import ConformalPositionSizer
+    from council.cqr import get_position_sizer, position_sizer_checkpoint_name
+    from council.portfolio_diff import get_portfolio_constructor
 
     partition_date = context.partition_key
 
@@ -1294,15 +1422,15 @@ def portfolio_weights(
     # Market returns for beta neutrality
     market_returns = _load_market_returns()
 
-    # Conformal position sizing
-    sizer_checkpoint = _CHECKPOINTS / "conformal_sizer.pkl"
+    # Position sizing (conformal default, CQR when MLCOUNCIL_POSITION_SIZING=cqr)
+    sizer_checkpoint = _CHECKPOINTS / position_sizer_checkpoint_name()
     if sizer_checkpoint.exists():
         sizer = _safe_pickle_load(sizer_checkpoint)
         context.log.info(
             f"portfolio_weights [{partition_date}]: "
-            f"conformal sizer caricato da {sizer_checkpoint}"
+            f"position sizer caricato da {sizer_checkpoint}"
         )
-        # Conformal position sizing — use real Alpha158 features
+        # Use real Alpha158 features for interval width
         n = len(cov_tickers)
         feat_df = alpha158_features.filter(pl.col("ticker").is_in(cov_tickers))
         feat_cols = [c for c in feat_df.columns if c not in _EXCLUDE_COLS]
@@ -1326,14 +1454,14 @@ def portfolio_weights(
     else:
         context.log.warning(
             f"portfolio_weights [{partition_date}]: "
-            "conformal sizer non trovato — multipliers=1.0"
+            "position sizer non trovato — multipliers=1.0"
         )
         multipliers = pd.Series(1.0, index=cov_tickers, name="multiplier")
 
     # Pesi correnti: portafoglio live se disponibile, altrimenti bootstrap da zero.
     current_w, portfolio_value = _load_live_portfolio_snapshot(cov_tickers)
 
-    constructor = PortfolioConstructor()
+    constructor = get_portfolio_constructor()
     optimize_with_crypto = getattr(constructor, "optimize_with_crypto", None)
     has_crypto = any(_pipeline_crypto_check(ticker) for ticker in cov_tickers)
     if callable(optimize_with_crypto) and has_crypto:
@@ -1425,9 +1553,23 @@ def daily_orders(
     portfolio_weights: pd.Series,
 ) -> pd.DataFrame:
     """Genera e persiste la lista ordini dal delta di pesi target."""
-    from council.portfolio import PortfolioConstructor
-
     partition_date = context.partition_key
+
+    with trace_span(
+        "mlcouncil.council.daily_orders",
+        layer="council",
+        asset="daily_orders",
+        partition_date=partition_date,
+    ):
+        return _run_daily_orders(context, portfolio_weights, partition_date)
+
+
+def _run_daily_orders(
+    context: AssetExecutionContext,
+    portfolio_weights: pd.Series,
+    partition_date: str,
+) -> pd.DataFrame:
+    from council.portfolio import PortfolioConstructor
 
     _ORDERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1696,21 +1838,9 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
         .set_index("valid_time")
         .tail(90)
     )
-    cov_df = returns_wide.cov(min_periods=30)
+    from council.covariance_dynamic import compute_covariance_from_returns
 
-    # Apply Ledoit-Wolf shrinkage for better conditioning
-    if len(returns_wide.columns) > 1 and len(returns_wide) >= 5:
-        from sklearn.covariance import LedoitWolf
-        returns_clean = returns_wide.dropna(axis=1, how="all").dropna()
-        if len(returns_clean) >= 5 and len(returns_clean.columns) > 1:
-            lw = LedoitWolf().fit(returns_clean.values)
-            cov_df = pd.DataFrame(
-                lw.covariance_,
-                index=returns_clean.columns,
-                columns=returns_clean.columns,
-            )
-
-    return cov_df
+    return compute_covariance_from_returns(returns_wide)
 
 
 def _load_market_returns() -> pd.Series | None:

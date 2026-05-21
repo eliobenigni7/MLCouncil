@@ -19,5 +19,23 @@ dagster>=1.6.0
 dagster-graphql>=1.6.0
 dagster-webserver>=1.6.0
 
+# Online learning / drift (T1.2 — daily incremental refit + ADWIN/DDM)
+river>=0.21.0
+
+# TFT alpha challenger (T2.1 — shadow training/inference; CPU tests in CI)
+torch>=2.0.0
+
+# FinMA/RAG sentiment challenger (T2.2 — optional; mock backends if absent)
+# chromadb>=0.4.0
+# llama-cpp-python>=0.2.0
+
+# DCC-GARCH covariance challenger (T3.4 — optional; sample-cov fallback if absent)
+arch>=6.0.0
+
+# Observability (T1.4 — optional at runtime; no-op when MLCOUNCIL_OTEL_ENABLED unset)
+opentelemetry-api>=1.24.0
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp-proto-http>=1.24.0
+
 # Admin API
 -r requirements_api.txt

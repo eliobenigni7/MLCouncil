@@ -876,6 +876,55 @@ def validate_cost_calibration_promotion(
     return CostCalibrationPromotionResult(passed=not reasons, reasons=reasons)
 
 
+# ---------------------------------------------------------------------------
+# Alpha model promotion gate (T1.1 walk-forward CI)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ModelPromotionResult:
+    passed: bool
+    reasons: list[str]
+
+
+def validate_model_promotion(
+    champion_metrics: Mapping[str, float],
+    challenger_metrics: Mapping[str, float],
+    *,
+    sharpe_tolerance: float = 0.1,
+    max_pbo: float = 0.5,
+    min_walk_forward_windows: int = 8,
+) -> ModelPromotionResult:
+    """Champion/challenger gate for promoting retrained alpha models.
+
+    Thresholds (ADR T1.1):
+    - ``oos_sharpe`` challenger >= champion - ``sharpe_tolerance``
+    - ``pbo`` <= ``max_pbo``
+    - ``walk_forward_window_count`` >= ``min_walk_forward_windows``
+    """
+    reasons: list[str] = []
+
+    champ_sharpe = float(champion_metrics.get("oos_sharpe", 0.0))
+    chall_sharpe = float(challenger_metrics.get("oos_sharpe", 0.0))
+    if chall_sharpe < champ_sharpe - sharpe_tolerance:
+        reasons.append(
+            f"Challenger OOS Sharpe {chall_sharpe:.3f} below champion {champ_sharpe:.3f} "
+            f"minus tolerance {sharpe_tolerance:.2f}"
+        )
+
+    chall_pbo = float(challenger_metrics.get("pbo", 1.0))
+    if chall_pbo > max_pbo:
+        reasons.append(f"PBO proxy {chall_pbo:.3f} exceeds max {max_pbo:.2f}")
+
+    window_count = int(challenger_metrics.get("walk_forward_window_count", 0))
+    if window_count < min_walk_forward_windows:
+        reasons.append(
+            f"Walk-forward window count {window_count} < {min_walk_forward_windows}"
+        )
+
+    return ModelPromotionResult(passed=not reasons, reasons=reasons)
+
+
 def revert_to_static_cost_calibration(
     root: Path | None = None,
     *,

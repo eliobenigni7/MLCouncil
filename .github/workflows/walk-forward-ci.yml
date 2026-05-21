@@ -1,0 +1,47 @@
+name: Walk-forward CI
+
+on:
+  schedule:
+    # Weekly Monday 02:00 UTC (ADR T1.1)
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  walk-forward-promotion:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [lightgbm, sentiment, hmm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run walk-forward promotion gate (dry-run)
+        run: |
+          python scripts/run_walkforward_promotion.py \
+            --model ${{ matrix.model }} \
+            --dry-run \
+            --json
+        continue-on-error: true
+
+      - name: Upload promotion report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walkforward-promotion-${{ matrix.model }}
+          path: data/operations/walkforward_promotion_${{ matrix.model }}.json
+          if-no-files-found: ignore

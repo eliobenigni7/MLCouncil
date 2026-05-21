@@ -21,6 +21,7 @@ MLCouncil is an end-to-end **multi-signal paper trading system** for US equities
 - [Key API Endpoints](#key-api-endpoints)
 - [Project Structure](#project-structure)
 - [Documentation](#documentation)
+- [Observability](#observability)
 - [Testing](#testing)
 
 ---
@@ -688,10 +689,39 @@ MLCouncil/
 
 ---
 
+## Observability
+
+Distributed tracing (Track T1.4) uses OpenTelemetry with Grafana Tempo. Tracing is **disabled by default**; enable only when the observability stack is running.
+
+```bash
+docker compose -f docker-compose.observability.yml up -d
+```
+
+| Service | URL |
+|---------|-----|
+| Grafana | http://localhost:3001 (admin / admin) |
+| Tempo API | http://localhost:3200 |
+| OTLP HTTP | http://localhost:4318 |
+| Prometheus | http://localhost:9090 |
+
+Run the pipeline with tracing:
+
+```bash
+export MLCOUNCIL_OTEL_ENABLED=true
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/v1/traces
+export OTEL_SERVICE_NAME=mlcouncil-dagster
+python scripts/run_pipeline.py --partition 2026-05-20
+```
+
+Spans are emitted on Dagster assets `raw_ohlcv`, `alpha158_features`, `lgbm_signals`, and `daily_orders` (tags: `mlcouncil.layer`, `dagster.partition`). See `docs/adr/2026-05-21-otel-grafana.md`.
+
+---
+
 ## Testing
 
 ```bash
 python -m pytest                                   # full suite
+python -m pytest tests/test_tracing.py -v          # OTel no-op / pipeline import
 python -m pytest tests/test_council.py -v          # council aggregator + portfolio
 python -m pytest tests/test_api_health.py -v       # health endpoint
 python -m pytest tests/test_trading_service.py -v  # trading service

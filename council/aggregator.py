@@ -23,16 +23,30 @@ Typical daily flow
 
 from __future__ import annotations
 
+import os
 import pickle
 from datetime import date
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import yaml
 from loguru import logger
 from scipy.stats import spearmanr
+
+
+def regime_mode() -> str:
+    """Council regime conditioning: ``label`` (default) or ``embedding``."""
+    raw = os.getenv("MLCOUNCIL_REGIME_MODE", "label").strip().lower()
+    return raw if raw in ("label", "embedding") else "label"
+
+
+def aggregator_mode() -> str:
+    """Council aggregation: ``linear`` (default) or ``moe`` shadow gating."""
+    from council.moe_gating import aggregator_mode as _moe_mode
+
+    return _moe_mode()
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -248,9 +262,14 @@ class CouncilAggregator:
         signals: dict[str, pd.Series],
         regime: str,
         date: date,
+        *,
+        regime_embedding: Sequence[float] | np.ndarray | None = None,
+        regime_centroids: dict[str, np.ndarray] | None = None,
     ) -> pd.Series:
-        base_weights = self._base_weights.get(
-            regime, self._base_weights.get("transition", {})
+        base_weights, effective_regime, mode_used = self._resolve_regime_weights(
+            regime,
+            regime_embedding=regime_embedding,
+            regime_centroids=regime_centroids,
         )
 
         active_models = [m for m in base_weights if m in signals]
@@ -293,25 +312,55 @@ class CouncilAggregator:
                 weights[m] = min(weights[m], self._max_weight)
         effective_weight_sum = sum(weights.values())
 
-        all_tickers: set[str] = set()
-        for m in active_models:
-            all_tickers.update(signals[m].index.tolist())
-        tickers = sorted(all_tickers)
+        agg_mode = aggregator_mode()
+        moe_gate: list[float] | None = None
+        if agg_mode == "moe":
+            from council.moe_gating import MoEGatingNetwork, build_regime_context
 
-        combined = pd.Series(0.0, index=tickers)
-        contributions: dict[str, float] = {}
-        for model in active_models:
-            sig = signals[model].reindex(tickers).fillna(0.0)
-            combined += weights[model] * sig
-            contributions[model] = float((weights[model] * sig).mean())
+            ic_hint = {
+                m: float(self._ic_by_date.get(m, {}).get(date, 0.0))
+                for m in active_models
+            }
+            context = build_regime_context(regime, ic_hint)
+            gate_net = MoEGatingNetwork.load_or_create(len(active_models))
+            gate = gate_net.gate_weights(context)
+            moe_gate = gate.tolist()
+            combined, weights = gate_net.combine_signals(
+                signals,
+                active_models,
+                gate,
+                performance_weights=weights,
+            )
+            effective_weight_sum = sum(weights.values())
+            contributions = {
+                m: float((weights[m] * signals[m].reindex(combined.index).fillna(0.0)).mean())
+                for m in active_models
+                if m in signals
+            }
+        else:
+            all_tickers: set[str] = set()
+            for m in active_models:
+                all_tickers.update(signals[m].index.tolist())
+            tickers = sorted(all_tickers)
 
-        std = float(combined.std())
-        if std > 1e-9:
-            combined = (combined - combined.mean()) / std
+            combined = pd.Series(0.0, index=tickers)
+            contributions = {}
+            for model in active_models:
+                sig = signals[model].reindex(tickers).fillna(0.0)
+                combined += weights[model] * sig
+                contributions[model] = float((weights[model] * sig).mean())
+
+            std = float(combined.std())
+            if std > 1e-9:
+                combined = (combined - combined.mean()) / std
 
         self._weights_log[date] = {
             "weights": weights.copy(),
-            "regime": regime,
+            "regime": effective_regime,
+            "regime_input": regime,
+            "regime_mode": mode_used,
+            "aggregator_mode": agg_mode,
+            "moe_gate": moe_gate,
             "contributions": contributions,
             "weight_sum": effective_weight_sum,
             "weight_sum_before_ortho": weight_sum_before_ortho,
@@ -325,8 +374,9 @@ class CouncilAggregator:
             self._weights_log[date]["orthogonality"] = ortho_report
 
         logger.debug(
-            f"[{date}] regime={regime} weights={weights} weight_sum={effective_weight_sum:.4f} "
-            f"n_tickers={len(tickers)} active_models={active_models}"
+            f"[{date}] regime={effective_regime} mode={mode_used} agg={agg_mode} "
+            f"weights={weights} weight_sum={effective_weight_sum:.4f} "
+            f"n_tickers={len(combined)} active_models={active_models}"
         )
 
         combined.index.name = "ticker"
@@ -510,6 +560,74 @@ class CouncilAggregator:
 
         total_final = sum(w.values()) or 1.0
         return {m: v / total_final for m, v in w.items()}
+
+    def _resolve_regime_weights(
+        self,
+        regime: str,
+        *,
+        regime_embedding: Sequence[float] | np.ndarray | None = None,
+        regime_centroids: dict[str, np.ndarray] | None = None,
+    ) -> tuple[dict[str, float], str, str]:
+        """Return base weights, effective regime key, and mode used."""
+        mode = regime_mode()
+        if mode != "embedding":
+            base = self._base_weights.get(
+                regime, self._base_weights.get("transition", {})
+            )
+            return dict(base), regime, "label"
+
+        if regime_embedding is None:
+            logger.warning(
+                "MLCOUNCIL_REGIME_MODE=embedding but no regime_embedding; "
+                "falling back to label mode."
+            )
+            base = self._base_weights.get(
+                regime, self._base_weights.get("transition", {})
+            )
+            return dict(base), regime, "label"
+
+        emb = np.asarray(regime_embedding, dtype=float).ravel()
+        centroids = regime_centroids or self._default_regime_centroids(len(emb))
+        labels = [lbl for lbl in ("bull", "bear", "transition") if lbl in centroids]
+        if not labels:
+            labels = list(centroids.keys())
+
+        dists = np.array(
+            [float(np.sum((emb - np.asarray(centroids[lbl], dtype=float).ravel()) ** 2))
+             for lbl in labels],
+            dtype=float,
+        )
+        logits = -dists
+        logits -= float(logits.max())
+        blend = np.exp(logits)
+        blend /= blend.sum() or 1.0
+
+        merged: dict[str, float] = {}
+        for lbl, weight in zip(labels, blend):
+            bucket = self._base_weights.get(lbl, {})
+            for model, model_w in bucket.items():
+                merged[model] = merged.get(model, 0.0) + float(weight) * float(model_w)
+
+        if not merged:
+            merged = dict(
+                self._base_weights.get(regime, self._base_weights.get("transition", {}))
+            )
+
+        dominant = labels[int(np.argmax(blend))]
+        return merged, f"embedding:{dominant}", "embedding"
+
+    @staticmethod
+    def _default_regime_centroids(dim: int) -> dict[str, np.ndarray]:
+        """Axis-aligned prototype vectors when DSS centroids are not passed."""
+        dim = max(int(dim), 1)
+        bull = np.zeros(dim, dtype=float)
+        bear = np.zeros(dim, dtype=float)
+        transition = np.zeros(dim, dtype=float)
+        bull[0] = 1.0
+        bear[0] = -1.0
+        if dim > 1:
+            transition[1] = 1.0
+        return {"bull": bull, "bear": bear, "transition": transition}
 
     def _has_sufficient_history(self, models: list[str]) -> bool:
         return all(

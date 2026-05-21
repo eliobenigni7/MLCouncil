@@ -2,6 +2,14 @@
 # These are the starting point; adaptive weighting adjusts them based on
 # each model's rolling 60-day Sharpe (IC mean / IC std * sqrt(252)).
 
+# T2.4 microstructure / OFI challenger — shadow mode until walk-forward promotion.
+# Council aggregator ignores this model unless MLCOUNCIL_MICROSTRUCTURE_PROMOTED=true.
+microstructure:
+  enabled: false
+  shadow_mode: true
+  ofi_levels: 5
+  orderbook_feed: synthetic   # alpaca | databento deferred (see ADR)
+
 regime_weights:
   bull:
     lgbm:      0.50
@@ -15,6 +23,8 @@ regime_weights:
     lgbm:      0.45
     sentiment: 0.25
     hmm:       0.30
+  # Placeholder weights (sum with active models only after promotion):
+  # microstructure: 0.00
 
 # Adaptive weight bounds applied after Sharpe-based adjustment.
 # No model falls below min or above max after renormalization.
