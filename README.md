@@ -210,17 +210,29 @@ CRITICAL alerts trigger email dispatch via `council/alerts.py`. All alert result
 
 **File:** `config/universe.yaml`
 
-The tradable universe is configured in `config/universe.yaml`, which supports bucketed equity groups plus a crypto universe. At the time of this update, the configured equity universe is broader than the older 19-equity README description and includes BTCUSD/ETHUSD under `crypto_universe`.
+The tradable universe is configured in `config/universe.yaml`, organised in three buckets (large-cap equities, mid-cap equities, crypto). Each bucket carries its own weight cap to keep the portfolio constructor feasible without re-tuning per-ticker limits.
 
-| Segment | Source | Max Weight/Position |
-|---------|--------|---------------------|
-| Large-cap equities | `universe.large_cap` in `config/universe.yaml` | `universe.settings.max_large_cap_weight` |
-| Mid-cap equities | `universe.mid_cap` in `config/universe.yaml` | `universe.settings.max_mid_cap_weight` |
+### Configured buckets (current)
 
-**Crypto (in progress):**
-| Tickers | Max Weight/Position |
-|---------|---------------------|
-| BTCUSD, ETHUSD | 20% (higher limit for volatility profile) |
+| Bucket | Source | Count | Per-ticker cap |
+|---|---|---|---|
+| Large-cap equities | `universe.large_cap` | 26 | `universe.settings.max_large_cap_weight` = 8% |
+| Mid-cap equities | `universe.mid_cap` | 6 | `universe.settings.max_mid_cap_weight` = 5% |
+| Crypto | `crypto_universe.large_cap` | 2 (`BTCUSD`, `ETHUSD`) | `MLCOUNCIL_MAX_CRYPTO_POSITION_SIZE` = 20% |
+| **Total** | | **34** | |
+
+### Research vs. trading universe
+
+- The **research universe** is the raw set of tickers with parquet OHLCV under `data/raw/ohlcv/`. A larger set may be present historically even if not currently configured.
+- The **trading universe** for a given date is filtered through `load_universe_as_of()` in `data/pipeline.py`, which applies `config/universe_history.yaml` (added/removed dates per ticker) to avoid survivorship bias when backtesting.
+
+To reload the live count programmatically:
+
+```bash
+python -c "from data.pipeline import load_universe_as_of; print(len(load_universe_as_of()))"
+```
+
+Sector coverage spans 11 GICS-style buckets (mapped in `data/features/sector_exposure.py`): Technology, Healthcare, Financials, Consumer Discretionary, Consumer Staples, Industrials, Energy, Utilities, Real Estate, Communication Services, Materials. Crypto sits in a dedicated bucket separate from equities for sector-cap accounting.
 
 **Minimum liquidity threshold:** $1,000,000 average daily volume. Data scheduled at 21:30 ET in the America/New_York timezone with up to 2-day forward fill for gaps.
 
