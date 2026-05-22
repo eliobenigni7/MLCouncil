@@ -29,8 +29,8 @@ class DCCEstimator:
     def __init__(
         self,
         *,
-        a: float = 0.05,
-        b: float = 0.90,
+        a: float = 0.03,
+        b: float = 0.96,
         min_obs: int = 30,
     ) -> None:
         self.a = float(a)

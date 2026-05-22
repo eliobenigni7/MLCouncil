@@ -115,8 +115,8 @@ class ExposureReport:
 
 @dataclass
 class RiskLimits:
-    max_var_pct: float = 0.02
-    max_cvar_pct: float = 0.035
+    max_var_pct: float = 0.015
+    max_cvar_pct: float = 0.025
     max_sector_exposure: float = 0.40  # 0.40 = 40% cap (relaxed from 35% to reduce infeasible optimizer fallbacks)
     max_single_position: float = 0.10
     max_crypto_position: float = 0.20

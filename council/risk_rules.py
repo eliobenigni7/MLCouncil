@@ -48,9 +48,9 @@ class ExitSignal:
 class PositionRiskRules:
     def __init__(
         self,
-        stop_loss_pct: float = 0.05,
+        stop_loss_pct: float = 0.07,
         trailing_stop_pct: float = 0.10,
-        max_holding_days: int = 20,
+        max_holding_days: int = 15,
         profit_take_pct: float = 0.20,
     ):
         self.stop_loss_pct = stop_loss_pct
