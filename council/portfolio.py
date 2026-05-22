@@ -85,11 +85,11 @@ class PortfolioConstructor:
         self.min_position: float = 0.01
         self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.20"))
         self.long_only: bool = True
-        self.max_vol_ann: float = 0.15
-        self.sector_cap: float = 0.30
-        # Direct daily vol cap override; 0.95 % daily is roughly 15 % annualized.
+        self.max_vol_ann: float = float(os.getenv("MLCOUNCIL_MAX_VOL_ANN", "0.30"))
+        self.sector_cap: float = float(os.getenv("MLCOUNCIL_MAX_SECTOR_EXPOSURE", "0.45"))
+        # Direct daily vol cap override; 2.5 % daily (~40% annualized) for stability.
         # When set (> 0), it replaces the annual-vol-derived value inside optimize().
-        self.max_vol_daily: float = float(os.getenv("MLCOUNCIL_MAX_VOL_DAILY", "0.0095"))
+        self.max_vol_daily: float = float(os.getenv("MLCOUNCIL_MAX_VOL_DAILY", "0.025"))
         # Beta constraint enabled by default: the council generates pure
         # cross-sectional alpha signals (z-scored, regime-agnostic), so the
         # portfolio should not carry unintended systematic market exposure.
