@@ -70,38 +70,37 @@ class PortfolioConstructor:
     beta_neutral : bool
         If True, enforce beta neutrality (default False).
     max_beta_exposure : float
-        Maximum absolute portfolio beta if beta_neutral (default 0.3).
+        Maximum absolute portfolio beta if beta_neutral (default 0.4).
     commission_bps : float
-        Commission in basis points (default from MLCOUNCIL_COMMISSION_BPS, 0.0 bps).
+        Commission in basis points (default from MLCOUNCIL_COMMISSION_BPS, 0.5 bps).
     slippage_bps : float
-        Slippage in basis points (default from MLCOUNCIL_SLIPPAGE_BPS, 3.0 bps).
+        Slippage in basis points (default from MLCOUNCIL_SLIPPAGE_BPS, 5.0 bps).
     tc_lambda : float
-        Transaction cost penalty weight (default 1.0).
+        Transaction cost penalty weight (default 2.0).
     """
 
     def __init__(self) -> None:
         import os
-        self.max_position: float = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.15"))
+        self.max_position: float = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.08"))
         self.min_position: float = 0.01
-        self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.50"))
+        self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.20"))
         self.long_only: bool = True
-        self.max_vol_ann: float = 0.30
-        self.sector_cap: float = 0.45
-        # Direct daily vol cap override — relaxed from 1.5 % to 2.5 % to reduce
-        # infeasible failures.  When set (> 0), it replaces the annual‑vol‑derived
-        # value inside optimize().
-        self.max_vol_daily: float = float(os.getenv("MLCOUNCIL_MAX_VOL_DAILY", "0.025"))
+        self.max_vol_ann: float = 0.15
+        self.sector_cap: float = 0.30
+        # Direct daily vol cap override; 0.95 % daily is roughly 15 % annualized.
+        # When set (> 0), it replaces the annual-vol-derived value inside optimize().
+        self.max_vol_daily: float = float(os.getenv("MLCOUNCIL_MAX_VOL_DAILY", "0.0095"))
         # Beta constraint enabled by default: the council generates pure
         # cross-sectional alpha signals (z-scored, regime-agnostic), so the
         # portfolio should not carry unintended systematic market exposure.
         # The constraint caps |portfolio_beta| <= max_beta_exposure when
         # market_returns is provided to optimize(); no-op otherwise.
         self.beta_neutral: bool = True
-        self.max_beta_exposure: float = 0.50
+        self.max_beta_exposure: float = 0.40
         # Defaults come from runtime env for parity with backtests.
         self.commission_bps: float = get_default_commission_bps()
         self.slippage_bps: float = get_default_slippage_bps()
-        self.tc_lambda: float = 1.0
+        self.tc_lambda: float = 2.0
         # Minimum absolute z-score to enter a position (filters noise).
         self.min_signal_strength: float = float(os.getenv("MLCOUNCIL_MIN_SIGNAL_STRENGTH", "0.20"))
         # Drawdown circuit breaker: scale exposure when portfolio loses too much.
@@ -134,7 +133,7 @@ class PortfolioConstructor:
                 "n_positions": 3,
                 "max_position": 0.45,
                 "min_position": 0.05,
-                "max_turnover": 0.50,
+                "max_turnover": 0.30,
                 "min_trade_usd": 50.0,
                 "budget_fraction": 1.0,
             }
@@ -143,7 +142,7 @@ class PortfolioConstructor:
                 "n_positions": 5,
                 "max_position": 0.25,
                 "min_position": 0.03,
-                "max_turnover": 0.40,
+                "max_turnover": 0.25,
                 "min_trade_usd": 25.0,
                 "budget_fraction": 1.0,
             }
@@ -152,20 +151,20 @@ class PortfolioConstructor:
                 "n_positions": 10,
                 "max_position": 0.15,
                 "min_position": 0.02,
-                "max_turnover": 0.35,
+                "max_turnover": 0.20,
                 "min_trade_usd": 10.0,
                 "budget_fraction": 1.0,
             }
         else:
-            # Reserve ~15% budget for intraday moves by limiting positions
+            # Reserve ~10% budget for intraday moves by limiting positions
             # and keeping some headroom below the position cap.
             return {
                 "n_positions": 12,
-                "max_position": max(self.max_position, 0.13),
+                "max_position": max(self.max_position, 0.10),
                 "min_position": self.min_position,
                 "max_turnover": self.max_turnover,
                 "min_trade_usd": max(1.0, portfolio_value * 0.0005),
-                "budget_fraction": 0.85,
+                "budget_fraction": 0.90,
             }
 
     @staticmethod

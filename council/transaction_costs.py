@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parents[1]
 
-DEFAULT_COMMISSION_BPS = 1.0
-DEFAULT_SLIPPAGE_BPS = 3.0
+DEFAULT_COMMISSION_BPS = 0.5
+DEFAULT_SLIPPAGE_BPS = 5.0
 DEFAULT_CONFIDENCE_FLOOR = 30
 
 # ---------------------------------------------------------------------------
