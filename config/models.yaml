@@ -1,19 +1,19 @@
 lgbm:
-  n_estimators: 500
-  learning_rate: 0.05
-  num_leaves: 64
-  min_child_samples: 20
-  subsample: 0.8
-  colsample_bytree: 0.7
-  reg_alpha: 0.1
-  reg_lambda: 0.1
+  n_estimators: 1500
+  learning_rate: 0.02
+  num_leaves: 31
+  min_child_samples: 100
+  subsample: 0.7
+  colsample_bytree: 0.6
+  reg_alpha: 0.5
+  reg_lambda: 0.3
   n_jobs: -1
   random_state: 42
   verbose: -1
 
 cpcv:
-  n_splits: 6
-  embargo_days: 5
+  n_splits: 8
+  embargo_days: 10
   n_test_folds: 2
 
 hmm:
@@ -32,9 +32,9 @@ regime_dss:
 sentiment:
   model_name: "ProsusAI/finbert"
   fallback_model: "yiyanghkust/finbert-tone"
-  recency_decay: 0.7          # gamma: day-1 weight=1.0, day-2=0.7, day-3=0.49
+  recency_decay: 0.6          # gamma: day-1 weight=1.0, day-2=0.6, day-3=0.36
   batch_size: 32
-  max_length: 512             # FinBERT token-limit proxy (chars)
+  max_length: 256             # FinBERT token-limit proxy (chars)
 
 # TFT alpha challenger (T2.1 — shadow only; not in daily Dagster path)
 tft:
