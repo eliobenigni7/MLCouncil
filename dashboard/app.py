@@ -150,32 +150,69 @@ def render_performance_tab(mode: str, start_date: date, end_date: date) -> None:
     )
 
     if mode == "Backtest":
-        frontier_dir = _ROOT / "data" / "results_snapshots" / "frontier"
-        frontier_ready = (frontier_dir / "equity_curve.parquet").exists() or (frontier_dir / "backtest_result.pkl").exists()
         st.divider()
-        st.subheader("Baseline vs Frontier")
-        st.caption("Baseline usa i risultati correnti; Frontier appare quando esiste una snapshot salvata in data/results_snapshots/frontier/")
-        if frontier_ready:
-            col_base, col_frontier = st.columns(2)
-            with col_base:
-                st.markdown("**Baseline**")
+        st.subheader("📊 Confronto Baseline · Frontier · Wave3")
+        st.caption("Ognuno mostra equity curve, rolling Sharpe, drawdown e heatmap dalla propria snapshot")
+
+        snapshots = {
+            "Baseline": None,
+            "Frontier": "frontier",
+            "Wave3": "wave3",
+        }
+
+        for snap_name, snap_tag in snapshots.items():
+            snap_dir = _ROOT / "data" / "results_snapshots" / snap_tag if snap_tag else _ROOT / "data" / "results"
+            if snap_tag and not (snap_dir / "equity_curve.parquet").exists() and not (snap_dir / "backtest_result.pkl").exists():
+                continue  # skip snapshots without data
+
+            with st.expander(f"**{snap_name}**", expanded=(snap_name == "Baseline")):
+                eq = load_equity_curve(mode, results_tag=snap_tag)
+                bm = load_benchmark(mode, results_tag=snap_tag)
+                rt = load_daily_returns(mode, results_tag=snap_tag)
+
+                if not rt.empty and len(rt) > 1:
+                    rfr = 0.05 / 252
+                    sh = float((rt - rfr).mean() / rt.std() * (252 ** 0.5)) if rt.std() > 0 else 0.0
+                    rm = eq.cummax()
+                    mdd = float(((eq - rm) / rm).min() * 100)
+                    cagr_val = float(((eq.iloc[-1] / eq.iloc[0]) ** (252 / max(len(eq), 1)) - 1) * 100)
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Sharpe", f"{sh:.2f}")
+                    k2.metric("Max DD", f"{mdd:.1f}%")
+                    k3.metric("CAGR", f"{cagr_val:.1f}%")
+                    k4.metric("Days", str(len(eq)))
+
                 st.plotly_chart(
-                    charts.equity_curve_chart(load_equity_curve(mode), load_benchmark(mode)),
+                    charts.equity_curve_chart(eq, bm),
                     use_container_width=True,
-                    key=f"comparison_baseline_{mode}",
+                    key=f"comparison_equity_{snap_tag or 'baseline'}",
                 )
-            with col_frontier:
-                st.markdown("**Frontier**")
+
+                col_l, col_r = st.columns(2)
+                with col_l:
+                    w = st.select_slider(
+                        f"Rolling window ({snap_name})",
+                        options=[63, 126, 252], value=252,
+                        key=f"comp_sharpe_win_{snap_tag or 'baseline'}",
+                        label_visibility="collapsed",
+                    )
+                    st.plotly_chart(
+                        charts.rolling_sharpe_chart(rt, window=w),
+                        use_container_width=True,
+                        key=f"comp_sharpe_{snap_tag or 'baseline'}_{w}",
+                    )
+                with col_r:
+                    st.plotly_chart(
+                        charts.drawdown_chart(eq),
+                        use_container_width=True,
+                        key=f"comp_drawdown_{snap_tag or 'baseline'}",
+                    )
+
                 st.plotly_chart(
-                    charts.equity_curve_chart(
-                        load_equity_curve(mode, results_tag="frontier"),
-                        load_benchmark(mode, results_tag="frontier"),
-                    ),
+                    charts.monthly_returns_heatmap(rt),
                     use_container_width=True,
-                    key=f"comparison_frontier_{mode}",
+                    key=f"comp_heatmap_{snap_tag or 'baseline'}",
                 )
-        else:
-            st.info("Ancora nessuna snapshot Frontier. Quando la salvi, la vedrai qui a fianco del baseline.")
 
 
 # ============================================================================
