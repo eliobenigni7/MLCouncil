@@ -81,12 +81,16 @@ class PortfolioConstructor:
 
     def __init__(self) -> None:
         import os
-        self.max_position: float = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.10"))
+        self.max_position: float = float(os.getenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.15"))
         self.min_position: float = 0.01
-        self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.30"))
+        self.max_turnover: float = float(os.getenv("MLCOUNCIL_MAX_TURNOVER", "0.50"))
         self.long_only: bool = True
         self.max_vol_ann: float = 0.30
-        self.sector_cap: float = 0.35
+        self.sector_cap: float = 0.45
+        # Direct daily vol cap override — relaxed from 1.5 % to 2.5 % to reduce
+        # infeasible failures.  When set (> 0), it replaces the annual‑vol‑derived
+        # value inside optimize().
+        self.max_vol_daily: float = float(os.getenv("MLCOUNCIL_MAX_VOL_DAILY", "0.025"))
         # Beta constraint enabled by default: the council generates pure
         # cross-sectional alpha signals (z-scored, regime-agnostic), so the
         # portfolio should not carry unintended systematic market exposure.
@@ -392,7 +396,11 @@ class PortfolioConstructor:
         )
         cov = (cov_raw + cov_raw.T) / 2 + np.eye(n) * 1e-6
 
-        max_vol_daily = self.max_vol_ann / np.sqrt(252)
+        max_vol_daily = (
+            self.max_vol_daily
+            if self.max_vol_daily > 0
+            else self.max_vol_ann / np.sqrt(252)
+        )
 
         w = cp.Variable(n, name="weights")
 
@@ -434,16 +442,24 @@ class PortfolioConstructor:
         prob = cp.Problem(objective, constraints)
 
         solved = False
+        solver_attempts: list[dict] = []
         for solver in (None, cp.SCS):
+            solver_name = solver if isinstance(solver, str) else (solver.__name__ if solver else "OSQP")
             try:
                 if solver is None:
                     prob.solve(verbose=False)
                 else:
                     prob.solve(solver=solver, verbose=False)
+                solver_attempts.append(
+                    {"solver": solver_name, "status": prob.status}
+                )
                 if prob.status in {"optimal", "optimal_inaccurate"} and w.value is not None:
                     solved = True
                     break
             except Exception as exc:
+                solver_attempts.append(
+                    {"solver": solver_name, "status": "error", "error": str(exc)}
+                )
                 logger.debug(f"Solver {solver} failed: {exc}")
 
         binding_constraints: dict[str, float] = {}
@@ -459,8 +475,17 @@ class PortfolioConstructor:
                     continue
 
         if not solved or w.value is None:
+            attempts_summary = "; ".join(
+                f"{a['solver']} → {a['status']}"
+                + (f": {a['error']}" if a.get("error") else "")
+                for a in solver_attempts
+            )
             logger.warning(
-                f"Portfolio optimisation failed (status={prob.status!r}). "
+                f"Portfolio optimisation failed after {len(solver_attempts)} solver "
+                f"attempt(s) [{attempts_summary}]. "
+                f"Universe: {n} tickers, "
+                f"constraints: vol≤{max_vol_daily:.4f} pos≤{effective_max_position:.2f} "
+                f"sector≤{effective_sector_cap:.2f} turnover≤{effective_max_turnover:.2f}. "
                 "Returning sector-aware fallback."
             )
             fallback = self._feasible_fallback_weights(
@@ -562,18 +587,31 @@ class PortfolioConstructor:
         *,
         path: Path | None = None,
     ) -> Path | None:
-        """Persist last optimization diagnostics for dashboard math-trace."""
+        """Persist last optimization diagnostics for dashboard math-trace.
+
+        Diagnostics are useful but must never break the backtest if the results
+        directory is not writable (for example, when a previous run created it as
+        root-owned). In that case, log a warning and continue.
+        """
         if not self.last_optimization_diagnostics:
             return None
         out_dir = _DIAGNOSTICS_DIR
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = path or (out_dir / f"{as_of_date.isoformat()}.json")
-        payload = {
-            "date": as_of_date.isoformat(),
-            **self.last_optimization_diagnostics,
-        }
-        out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        return out_path
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = path or (out_dir / f"{as_of_date.isoformat()}.json")
+            payload = {
+                "date": as_of_date.isoformat(),
+                **self.last_optimization_diagnostics,
+            }
+            out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return out_path
+        except OSError as exc:
+            logger.warning(
+                "Skipping optimization diagnostics for {}: {}",
+                as_of_date.isoformat(),
+                exc,
+            )
+            return None
 
     def optimize_with_crypto(
         self,

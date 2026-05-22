@@ -5,6 +5,7 @@ from .aggregator import CouncilAggregator, OrthogonalityMonitor
 from .alerts import AlertDispatcher, AlertResult, Severity, load_current_alerts
 from .conformal import ConformalPositionSizer
 from .cqr import CQRPositionSizer, StackingMetaLearner, get_position_sizer
+from .fractional_kelly import FractionalKellySizer
 from .covariance_dynamic import DCCEstimator, compute_covariance_from_returns
 from .evidently_reports import generate_drift_report, generate_model_performance_report
 from .moe_gating import MoEGatingNetwork, aggregator_mode as moe_aggregator_mode
@@ -40,6 +41,7 @@ __all__ = [
     "OrthogonalityMonitor",
     "ConformalPositionSizer",
     "CQRPositionSizer",
+    "FractionalKellySizer",
     "StackingMetaLearner",
     "get_position_sizer",
     "MoEGatingNetwork",

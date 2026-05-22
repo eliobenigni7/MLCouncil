@@ -1483,7 +1483,7 @@ def _run_portfolio_weights(
     alpha158_features: pl.DataFrame,
     partition_date: str,
 ) -> pd.Series:
-    from council.cqr import get_position_sizer, position_sizer_checkpoint_name
+    from council.cqr import get_position_sizer, position_sizer_checkpoint_name, position_sizing_mode
     from council.portfolio_diff import get_portfolio_constructor
 
     if council_signal.empty:
@@ -1524,41 +1524,53 @@ def _run_portfolio_weights(
     # Market returns for beta neutrality
     market_returns = _load_market_returns()
 
-    # Position sizing (conformal default, CQR when MLCOUNCIL_POSITION_SIZING=cqr)
-    sizer_checkpoint = _CHECKPOINTS / position_sizer_checkpoint_name()
-    if sizer_checkpoint.exists():
-        sizer = _safe_pickle_load(sizer_checkpoint)
+    # Position sizing (conformal default, CQR when MLCOUNCIL_POSITION_SIZING=cqr, kelly when MLCOUNCIL_POSITION_SIZING=kelly)
+    sizing_mode = position_sizing_mode()
+    if sizing_mode == "kelly":
+        from council.fractional_kelly import FractionalKellySizer
+
+        sizer = FractionalKellySizer()
         context.log.info(
             f"portfolio_weights [{partition_date}]: "
-            f"position sizer caricato da {sizer_checkpoint}"
+            "FractionalKellySizer istanziato direttamente"
         )
-        # Use real Alpha158 features for interval width
-        n = len(cov_tickers)
-        feat_df = alpha158_features.filter(pl.col("ticker").is_in(cov_tickers))
-        feat_cols = [c for c in feat_df.columns if c not in _EXCLUDE_COLS]
-        if (
-            len(feat_df) == n
-            and len(feat_cols) >= (sizer._n_features or 0)
-            and sizer._n_features is not None
-        ):
-            X_real = feat_df.select(feat_cols[:sizer._n_features]).to_numpy()
-            multipliers = sizer.compute_position_multipliers(signal_aligned, X_real)
+        # Kelly sizer non usa features, passa None
+        multipliers = sizer.compute_position_multipliers(signal_aligned)
+    else:
+        sizer_checkpoint = _CHECKPOINTS / position_sizer_checkpoint_name()
+        if sizer_checkpoint.exists():
+            sizer = _safe_pickle_load(sizer_checkpoint)
+            context.log.info(
+                f"portfolio_weights [{partition_date}]: "
+                f"position sizer caricato da {sizer_checkpoint}"
+            )
+            # Use real Alpha158 features for interval width
+            n = len(cov_tickers)
+            feat_df = alpha158_features.filter(pl.col("ticker").is_in(cov_tickers))
+            feat_cols = [c for c in feat_df.columns if c not in _EXCLUDE_COLS]
+            if (
+                len(feat_df) == n
+                and len(feat_cols) >= (sizer._n_features or 0)
+                and sizer._n_features is not None
+            ):
+                X_real = feat_df.select(feat_cols[:sizer._n_features]).to_numpy()
+                multipliers = sizer.compute_position_multipliers(signal_aligned, X_real)
+            else:
+                # Fallback: fewer tickers in features than sizer expects
+                X_dummy = np.zeros((n, sizer._n_features or 1))
+                context.log.warning(
+                    f"portfolio_weights [{partition_date}]: "
+                    f"feature/ticker mismatch ({len(feat_df)} vs {n} tickers, "
+                    f"{len(feat_cols)} vs {sizer._n_features} features) — "
+                    f"using dummy features for conformal sizing"
+                )
+                multipliers = sizer.compute_position_multipliers(signal_aligned, X_dummy)
         else:
-            # Fallback: fewer tickers in features than sizer expects
-            X_dummy = np.zeros((n, sizer._n_features or 1))
             context.log.warning(
                 f"portfolio_weights [{partition_date}]: "
-                f"feature/ticker mismatch ({len(feat_df)} vs {n} tickers, "
-                f"{len(feat_cols)} vs {sizer._n_features} features) — "
-                f"using dummy features for conformal sizing"
+                "position sizer non trovato — multipliers=1.0"
             )
-            multipliers = sizer.compute_position_multipliers(signal_aligned, X_dummy)
-    else:
-        context.log.warning(
-            f"portfolio_weights [{partition_date}]: "
-            "position sizer non trovato — multipliers=1.0"
-        )
-        multipliers = pd.Series(1.0, index=cov_tickers, name="multiplier")
+            multipliers = pd.Series(1.0, index=cov_tickers, name="multiplier")
 
     # Pesi correnti: portafoglio live se disponibile, altrimenti bootstrap da zero.
     current_w, portfolio_value = _load_live_portfolio_snapshot(cov_tickers)
@@ -1895,7 +1907,12 @@ def tda_warning_signal(context: AssetExecutionContext) -> dict:
                     pass
     if not frames:
         return {"status": "skipped_no_returns"}
-    ohlcv = pl.concat(frames).sort(["ticker", "valid_time"])
+    ohlcv = (
+        pl.concat(frames)
+        .sort(["ticker", "valid_time", "transaction_time"])
+        .unique(["ticker", "valid_time"], keep="last")
+        .sort(["ticker", "valid_time"])
+    )
     returns_wide = (
         ohlcv.select(["ticker", "valid_time", "adj_close"])
         .with_columns(

@@ -80,9 +80,32 @@ class DifferentiablePortfolioConstructor:
         self,
         target_weights: pd.Series,
         current_weights: pd.Series,
-        prices: pd.Series,
-        portfolio_value: float,
+        *args: Any,
+        **kwargs: Any,
     ) -> pd.DataFrame:
-        return self._delegate.compute_orders(
-            target_weights, current_weights, prices, portfolio_value
-        )
+        """Convert target/current weights into orders.
+
+        Accept both the legacy ``(target, current, prices, portfolio_value)``
+        call style and the current portfolio-constructor signature
+        ``(target, current, portfolio_value)``.
+        """
+        portfolio_value = kwargs.pop("portfolio_value", None)
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+        if portfolio_value is None:
+            if len(args) == 1:
+                portfolio_value = args[0]
+            elif len(args) >= 2:
+                portfolio_value = args[-1]
+            else:
+                raise TypeError("compute_orders() missing portfolio_value")
+        return self._delegate.compute_orders(target_weights, current_weights, portfolio_value)
+
+    def __getattr__(self, name: str):
+        """Forward any unsupported attribute/method to the CVXPY delegate.
+
+        This keeps the shadow wrapper API-compatible with ``PortfolioConstructor``
+        as the pipeline evolves, without having to mirror every helper method
+        explicitly.
+        """
+        return getattr(self._delegate, name)

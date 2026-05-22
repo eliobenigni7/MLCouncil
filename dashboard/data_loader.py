@@ -30,6 +30,7 @@ _PAPER_TRADES_DIR = _ROOT / "data" / "paper_trades"
 _RAW_DIR = _ROOT / "data" / "raw"
 _RISK_DIR = _ROOT / "data" / "risk"
 _RESULTS_DIR = _ROOT / "data" / "results"
+_RESULTS_SNAPSHOTS_DIR = _ROOT / "data" / "results_snapshots"
 _UNKNOWN_REGIME = {"regime": "unknown", "bull": 0.0, "bear": 0.0, "transition": 0.0}
 _ATTRIBUTION_COLUMNS = [
     "date",
@@ -70,6 +71,12 @@ def _empty_regime_history() -> pd.DataFrame:
 
 def _empty_portfolio_snapshot() -> pd.DataFrame:
     return pd.DataFrame(columns=_PORTFOLIO_SNAPSHOT_COLUMNS)
+
+
+def _results_dir_for_tag(results_tag: str | None) -> Path:
+    if not results_tag:
+        return _RESULTS_DIR
+    return _RESULTS_SNAPSHOTS_DIR / results_tag
 
 
 def _densify_business_days(series: pd.Series) -> pd.Series:
@@ -172,13 +179,13 @@ def _load_equity_from_trade_logs() -> Optional[pd.Series]:
 # ============================================================================
 
 @st.cache_data(ttl=3600)
-def load_equity_curve(mode: str = "Paper Trading") -> pd.Series:
+def load_equity_curve(mode: str = "Paper Trading", results_tag: str | None = None) -> pd.Series:
     """Load equity curve from backtest result or paper trading logs.
 
     Returns a Series normalized to 100 at inception (public-safe).
     Columns: DatetimeIndex, values: normalized portfolio value.
     """
-    equity = _try_load_equity_from_disk(mode)
+    equity = _try_load_equity_from_disk(mode, results_tag=results_tag)
     if equity is None or equity.empty:
         return _empty_series("equity_normalized")
 
@@ -190,10 +197,11 @@ def load_equity_curve(mode: str = "Paper Trading") -> pd.Series:
     return equity
 
 
-def _try_load_equity_from_disk(mode: str) -> Optional[pd.Series]:
+def _try_load_equity_from_disk(mode: str, results_tag: str | None = None) -> Optional[pd.Series]:
     """Try to load a real equity curve from disk artifacts."""
+    results_dir = _results_dir_for_tag(results_tag)
     # 1. Pickled BacktestResult
-    result_pkl = _RESULTS_DIR / "backtest_result.pkl"
+    result_pkl = results_dir / "backtest_result.pkl"
     if result_pkl.exists():
         try:
             from council.pickle_security import trusted_pickle_load
@@ -206,7 +214,7 @@ def _try_load_equity_from_disk(mode: str) -> Optional[pd.Series]:
             pass
 
     # 2. Parquet equity log in data/results/
-    equity_pq = _RESULTS_DIR / "equity_curve.parquet"
+    equity_pq = results_dir / "equity_curve.parquet"
     if equity_pq.exists():
         try:
             df = pd.read_parquet(equity_pq)
@@ -215,6 +223,9 @@ def _try_load_equity_from_disk(mode: str) -> Optional[pd.Series]:
                 return df[col].dropna()
         except Exception:
             pass
+
+    if results_tag is not None:
+        return None
 
     # 3. Paper trading daily snapshots: data/orders/YYYY-MM-DD.parquet
     if mode == "Paper Trading" and _ORDERS_DIR.exists():
@@ -263,9 +274,9 @@ def _synthetic_equity_curve(mode: str) -> pd.Series:
 # ============================================================================
 
 @st.cache_data(ttl=3600)
-def load_benchmark(mode: str = "Paper Trading") -> pd.Series:
+def load_benchmark(mode: str = "Paper Trading", results_tag: str | None = None) -> pd.Series:
     """Load SPY benchmark matching equity curve dates."""
-    equity = load_equity_curve(mode)
+    equity = load_equity_curve(mode, results_tag=results_tag)
     if equity.empty:
         return _empty_series("SPY")
 
@@ -320,9 +331,9 @@ def load_benchmark(mode: str = "Paper Trading") -> pd.Series:
 # ============================================================================
 
 @st.cache_data(ttl=3600)
-def load_daily_returns(mode: str = "Paper Trading") -> pd.Series:
+def load_daily_returns(mode: str = "Paper Trading", results_tag: str | None = None) -> pd.Series:
     """Daily returns derived from equity curve."""
-    equity = load_equity_curve(mode)
+    equity = load_equity_curve(mode, results_tag=results_tag)
     returns = equity.pct_change().dropna()
     returns.name = "returns"
     return returns

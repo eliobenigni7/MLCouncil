@@ -8,8 +8,10 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# ARM64 / CPU-only: force torch without CUDA to save disk space
 COPY requirements.txt requirements_api.txt ./
-RUN pip install --no-cache-dir --timeout 120 -r requirements.txt
+RUN pip install --no-cache-dir --timeout 120 torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir --timeout 120 -r requirements.txt
 
 ENV PYTHONPATH=/app \
     MLCOUNCIL_ENV_PROFILE=prod \

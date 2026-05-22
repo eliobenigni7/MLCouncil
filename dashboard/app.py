@@ -149,6 +149,34 @@ def render_performance_tab(mode: str, start_date: date, end_date: date) -> None:
         key=f"performance_monthly_heatmap_{mode}",
     )
 
+    if mode == "Backtest":
+        frontier_dir = _ROOT / "data" / "results_snapshots" / "frontier"
+        frontier_ready = (frontier_dir / "equity_curve.parquet").exists() or (frontier_dir / "backtest_result.pkl").exists()
+        st.divider()
+        st.subheader("Baseline vs Frontier")
+        st.caption("Baseline usa i risultati correnti; Frontier appare quando esiste una snapshot salvata in data/results_snapshots/frontier/")
+        if frontier_ready:
+            col_base, col_frontier = st.columns(2)
+            with col_base:
+                st.markdown("**Baseline**")
+                st.plotly_chart(
+                    charts.equity_curve_chart(load_equity_curve(mode), load_benchmark(mode)),
+                    use_container_width=True,
+                    key=f"comparison_baseline_{mode}",
+                )
+            with col_frontier:
+                st.markdown("**Frontier**")
+                st.plotly_chart(
+                    charts.equity_curve_chart(
+                        load_equity_curve(mode, results_tag="frontier"),
+                        load_benchmark(mode, results_tag="frontier"),
+                    ),
+                    use_container_width=True,
+                    key=f"comparison_frontier_{mode}",
+                )
+        else:
+            st.info("Ancora nessuna snapshot Frontier. Quando la salvi, la vedrai qui a fianco del baseline.")
+
 
 # ============================================================================
 # Tab: Council Attribution

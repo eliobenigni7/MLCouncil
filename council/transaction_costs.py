@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 
 from council.cost_calibration import (
     DEFAULT_CALIBRATION_PATH,
@@ -26,6 +27,143 @@ _ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COMMISSION_BPS = 1.0
 DEFAULT_SLIPPAGE_BPS = 3.0
 DEFAULT_CONFIDENCE_FLOOR = 30
+
+# ---------------------------------------------------------------------------
+# Dynamic slippage — volume-aware estimation
+# ---------------------------------------------------------------------------
+
+_DYNAMIC_SLIPPAGE_ENABLED = None  # lazy-check
+_DYNAMIC_SLIPPAGE_CACHE: dict[str, float | None] = {}
+_OHLCV_BASE = _ROOT / "data" / "raw" / "ohlcv"
+_CACHE_MISS = "__NOCACHE__"  # sentinel to distinguish "not yet cached" from "cached as None"
+
+
+def _dynamic_slippage_enabled() -> bool:
+    global _DYNAMIC_SLIPPAGE_ENABLED
+    if _DYNAMIC_SLIPPAGE_ENABLED is None:
+        raw = os.getenv("MLCOUNCIL_DYNAMIC_SLIPPAGE", "").strip().lower()
+        _DYNAMIC_SLIPPAGE_ENABLED = raw in ("true", "1", "yes")
+    return _DYNAMIC_SLIPPAGE_ENABLED
+
+
+def _estimate_daily_volume(ticker: str) -> float | None:
+    """Read last ~60 trading days of OHLCV and return average daily notional.
+
+    Looks for consolidated ``<ticker>.parquet`` first, then falls back to
+    year-file globbing in ``data/raw/ohlcv/<ticker>/``.  Results are cached
+    in a module-level dict.
+    """
+    if ticker in _DYNAMIC_SLIPPAGE_CACHE:
+        return _DYNAMIC_SLIPPAGE_CACHE[ticker]
+
+    ticker_dir = _OHLCV_BASE / ticker
+    if not ticker_dir.is_dir():
+        _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+        return None
+
+    # Prefer consolidated file, otherwise glob year files
+    consolidated = ticker_dir / f"{ticker}.parquet"
+    if consolidated.exists():
+        dfs = [pd.read_parquet(consolidated)]
+    else:
+        year_files = sorted(ticker_dir.glob("*.parquet"), reverse=True)
+        if not year_files:
+            _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+            return None
+        dfs = [pd.read_parquet(p) for p in year_files]
+
+    try:
+        ohlcv = pd.concat(dfs, ignore_index=True)
+    except ValueError:
+        _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+        return None
+
+    if ohlcv.empty:
+        _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+        return None
+
+    # Normalise valid_time to datetime for sorting
+    vt = ohlcv["valid_time"]
+    if pd.api.types.is_datetime64_any_dtype(vt):
+        pass
+    else:
+        try:
+            vt = pd.to_datetime(vt, errors="coerce")
+        except Exception:
+            _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+            return None
+
+    ohlcv = ohlcv.assign(_vt=vt).dropna(subset=["_vt"]).sort_values("_vt", ascending=False)
+
+    # Last 60 trading days
+    recent = ohlcv.head(60).copy()
+    if recent.empty:
+        _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+        return None
+
+    notional = recent["close"].values.astype(float) * recent["volume"].values.astype(float)
+    avg = float(np.nanmean(notional))
+    if avg <= 0 or np.isnan(avg):
+        _DYNAMIC_SLIPPAGE_CACHE[ticker] = None
+        return None
+
+    _DYNAMIC_SLIPPAGE_CACHE[ticker] = avg
+    return avg
+
+
+def estimate_dynamic_slippage_bps(
+    ticker: str,
+    order_notional: float,
+    daily_volume: float | None = None,
+    base_bps: float | None = None,
+) -> float:
+    """Volume-aware slippage estimate using square-root market-impact model.
+
+    Base model::
+
+        slippage_bps = base_bps × sqrt(1e9 / daily_volume)
+                        × sqrt(order_notional / daily_volume)
+
+    where *base_bps* defaults to :func:`estimate_slippage_bps` if not given.
+    The result is clamped between 0.5× and 3× the static baseline.
+
+    Parameters
+    ----------
+    ticker :
+        Ticker symbol.
+    order_notional :
+        Dollar notional of the intended trade.
+    daily_volume :
+        Estimated average daily notional for the ticker.  If ``None`` the
+        function will attempt to derive it from OHLCV data via
+        :func:`_estimate_daily_volume`.
+    base_bps :
+        Optional override for the baseline slippage.  If omitted the static
+        lookup is used.
+
+    Returns
+    -------
+    Slippage in basis points.
+    """
+    if base_bps is not None:
+        base = base_bps
+    else:
+        base = estimate_slippage_bps(ticker)
+
+    if daily_volume is None:
+        daily_volume = _estimate_daily_volume(ticker)
+
+    if daily_volume is None or daily_volume <= 0 or order_notional <= 0:
+        return base
+
+    # sqrt(reference_notional / daily_volume) — captures general liquidity level
+    # sqrt(order_notional / daily_volume) — captures order-size-specific impact
+    reference_notional = 1e9  # $1B reference — aligned with existing volume_factor
+    impact = base * np.sqrt(reference_notional / daily_volume) * np.sqrt(order_notional / daily_volume)
+
+    # Clamp
+    impact = float(np.clip(impact, 0.5 * base, 3.0 * base))
+    return impact
 
 
 def _read_bps_env(key: str, default: float) -> float:
@@ -84,34 +222,75 @@ def resolve_slippage_bps(
     *,
     artifact: Optional[CalibrationArtifact] = None,
     confidence_floor: Optional[int] = None,
+    order_notional: float = 0.0,
+    daily_volume: float | None = None,
 ) -> float:
-    """Blend static lookup slippage with calibrated kappa when sample allows."""
+    """Blend static lookup slippage with calibrated kappa when sample allows.
+
+    When ``MLCOUNCIL_DYNAMIC_SLIPPAGE=true`` and ``order_notional > 0``, the
+    blended value is further scaled by a volume-aware impact model via
+    :func:`estimate_dynamic_slippage_bps`.
+    """
     lookup = estimate_slippage_bps(ticker)
+
     if artifact is None:
-        return lookup
+        blended = lookup
+    else:
+        floor = confidence_floor if confidence_floor is not None else get_confidence_floor()
+        tier = ticker_tier(ticker)
 
-    floor = confidence_floor if confidence_floor is not None else get_confidence_floor()
-    tier = ticker_tier(ticker)
+        kappa = artifact.kappa_by_ticker.get(ticker)
+        n = artifact.fill_count_by_ticker.get(ticker, 0)
+        if kappa is None:
+            kappa = artifact.kappa_by_tier.get(tier)
+            n = artifact.fill_count_by_tier.get(tier, 0)
 
-    kappa = artifact.kappa_by_ticker.get(ticker)
-    n = artifact.fill_count_by_ticker.get(ticker, 0)
-    if kappa is None:
-        kappa = artifact.kappa_by_tier.get(tier)
-        n = artifact.fill_count_by_tier.get(tier, 0)
+        if kappa is None or n <= 0:
+            blended = lookup
+        else:
+            alpha = min(1.0, float(n) / float(floor))
+            blended = float((1.0 - alpha) * lookup + alpha * kappa)
 
-    if kappa is None or n <= 0:
-        return lookup
+    # Dynamic volume-aware scaling (applied on top of the blended baseline)
+    if _dynamic_slippage_enabled() and order_notional > 0:
+        return estimate_dynamic_slippage_bps(
+            ticker,
+            order_notional=order_notional,
+            daily_volume=daily_volume,
+            base_bps=blended,
+        )
 
-    alpha = min(1.0, float(n) / float(floor))
-    return float((1.0 - alpha) * lookup + alpha * kappa)
+    return blended
 
 
 def build_slippage_bps_by_ticker(
     artifact: CalibrationArtifact,
     tickers: Optional[set[str]] = None,
 ) -> dict[str, float]:
-    """Build per-ticker blended slippage for all known universe tickers."""
+    """Build per-ticker blended slippage for all known universe tickers.
+
+    When ``MLCOUNCIL_DYNAMIC_SLIPPAGE=true`` the returned values also
+    incorporate volume-aware scaling, assuming a representative trade of
+    1% of the estimated daily notional for each ticker.
+    """
     universe = tickers if tickers is not None else set(TIER_BY_TICKER.keys())
+
+    if _dynamic_slippage_enabled():
+        result: dict[str, float] = {}
+        for t in universe:
+            dv = _estimate_daily_volume(t)
+            if dv is not None and dv > 0:
+                representative_order = 0.01 * dv
+                result[t] = resolve_slippage_bps(
+                    t,
+                    artifact=artifact,
+                    order_notional=representative_order,
+                    daily_volume=dv,
+                )
+            else:
+                result[t] = resolve_slippage_bps(t, artifact=artifact)
+        return result
+
     return {t: resolve_slippage_bps(t, artifact=artifact) for t in universe}
 
 

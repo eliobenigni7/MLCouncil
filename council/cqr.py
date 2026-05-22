@@ -24,18 +24,28 @@ SHADOW_STACKING_DIR = Path(__file__).resolve().parents[1] / "data" / "results" /
 
 
 def position_sizing_mode() -> str:
-    """``conformal`` (default) or ``cqr``."""
+    """``conformal`` (default), ``cqr``, or ``kelly``."""
     raw = os.getenv("MLCOUNCIL_POSITION_SIZING", "conformal").strip().lower()
+    if raw in ("kelly", "fractional_kelly", "fractional-kelly"):
+        return "kelly"
     return raw if raw in ("conformal", "cqr") else "conformal"
 
 
 def position_sizer_checkpoint_name() -> str:
-    return "cqr_sizer.pkl" if position_sizing_mode() == "cqr" else "conformal_sizer.pkl"
+    mode = position_sizing_mode()
+    if mode == "kelly":
+        return "kelly_sizer.pkl"
+    return "cqr_sizer.pkl" if mode == "cqr" else "conformal_sizer.pkl"
 
 
 def get_position_sizer(coverage: float = 0.85):
-    """Factory: conformal (MAPIE) or CQR shadow sizer."""
-    if position_sizing_mode() == "cqr":
+    """Factory: conformal (MAPIE), CQR shadow sizer, or FractionalKellySizer."""
+    mode = position_sizing_mode()
+    if mode == "kelly":
+        from council.fractional_kelly import FractionalKellySizer
+
+        return FractionalKellySizer()
+    if mode == "cqr":
         return CQRPositionSizer(coverage=coverage)
     from council.conformal import ConformalPositionSizer
 

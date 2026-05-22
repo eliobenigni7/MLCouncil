@@ -73,6 +73,7 @@ class TestTransactionCostModelFromEnv:
         assert model.slippage_bps_by_ticker is None
 
     def test_loads_calibration_when_valid(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MLCOUNCIL_DYNAMIC_SLIPPAGE", raising=False)
         art = _make_artifact()
         calib = tmp_path / "cost_calibration.json"
         write_calibration(art, path=calib)

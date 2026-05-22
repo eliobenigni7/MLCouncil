@@ -195,6 +195,7 @@ class RiskEngine:
         self._equity_curve: Optional[pd.Series] = None
         self._peak_equity: float = 0
         self._warned_unknown_tickers: set[str] = set()
+        self._correlation_scale: float = 1.0
 
     def _resolve_sector(self, position: Position) -> str:
         explicit_sector = (position.sector or "").strip()
@@ -526,6 +527,76 @@ class RiskEngine:
 
         return breaches
 
+    def detect_correlation_breakdown(
+        self,
+        cov: pd.DataFrame,
+        threshold: float | None = None,
+        max_correlated_pairs_ratio: float | None = None,
+    ) -> float | None:
+        """Detect correlation breakdown from covariance matrix.
+
+        Computes the correlation matrix from the given covariance matrix.
+        If the ratio of highly-correlated pairs (|correlation| > threshold)
+        exceeds max_correlated_pairs_ratio, returns a scale factor (0.5)
+        to reduce exposure. Returns None if no breakdown detected.
+
+        Env overrides:
+            MLCOUNCIL_CORRELATION_THRESHOLD (default 0.7)
+            MLCOUNCIL_MAX_CORRELATED_PAIRS (default 0.4)
+        """
+        if cov.empty or cov.shape[0] < 2:
+            return None
+
+        if threshold is None:
+            threshold = float(
+                os.getenv("MLCOUNCIL_CORRELATION_THRESHOLD", "0.7")
+            )
+        if max_correlated_pairs_ratio is None:
+            max_correlated_pairs_ratio = float(
+                os.getenv("MLCOUNCIL_MAX_CORRELATED_PAIRS", "0.4")
+            )
+
+        n = cov.shape[0]
+        # Compute correlation matrix from covariance
+        std_diag = np.sqrt(np.diag(cov))
+        # Guard against zero-variance assets
+        if (std_diag <= 0).any():
+            return None
+        d_inv = np.diag(1.0 / std_diag)
+        corr = d_inv @ cov.values @ d_inv
+
+        # Extract upper triangle (excluding diagonal)
+        i_upper = np.triu_indices(n, k=1)
+        corr_vals = corr[i_upper]
+
+        total_pairs = len(corr_vals)
+        if total_pairs == 0:
+            return None
+
+        high_corr_count = int(np.sum(np.abs(corr_vals) > threshold))
+        ratio = high_corr_count / total_pairs
+
+        logger.debug(
+            "Correlation breakdown check: %d/%d pairs > |%.2f| (ratio=%.3f, limit=%.3f)",
+            high_corr_count,
+            total_pairs,
+            threshold,
+            ratio,
+            max_correlated_pairs_ratio,
+        )
+
+        if ratio > max_correlated_pairs_ratio:
+            logger.warning(
+                "Correlation breakdown detected: %.1f%% of pairs exceed |%.2f| "
+                "(limit %.1f%%) — applying 0.5x scale factor",
+                ratio * 100,
+                threshold,
+                max_correlated_pairs_ratio * 100,
+            )
+            return 0.5
+
+        return None
+
     def check_limits_from_weights(
         self,
         weights: pd.Series,
@@ -580,7 +651,28 @@ class RiskEngine:
                         f"VaR Limit: {var_pct:.2%} (limit {self.limits.max_var_pct:.2%})"
                     )
 
+        # Correlation breakdown check
+        scale = self.detect_correlation_breakdown(cov)
+        if scale is not None:
+            self._correlation_scale = scale
+            breaches.append(
+                f"Correlation Breakdown: {scale:.0%} scale factor applied "
+                f"(excessive cross-asset correlation detected)"
+            )
+        else:
+            self._correlation_scale = 1.0
+
         return (len(breaches) == 0, breaches)
+
+    @property
+    def correlation_scale_factor(self) -> float:
+        """Return the current correlation scale factor.
+
+        Returns 1.0 normally (no breakdown). If a correlation breakdown
+        has been detected via check_limits_from_weights, returns the
+        reduction factor (e.g. 0.5).
+        """
+        return self._correlation_scale
 
     def compute_full_risk(
         self,

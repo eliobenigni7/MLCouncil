@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import shutil
 import sys
 from pathlib import Path
 
@@ -186,6 +187,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path for cost A/B JSON (default: data/results/cost_ab.json when --cost-mode=both)",
     )
+    parser.add_argument(
+        "--snapshot-tag",
+        type=str,
+        default=None,
+        help="Optional snapshot label saved under data/results_snapshots/<tag>/",
+    )
     return parser.parse_args()
 
 
@@ -225,6 +232,21 @@ def main() -> None:
     all_dates = sorted(features["valid_time"].unique().to_list())
     if len(all_dates) < 6:
         raise SystemExit("Not enough historical dates to run a walk-forward backtest")
+
+    # Filter to NYSE business days only — weekends and holidays have sparse
+    # crypto-only coverage (1-2 tickers), creating fictitious compounding that
+    # distorts the equity curve. Uses pandas USFederalHolidayCalendar (no extra deps).
+    from pandas.tseries.holiday import USFederalHolidayCalendar
+    from pandas.tseries.offsets import CustomBusinessDay
+
+    us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
+    all_dates_pd = pd.DatetimeIndex(all_dates)
+    valid_mask = pd.Series(all_dates_pd, index=all_dates_pd).apply(
+        lambda d: bool(len(pd.date_range(d, d, freq=us_bd)))
+    ).values
+    all_dates = [d for d, ok in zip(all_dates, valid_mask) if ok]
+    if len(all_dates) < 6:
+        raise SystemExit("Not enough NYSE business days to run a walk-forward backtest")
 
     train_window = min(max(63, len(all_dates) // 10), max(len(all_dates) - 2, 1))
     test_window = max(REBALANCE_EVERY, min(63, max(10, len(all_dates) // 8)))
@@ -301,6 +323,11 @@ def main() -> None:
 
         test_dates = sorted(feat_test["valid_time"].unique().to_list())
         for d in test_dates:
+            # Skip weekends (non-trading days).  Weights are forward-filled by the
+            # portfolio simulator in step 3, so skipped days do not generate weight rows.
+            if pd.Timestamp(d).dayofweek >= 5:  # Saturday=5, Sunday=6
+                continue
+
             day_feat = feat_test.filter(pl.col("valid_time") == d)
             if day_feat.is_empty():
                 continue
@@ -485,6 +512,14 @@ def main() -> None:
         attr_df["date"] = pd.to_datetime(attr_df["date"])
         attr_df = attr_df.sort_values(["date", "model_name"])
         attr_df.to_parquet(RESULTS_DIR / "attribution.parquet", index=False)
+
+    if args.snapshot_tag:
+        snapshot_dir = RESULTS_DIR.parent / "results_snapshots" / args.snapshot_tag
+        snapshot_dir.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
+        shutil.copytree(RESULTS_DIR, snapshot_dir)
+        print(f"Snapshot copied to: {snapshot_dir}")
 
     print("[5/7] Done")
     print("Simulation stats:\n" + json.dumps(sim.stats, indent=2, default=float))
