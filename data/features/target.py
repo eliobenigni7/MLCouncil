@@ -19,7 +19,7 @@ import polars as pl
 def compute_targets(
     ohlcv_df: pl.DataFrame,
     horizons: list[int] | None = None,
-    risk_adjusted: bool = False,
+    risk_adjusted: bool = True,
     vol_window: int = 21,
 ) -> pl.DataFrame:
     """Compute forward returns and their cross-sectional ranks.
@@ -33,7 +33,7 @@ def compute_targets(
     risk_adjusted:
         If True, compute risk-adjusted (volatility-scaled) targets.
         target = forward_return / rolling_volatility
-        Default True - produces more stable signals.
+        Default is True, producing more stable signals.
     vol_window:
         Rolling window for volatility estimation in days. Default 21.
 
@@ -83,13 +83,11 @@ def compute_targets(
                 )
                 .with_columns(
                     (pl.col("daily_ret") ** 2)
-                    .rolling(index_column="valid_time", period=f"{vol_window}d", min_periods=vol_window)
-                    .mean()
+                    .rolling_mean(window_size=vol_window, min_samples=vol_window)
                     .alias("ret_sq_rolling"),
                     pl.col("daily_ret")
                     .shift(1)
-                    .rolling(index_column="valid_time", period=f"{vol_window}d", min_periods=vol_window)
-                    .mean()
+                    .rolling_mean(window_size=vol_window, min_samples=vol_window)
                     .alias("ret_rolling"),
                 )
                 .with_columns(
