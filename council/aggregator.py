@@ -51,21 +51,21 @@ def aggregator_mode() -> str:
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "regime_weights": {
-        "bull":       {"lgbm": 0.50, "sentiment": 0.30, "hmm": 0.20},
-        "bear":       {"lgbm": 0.40, "sentiment": 0.20, "hmm": 0.40},
-        "transition": {"lgbm": 0.45, "sentiment": 0.25, "hmm": 0.30},
+        "bull":       {"lgbm": 0.55, "sentiment": 0.25, "hmm": 0.20},
+        "bear":       {"lgbm": 0.35, "sentiment": 0.15, "hmm": 0.50},
+        "transition": {"lgbm": 0.45, "sentiment": 0.20, "hmm": 0.35},
     },
-    "weight_clip": {"min": 0.05, "max": 0.70},
+    "weight_clip": {"min": 0.05, "max": 0.60},
     "performance": {
-        "min_history_days":    30,
-        "ic_rolling_window":   30,
-        # 60 days is too noisy for equity IC-Sharpe; 100 days is the minimum
+        "min_history_days":    60,
+        "ic_rolling_window":   60,
+        # 60 days is too noisy for equity IC-Sharpe; 120 days is the minimum
         # recommended window for stable Sharpe estimation in the literature.
-        "sharpe_rolling_window": 100,
+        "sharpe_rolling_window": 120,
     },
     "orthogonality": {
-        "max_correlation": 0.70,
-        "correlation_window": 60,
+        "max_correlation": 0.65,
+        "correlation_window": 90,
         "auto_downweight": True,
         "downweight_factor": 0.5,
     },
@@ -81,8 +81,8 @@ class OrthogonalityMonitor:
 
     def __init__(
         self,
-        max_correlation: float = 0.70,
-        correlation_window: int = 60,
+        max_correlation: float = 0.65,
+        correlation_window: int = 90,
         auto_downweight: bool = True,
         downweight_factor: float = 0.5,
     ):
@@ -248,8 +248,8 @@ class CouncilAggregator:
 
         ortho_cfg = cfg.get("orthogonality", DEFAULT_CONFIG["orthogonality"])
         self._ortho_monitor = OrthogonalityMonitor(
-            max_correlation=ortho_cfg.get("max_correlation", 0.70),
-            correlation_window=ortho_cfg.get("correlation_window", 60),
+            max_correlation=ortho_cfg.get("max_correlation", 0.65),
+            correlation_window=ortho_cfg.get("correlation_window", 90),
             auto_downweight=ortho_cfg.get("auto_downweight", True),
             downweight_factor=ortho_cfg.get("downweight_factor", 0.5),
         ) if use_orthogonality else None

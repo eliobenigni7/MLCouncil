@@ -12,17 +12,17 @@ microstructure:
 
 regime_weights:
   bull:
-    lgbm:      0.50
-    sentiment: 0.30
+    lgbm:      0.55
+    sentiment: 0.25
     hmm:       0.20
   bear:
-    lgbm:      0.40
-    sentiment: 0.20
-    hmm:       0.40
+    lgbm:      0.35
+    sentiment: 0.15
+    hmm:       0.50
   transition:
     lgbm:      0.45
-    sentiment: 0.25
-    hmm:       0.30
+    sentiment: 0.20
+    hmm:       0.35
   # Enabled in production_manifest experts.* after walk-forward promotion:
   # tft: 0.15
   # microstructure: 0.10
@@ -31,13 +31,12 @@ regime_weights:
 # No model falls below min or above max after renormalization.
 weight_clip:
   min: 0.05   # floor: every active model keeps at least 5 %
-  max: 0.70   # ceiling: no model dominates more than 70 %
+  max: 0.60   # ceiling: no model dominates more than 60 %
 
 # Performance history thresholds
 performance:
-  min_history_days:    30   # days of IC history needed before adaptive weights kick in
-  ic_rolling_window:   30   # days for IC rolling average (get_attribution)
-  # 60 days is too short for equity Sharpe estimation — noise dominates signal.
-  # 100 days provides a stable IC-Sharpe estimate while still being responsive
-  # to regime changes (≈5 trading months).
-  sharpe_rolling_window: 100
+  min_history_days:    60   # days of IC history needed before adaptive weights kick in
+  ic_rolling_window:   60   # days for IC rolling average (get_attribution)
+  # 120 days provides a stable IC-Sharpe estimate while still being responsive
+  # to regime changes (≈6 trading months).
+  sharpe_rolling_window: 120
