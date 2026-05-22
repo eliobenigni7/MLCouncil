@@ -37,20 +37,38 @@ universe:
 
   mid_cap:
     # Financials
+    - AIG
     - BAC
+    - CB
     - GS
+    - MET
+    - TFC
+    - USB
+    # Consumer Staples
+    - CL
+    - MDLZ
     # Healthcare
-    - PFE
-    - MRK
     - ABT
+    - AMGN
+    - BMY
+    - GILD
+    - MRK
+    - PFE
+    # Industrials
+    - GE
+    - LMT
+    - RTX
+    # Technology
+    - ADP
+    - INTU
     # Energy
     - COP
 
   settings:
-    max_large_cap_weight: 0.08
-    max_mid_cap_weight: 0.05
-    min_liquidity: 1000000
-    rebalance_threshold: 0.02
+    max_large_cap_weight: 0.06
+    max_mid_cap_weight: 0.04
+    min_liquidity: 5000000
+    rebalance_threshold: 0.03
     data_dir: data/raw
     transaction_timezone: America/New_York
     transaction_time_hour: 20
