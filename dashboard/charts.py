@@ -715,3 +715,67 @@ def optimizer_waterfall(diagnostics: dict, top_n: int = 8) -> go.Figure:
         height=400,
     )
     return fig
+
+
+# ============================================================================
+# Playground overlay
+# ============================================================================
+
+_OVERLAY_PALETTE = [
+    "#00CC96",  # current run
+    "#636EFA",
+    "#EF553B",
+    "#AB63FA",
+    "#FFA15A",
+    "#19D3F3",
+    "#FF6692",
+    "#B6E880",
+]
+
+
+def playground_overlay_chart(
+    curves: dict[str, pd.Series],
+    benchmark: Optional[pd.Series] = None,
+    *,
+    title: str = "Playground equity curves (normalized to 100)",
+) -> go.Figure:
+    """Overlay one or more normalized equity curves for snapshot comparison."""
+    fig = go.Figure()
+    if benchmark is not None and not benchmark.empty:
+        b = benchmark.dropna()
+        if not b.empty:
+            base = float(b.iloc[0])
+            b_norm = b / base * 100.0
+            fig.add_trace(go.Scatter(
+                x=b_norm.index, y=b_norm.values,
+                mode="lines", name=str(benchmark.name or "SPY"),
+                line=dict(color="#888888", width=1.4, dash="dot"),
+            ))
+
+    for i, (label, series) in enumerate(curves.items()):
+        if series is None or series.empty:
+            continue
+        s = series.dropna()
+        if s.empty:
+            continue
+        base = float(s.iloc[0])
+        if base <= 0:
+            continue
+        norm = s / base * 100.0
+        color = _OVERLAY_PALETTE[i % len(_OVERLAY_PALETTE)]
+        fig.add_trace(go.Scatter(
+            x=norm.index, y=norm.values,
+            mode="lines", name=str(label),
+            line=dict(color=color, width=2.2),
+        ))
+
+    fig.update_layout(
+        **_DARK_LAYOUT,
+        title=title,
+        xaxis_title="Date",
+        yaxis_title="Equity (base 100)",
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.12),
+        height=420,
+    )
+    return fig
