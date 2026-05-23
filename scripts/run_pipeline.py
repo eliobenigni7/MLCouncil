@@ -88,13 +88,34 @@ def step_download(force: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 def step_load_ohlcv() -> pl.DataFrame:
+    def _normalize_frame(df: pl.DataFrame, ticker: str) -> pl.DataFrame:
+        if "symbol" in df.columns:
+            df = df.drop("symbol")
+        if "ticker" not in df.columns:
+            df = df.with_columns(pl.lit(ticker).alias("ticker"))
+        if "transaction_time" in df.columns:
+            df = df.drop("transaction_time")
+        if "valid_time" in df.columns:
+            if df["valid_time"].dtype == pl.Datetime:
+                df = df.with_columns(pl.col("valid_time").dt.replace_time_zone("UTC").cast(pl.Date))
+            elif df["valid_time"].dtype != pl.Date:
+                df = df.with_columns(pl.col("valid_time").cast(pl.Date))
+        keep_cols = [c for c in ["ticker", "valid_time", "open", "high", "low", "close", "adj_close", "volume"] if c in df.columns]
+        return df.select(keep_cols) if keep_cols else df
+
     frames = []
     for ticker in TICKERS:
         ticker_dir = DATA_DIR / "ohlcv" / ticker
         if not ticker_dir.exists():
             continue
+        ticker_frames = []
         for p in sorted(ticker_dir.glob("*.parquet")):
-            frames.append(pl.read_parquet(p))
+            df = pl.read_parquet(p)
+            df = _normalize_frame(df, ticker)
+            if not df.is_empty():
+                ticker_frames.append(df)
+        if ticker_frames:
+            frames.append(pl.concat(ticker_frames, how="vertical_relaxed").unique(subset=["ticker", "valid_time"], keep="last"))
 
     if not frames:
         sys.exit(
@@ -102,7 +123,7 @@ def step_load_ohlcv() -> pl.DataFrame:
             "Esegui senza --skip-download per scaricare i dati."
         )
 
-    ohlcv = pl.concat(frames).sort(["ticker", "valid_time"])
+    ohlcv = pl.concat(frames, how="vertical_relaxed").unique(["ticker", "valid_time"]).sort(["ticker", "valid_time"])
     n_tickers = ohlcv["ticker"].n_unique()
     n_days    = ohlcv["valid_time"].n_unique()
     print(f"[2] OHLCV caricato: {n_tickers} ticker × {n_days} giorni\n")
