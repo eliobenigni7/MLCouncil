@@ -202,8 +202,16 @@ def split_refit_eval_slices(
     )
 
 
-def build_targets_series(targets_pl: pl.DataFrame, horizon_col: str = "rank_fwd_1d") -> pd.Series:
+def build_targets_series(
+    targets_pl: pl.DataFrame,
+    horizon_col: str | None = None,
+    *,
+    horizon: int = 1,
+) -> pd.Series:
     """Convert ``compute_targets`` output to MultiIndex Series."""
+    from data.features.target import training_rank_column
+
+    horizon_col = horizon_col or training_rank_column(horizon)
     pdf = targets_pl.select(["ticker", "valid_time", horizon_col]).to_pandas()
     if pd.api.types.is_datetime64_any_dtype(pdf["valid_time"]):
         pdf["valid_time"] = pdf["valid_time"].dt.date

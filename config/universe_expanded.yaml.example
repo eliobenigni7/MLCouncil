@@ -1,0 +1,80 @@
+# =============================================================================
+# MLCouncil — Expanded universe template (Phase 3.2 scaffold)
+# =============================================================================
+# Copy sections into config/universe.yaml when ready to scale research ingest
+# toward ~100–150 liquid US equities. Do NOT enable wholesale in production
+# without updating universe_history.yaml, liquidity filters, and backtests.
+#
+# Pipeline loader (_load_universe in data/pipeline.py) accepts:
+#   - legacy flat list: universe.tickers: [AAPL, ...]
+#   - bucketed lists: universe.large_cap / mid_cap / small_cap (ignores settings)
+#   - crypto_universe.large_cap (optional)
+#
+# Current production file: config/universe.yaml (~32 equities + 2 crypto).
+# =============================================================================
+
+universe:
+  large_cap:
+    # --- Technology (mega) ---
+    - AAPL
+    - MSFT
+    - GOOGL
+    - GOOG
+    - META
+    - NVDA
+    - AVGO
+    - ORCL
+    - CRM
+    - AMD
+  mid_cap:
+    # --- Financials ---
+    - AIG
+    - BAC
+    - CB
+    - GS
+    - MET
+    - TFC
+    - USB
+    - SCHW
+    - PNC
+    - COF
+  # Uncomment to reach ~100–150 names (research only)
+  # small_cap:
+  #   - ENPH
+  #   - PLTR
+  #   - SOFI
+  #   - RIVN
+  #   - COIN
+  #   # ... add from liquidity screen (ADV > $5M, spread < 15 bps)
+
+  settings:
+    max_large_cap_weight: 0.04
+    max_mid_cap_weight: 0.025
+    max_small_cap_weight: 0.015
+    min_liquidity: 5000000
+    rebalance_threshold: 0.03
+    data_dir: data/raw
+    transaction_timezone: America/New_York
+    transaction_time_hour: 20
+    transaction_time_minute: 30
+    forward_fill_max_days: 2
+
+crypto_universe:
+  large_cap:
+    - BTCUSD
+    - ETHUSD
+
+macro:
+  vix: VIXCLS
+  treasury_10y: DGS10
+  treasury_2y: DGS2
+  sp500: SP500
+  sp500_rolling_windows:
+    - 21
+    - 63
+    - 252
+  fred_series:
+    vix: VIXCLS
+    treasury_10y: DGS10
+    treasury_2y: DGS2
+    sp500: SP500

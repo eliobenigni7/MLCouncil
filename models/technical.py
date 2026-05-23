@@ -29,12 +29,18 @@ import shap
 import yaml
 
 from .base import BaseModel
+from .regime_features import append_regime_features, regime_features_enabled
 
 # ---------------------------------------------------------------------------
 # CPCV split generator
 # ---------------------------------------------------------------------------
 
 _EXCLUDE_COLS = {"ticker", "valid_time", "transaction_time"}
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _cs_feature_zscore_enabled() -> bool:
+    return os.getenv("MLCOUNCIL_CS_FEATURE_ZSCORE", "").strip().lower() in _TRUTHY
 
 
 def cpcv_split(
@@ -142,6 +148,28 @@ class TechnicalModel(BaseModel):
     def _feature_cols_from(self, features: pl.DataFrame) -> list[str]:
         return [c for c in features.columns if c not in _EXCLUDE_COLS]
 
+    def _prepare_features(
+        self,
+        features: pl.DataFrame,
+        regime_history: pd.DataFrame | None = None,
+    ) -> pl.DataFrame:
+        """Optionally merge HMM regime columns when ``MLCOUNCIL_REGIME_FEATURES=true``."""
+        if not regime_features_enabled() or regime_history is None or regime_history.empty:
+            return features
+
+        top_cols: list[str] | None = None
+        if self._shap_importance is not None and not self._shap_importance.empty:
+            top_cols = self._shap_importance["feature"].head(10).tolist()
+        elif self._feature_cols:
+            top_cols = self._feature_cols[:10]
+
+        return append_regime_features(
+            features,
+            regime_history,
+            interactions=True,
+            top_feature_cols=top_cols,
+        )
+
     def _to_pandas_aligned(
         self, features: pl.DataFrame, targets: pd.Series
     ) -> pd.DataFrame:
@@ -189,12 +217,29 @@ class TechnicalModel(BaseModel):
             return s - s.mean()
         return (s - s.mean()) / std
 
+    def _apply_cs_feature_zscore(self, df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
+        """Cross-sectionally z-score feature columns within each valid_time."""
+        if not _cs_feature_zscore_enabled() or not feat_cols:
+            return df
+        out = df.copy()
+        grouped = out.groupby("valid_time", group_keys=False)
+        for col in feat_cols:
+            out[col] = grouped[col].transform(self._zscore_series)
+        return out
+
     # ------------------------------------------------------------------
     # fit
     # ------------------------------------------------------------------
 
-    def fit(self, features: pl.DataFrame, targets: pd.Series) -> None:
+    def fit(
+        self,
+        features: pl.DataFrame,
+        targets: pd.Series,
+        regime_history: pd.DataFrame | None = None,
+    ) -> None:
+        features = self._prepare_features(features, regime_history)
         df, feat_cols = self._to_pandas_aligned(features, targets)
+        df = self._apply_cs_feature_zscore(df, feat_cols)
         df = df.dropna(subset=["__target__"] + feat_cols)
 
         self._feature_cols = feat_cols
@@ -338,10 +383,15 @@ class TechnicalModel(BaseModel):
     # predict
     # ------------------------------------------------------------------
 
-    def predict(self, features: pl.DataFrame) -> pd.Series:
+    def predict(
+        self,
+        features: pl.DataFrame,
+        regime_history: pd.DataFrame | None = None,
+    ) -> pd.Series:
         if self._model is None:
             raise RuntimeError("Model not fitted. Call fit() first.")
 
+        features = self._prepare_features(features, regime_history)
         feat_cols = list(self._feature_cols or self._feature_cols_from(features))
         present_cols = [c for c in feat_cols if c in features.columns]
         missing_cols = [c for c in feat_cols if c not in features.columns]
@@ -358,6 +408,7 @@ class TechnicalModel(BaseModel):
         else:
             df["valid_time"] = pd.to_datetime(df["valid_time"], errors="coerce").dt.date
 
+        df = self._apply_cs_feature_zscore(df, feat_cols)
         X = df[feat_cols].fillna(0.0) if feat_cols else pd.DataFrame(index=df.index)
         raw_scores = self._model.predict(X)
 

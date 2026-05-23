@@ -413,6 +413,34 @@ class TestAlertResult:
 # Utility helper tests
 # ---------------------------------------------------------------------------
 
+class TestICMonitoring:
+    def test_rolling_ic_computed(self, monitor: CouncilMonitor) -> None:
+        ic = _make_ic_series([0.02] * 80)
+        roll = monitor.compute_rolling_ic(ic, window=60)
+        assert not roll.dropna().empty
+        assert float(roll.dropna().iloc[-1]) == pytest.approx(0.02, abs=1e-6)
+
+    def test_model_correlation_matrix(self, monitor: CouncilMonitor) -> None:
+        ic_a = _make_ic_series(np.linspace(0.01, 0.05, 70).tolist())
+        ic_b = _make_ic_series((np.linspace(0.01, 0.05, 70) * 0.9).tolist())
+        corr = monitor.compute_model_correlation({"lgbm": ic_a, "sentiment": ic_b}, window=60)
+        assert not corr.empty
+        assert corr.iloc[0]["rho"] > 0.5
+
+    def test_ic_sustained_decay_alert(self, monitor: CouncilMonitor) -> None:
+        ic = _make_ic_series([-0.01] * 70)
+        result = monitor.check_ic_sustained_decay("lgbm", ic, window=60)
+        assert result.is_alert
+        assert result.check_type == "ic_monitoring"
+        assert result.severity == Severity.WARNING
+
+    def test_ic_monitoring_healthy_ic_no_alert(self, monitor: CouncilMonitor) -> None:
+        ic = _make_ic_series([0.02] * 50)
+        result = monitor.check_ic_sustained_decay("lgbm", ic)
+        assert not result.is_alert
+        assert result.check_type == "ic_monitoring"
+
+
 class TestCostCalibrationDivergence:
     def test_no_artifact_is_info(self, monitor: CouncilMonitor, tmp_path, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_COST_CALIBRATION_PATH", str(tmp_path / "missing.json"))

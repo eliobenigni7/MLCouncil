@@ -4,7 +4,7 @@ Architecture
 ------------
 * Base weights per market regime are loaded from ``config/regime_weights.yaml``.
 * After ``min_history_days`` of observed IC history, weights are scaled by each
-  model's **EWM IC-Sharpe** (halflife up to 20 days, bounded by the configured
+  model's **EWM IC-Sharpe** (halflife up to 60 days, bounded by the configured
   history window) — mean IC / std IC * sqrt(252). Legacy config keys
   ``ic_rolling_window`` and ``sharpe_rolling_window`` only bound the history
   window passed to the EWM; they do not switch to a simple rolling mean.
@@ -49,13 +49,16 @@ def aggregator_mode() -> str:
     return _moe_mode()
 
 
+_ORTHO_RENORM_MIN_SUM = 0.85
+_IC_SHARPE_EWM_HALFLIFE_MAX = int(os.getenv("MLCOUNCIL_IC_SHARPE_HALFLIFE", "60"))
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "regime_weights": {
-        "bull":       {"lgbm": 0.55, "sentiment": 0.25, "hmm": 0.20},
-        "bear":       {"lgbm": 0.35, "sentiment": 0.15, "hmm": 0.50},
-        "transition": {"lgbm": 0.45, "sentiment": 0.20, "hmm": 0.35},
+        "bull":       {"lgbm": 0.70, "sentiment": 0.12, "hmm": 0.18},
+        "bear":       {"lgbm": 0.65, "sentiment": 0.10, "hmm": 0.25},
+        "transition": {"lgbm": 0.68, "sentiment": 0.12, "hmm": 0.20},
     },
-    "weight_clip": {"min": 0.05, "max": 0.60},
+    "weight_clip": {"min": 0.05, "max": 0.75},
     "performance": {
         "min_history_days":    60,
         "ic_rolling_window":   60,
@@ -305,11 +308,18 @@ class CouncilAggregator:
             for m in weights:
                 weights[m] *= penalties.get(m, 1.0)
             ortho_applied = True
-            # Confidence shrinkage: do NOT re-normalise after orthogonality.
-            # Effective weights may sum to < 1.0; combined signal is z-scored
-            # downstream so scale is preserved while penalised models contribute less.
             for m in weights:
-                weights[m] = min(weights[m], self._max_weight)
+                weights[m] = min(
+                    max(weights[m], self._min_weight),
+                    self._max_weight,
+                )
+            weight_sum_after_ortho = sum(weights.values())
+            if weight_sum_after_ortho >= _ORTHO_RENORM_MIN_SUM:
+                weights = {
+                    m: v / weight_sum_after_ortho for m, v in weights.items()
+                }
+            # Mild orthogonality shrinkage (sum < 0.85) keeps effective weights
+            # below 1.0; combined signal is z-scored downstream.
         effective_weight_sum = sum(weights.values())
 
         agg_mode = aggregator_mode()
@@ -638,9 +648,8 @@ class CouncilAggregator:
     def _compute_rolling_sharpe(self, models: list[str]) -> dict[str, float]:
         """Compute IC-Sharpe using exponentially weighted IC observations.
 
-        EWM with halflife=20 days gives ~4× more weight to the most recent
-        month vs. observations from 60 days ago, enabling faster adaptation
-        to regime changes compared to a simple rolling mean.
+        EWM halflife defaults to 60 days (override via ``MLCOUNCIL_IC_SHARPE_HALFLIFE``)
+        for a smoother IC-Sharpe estimate vs. the prior 20-day setting.
         """
         result: dict[str, float] = {}
         for m in models:
@@ -648,7 +657,10 @@ class CouncilAggregator:
             recent = [v for _, v in entries[-self._sharpe_window:]]
             if len(recent) >= 2:
                 ic_series = pd.Series(recent, dtype=float)
-                halflife = min(20, len(recent) // 2)
+                halflife = min(
+                    _IC_SHARPE_EWM_HALFLIFE_MAX,
+                    max(2, len(recent) // 2),
+                )
                 ewm = ic_series.ewm(halflife=halflife, adjust=True)
                 ewm_mean = float(ewm.mean().iloc[-1])
                 ewm_std = float(ewm.std().iloc[-1])

@@ -11,6 +11,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MONITORING_PATH = _ROOT / "config" / "monitoring.yaml"
 
 _DEFAULTS = {
+    "ic_monitoring": {
+        "threshold": 0.005,
+        "window_days": 60,
+        "consecutive_days": 20,
+    },
     "cost_calibration": {
         "divergence_warning_bps": 5.0,
         "divergence_critical_bps": 15.0,

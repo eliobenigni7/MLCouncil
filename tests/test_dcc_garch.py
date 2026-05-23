@@ -57,3 +57,27 @@ class TestDCCEstimator:
 
         assert list(cov.index) == ["AAA", "BBB"]
         assert np.all(np.linalg.eigvalsh(cov.values) >= -1e-8)
+
+
+class TestFactorCovariance:
+    def test_factor_estimator_psd(self):
+        from council.covariance_dynamic import FactorCovarianceEstimator
+
+        rets = _synthetic_returns(n_assets=4)
+        cov = FactorCovarianceEstimator(n_factors=2).fit(rets).cov()
+        assert cov.shape[0] == cov.shape[1] == len(rets.columns)
+        assert np.all(np.linalg.eigvalsh(cov.values) >= -1e-8)
+
+    def test_compute_covariance_factor_mode(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_COVARIANCE_ESTIMATOR", "factor")
+        from council.covariance_dynamic import compute_covariance_from_returns
+
+        rets = _synthetic_returns()
+        cov = compute_covariance_from_returns(rets)
+        assert cov.shape[0] == len(rets.columns)
+
+    def test_covariance_estimator_mode_factor(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_COVARIANCE_ESTIMATOR", "factor")
+        from council.covariance_dynamic import covariance_estimator_mode
+
+        assert covariance_estimator_mode() == "factor"

@@ -22,7 +22,7 @@ from council.aggregator import CouncilAggregator
 from council.transaction_costs import TransactionCostModel
 from backtest.simulator import simulate_weight_backtest
 from data.features.alpha158 import build_macro_context, compute_alpha158
-from data.features.target import compute_targets
+from data.features.target import compute_targets, training_rank_column
 from models.regime import RegimeModel
 from models.technical import TechnicalModel
 
@@ -181,14 +181,15 @@ def run_one_year_backtest(
         if ft.is_empty() or fe.is_empty():
             continue
 
+        rank_col = training_rank_column(1)
         tg = (
             targets
             .filter((pl.col("valid_time") >= pl.lit(train_start)) & (pl.col("valid_time") <= pl.lit(train_end)))
-            .select(["ticker", "valid_time", "rank_fwd_1d"])
+            .select(["ticker", "valid_time", rank_col])
             .to_pandas()
         )
         tg["valid_time"] = pd.to_datetime(tg["valid_time"]).dt.date
-        tg = tg.set_index(["ticker", "valid_time"])["rank_fwd_1d"].dropna()
+        tg = tg.set_index(["ticker", "valid_time"])[rank_col].dropna()
 
         lgbm = TechnicalModel(config_path=str(ROOT / "config" / "models.yaml"))
         lgbm.fit(ft, tg)
@@ -203,7 +204,7 @@ def run_one_year_backtest(
         sizer = ConformalPositionSizer()
         tg_pivot = targets.filter(pl.col("valid_time") <= pl.lit(train_end)).to_pandas()
         tg_pivot["valid_time"] = pd.to_datetime(tg_pivot["valid_time"]).dt.date
-        calib = tg_pivot.set_index(["ticker", "valid_time"])["rank_fwd_1d"].dropna()
+        calib = tg_pivot.set_index(["ticker", "valid_time"])[rank_col].dropna()
         ft_pd = ft.to_pandas().set_index(["ticker", "valid_time"])
         fcols_list = [c for c in ft_pd.columns if c not in {"ticker", "valid_time"} and c in fcols]
         X_calib = ft_pd[fcols_list].values
@@ -289,7 +290,7 @@ def run_one_year_backtest(
         weights=weights_df,
         forward_returns=aligned_returns,
         initial_capital=100_000.0,
-        cost_model=TransactionCostModel.static_lookup(),
+        cost_model=TransactionCostModel.from_env(),
     )
 
     total_elapsed = time.time() - t0
@@ -308,21 +309,15 @@ def run_one_year_backtest(
 
 
 if __name__ == "__main__":
-    # Cycle through configs — relax constraints progressively to find Sharpe > 1
+    # Cycle through yearly windows with production-aligned risk limits (~15% turnover).
     window_configs = [
         # (year_start, year_end, train_months, rebalance, vol_daily, max_pos, max_turnover)
-        # Latest year — very relaxed to test raw signal alpha
-        ("2025-05-01", "2026-05-20", 6, 3, 0.025, 0.15, 0.50),
-        # 2024
-        ("2024-01-01", "2025-01-01", 6, 3, 0.025, 0.15, 0.50),
-        # 2023
-        ("2023-01-01", "2024-01-01", 6, 3, 0.025, 0.15, 0.50),
-        # 2022 (bear market)
-        ("2022-01-01", "2023-01-01", 6, 3, 0.025, 0.15, 0.50),
-        # 2021 (post-covid bull)
-        ("2021-01-01", "2022-01-01", 6, 3, 0.025, 0.15, 0.50),
-        # 2020 (covid crash + recovery)
-        ("2020-01-01", "2021-01-01", 6, 3, 0.025, 0.15, 0.50),
+        ("2025-05-01", "2026-05-20", 6, 3, 0.025, 0.15, 0.15),
+        ("2024-01-01", "2025-01-01", 6, 3, 0.025, 0.15, 0.15),
+        ("2023-01-01", "2024-01-01", 6, 3, 0.025, 0.15, 0.15),
+        ("2022-01-01", "2023-01-01", 6, 3, 0.025, 0.15, 0.15),
+        ("2021-01-01", "2022-01-01", 6, 3, 0.025, 0.15, 0.15),
+        ("2020-01-01", "2021-01-01", 6, 3, 0.025, 0.15, 0.15),
     ]
 
     for start, end, train_mo, reb, vol_d, pos, tover in window_configs:

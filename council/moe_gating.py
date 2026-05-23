@@ -17,6 +17,7 @@ import pandas as pd
 from loguru import logger
 
 DEFAULT_MOE_CHECKPOINT = Path(__file__).resolve().parents[1] / "models" / "checkpoints" / "moe_gate.pkl"
+SHADOW_MOE_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "shadow_moe"
 
 _REGIME_INDEX = {"bull": 0, "bear": 1, "transition": 2}
 
@@ -189,3 +190,33 @@ class MoEGatingNetwork:
 
 def moe_enabled() -> bool:
     return aggregator_mode() == "moe"
+
+
+def log_moe_shadow(
+    partition_date: str,
+    *,
+    linear_signal: pd.Series,
+    moe_signal: pd.Series,
+    gate_weights: list[float] | None,
+    expert_order: list[str] | None,
+    effective_weights: dict[str, float] | None = None,
+    out_dir: Path | None = None,
+) -> Path:
+    """Write MoE vs linear council comparison parquet (no production effect)."""
+    out_dir = out_dir or SHADOW_MOE_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    idx = linear_signal.index.union(moe_signal.index)
+    payload = pd.DataFrame(
+        {
+            "ticker": idx.astype(str),
+            "linear_signal": linear_signal.reindex(idx).fillna(0.0).values,
+            "moe_signal": moe_signal.reindex(idx).fillna(0.0).values,
+            "gate_weights": [gate_weights] * len(idx) if gate_weights else [None] * len(idx),
+            "expert_order": [expert_order] * len(idx) if expert_order else [None] * len(idx),
+            "effective_weights": [effective_weights] * len(idx) if effective_weights else [None] * len(idx),
+        }
+    )
+    path = out_dir / f"{partition_date}.parquet"
+    payload.to_parquet(path, index=False)
+    logger.info(f"MoE shadow logged → {path} ({len(payload)} rows)")
+    return path

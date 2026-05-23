@@ -105,7 +105,7 @@ def get_position_sizing_mode() -> str:
 def get_covariance_estimator() -> str:
     if manifest_enabled():
         mode = council_setting("covariance_estimator", "ledoit")
-        return mode if mode in ("ledoit", "dcc") else "ledoit"
+        return mode if mode in ("ledoit", "dcc", "factor") else "ledoit"
     from council.covariance_dynamic import covariance_estimator_mode
 
     return covariance_estimator_mode()
@@ -114,7 +114,7 @@ def get_covariance_estimator() -> str:
 def get_portfolio_mode() -> str:
     if manifest_enabled():
         mode = council_setting("portfolio_mode", "cvxpy")
-        return mode if mode in ("cvxpy", "diff") else "cvxpy"
+        return mode if mode in ("cvxpy", "diff", "hrp_blend") else "cvxpy"
     from council.portfolio_diff import portfolio_constructor_mode
 
     return portfolio_constructor_mode()

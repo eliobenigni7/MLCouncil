@@ -8,6 +8,8 @@ Three families of checks
 3. SHAP stability   Overlap of today's top-10 features with the 30-day baseline;
                     alert if overlap falls below 70 %.
 4. Regime change    HMM emits a new state AND transition probability > 0.70.
+5. IC monitoring    E.3: 60d rolling IC per model, pairwise IC correlation, alert when
+                    rolling IC < 0.005 for 20+ consecutive days (log/alert only).
 
 All results are returned as ``AlertResult`` instances (see alerts.py).
 ``run_daily_checks`` optionally logs scalar metrics to MLflow when available.
@@ -84,6 +86,14 @@ class CouncilMonitor:
     regime_transition_prob_min:
         Minimum transition probability required (alongside a regime change) to
         fire a regime-change alert. Default 0.70.
+    ic_monitor_threshold:
+        Stricter IC floor for E.3 sustained-decay monitoring (default 0.005).
+    ic_monitor_window:
+        Rolling window (days) for per-model IC and cross-model correlation.
+        Default 60.
+    ic_monitor_consecutive_days:
+        Consecutive days below ``ic_monitor_threshold`` before E.3 alert.
+        Default 20. Does not auto-downweight council weights.
     """
 
     def __init__(
@@ -95,6 +105,9 @@ class CouncilMonitor:
         drift_feature_fraction: float = 0.20,
         shap_overlap_min: float = 0.70,
         regime_transition_prob_min: float = 0.70,
+        ic_monitor_threshold: float = 0.005,
+        ic_monitor_window: int = 60,
+        ic_monitor_consecutive_days: int = 20,
     ) -> None:
         self.ic_threshold = ic_threshold
         self.shap_stability_threshold = shap_stability_threshold
@@ -103,6 +116,12 @@ class CouncilMonitor:
         self.drift_feature_fraction = drift_feature_fraction
         self.shap_overlap_min = shap_overlap_min
         self.regime_transition_prob_min = regime_transition_prob_min
+        ic_cfg = load_monitoring_config().get("ic_monitoring", {})
+        self.ic_monitor_threshold = float(ic_cfg.get("threshold", ic_monitor_threshold))
+        self.ic_monitor_window = int(ic_cfg.get("window_days", ic_monitor_window))
+        self.ic_monitor_consecutive_days = int(
+            ic_cfg.get("consecutive_days", ic_monitor_consecutive_days)
+        )
 
     # ------------------------------------------------------------------
     # 1. Alpha decay
@@ -200,6 +219,152 @@ class CouncilMonitor:
             metric_value=latest_ic,
             threshold=self.ic_threshold,
         )
+
+    # ------------------------------------------------------------------
+    # 1b. E.3 IC monitoring (60d rolling IC, model correlation, sustained decay)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_rolling_ic(
+        ic_history: pd.Series,
+        window: int = 60,
+    ) -> pd.Series:
+        """Rolling mean IC over ``window`` days (DatetimeIndex preserved when present)."""
+        if ic_history.empty:
+            return pd.Series(dtype=float, name="rolling_ic")
+        series = ic_history.sort_index()
+        return series.rolling(window=min(window, len(series)), min_periods=max(5, window // 4)).mean()
+
+    @staticmethod
+    def compute_model_correlation(
+        ic_histories: dict[str, pd.Series],
+        window: int = 60,
+    ) -> pd.DataFrame:
+        """Rolling Spearman ρ between model IC series (pairwise, aligned on dates)."""
+        if len(ic_histories) < 2:
+            return pd.DataFrame()
+
+        aligned = pd.DataFrame(
+            {name: s.sort_index() for name, s in ic_histories.items()}
+        ).dropna(how="all")
+        if len(aligned) < 5:
+            return pd.DataFrame()
+
+        tail = aligned.tail(window)
+        models = list(tail.columns)
+        rows: list[dict[str, float]] = []
+        for i, m1 in enumerate(models):
+            for m2 in models[i + 1 :]:
+                pair = tail[[m1, m2]].dropna()
+                if len(pair) < 5:
+                    rho = float("nan")
+                else:
+                    rho = float(pair[m1].corr(pair[m2], method="spearman"))
+                rows.append({"model_a": m1, "model_b": m2, "rho": rho})
+        return pd.DataFrame(rows)
+
+    def check_ic_sustained_decay(
+        self,
+        model_name: str,
+        ic_history: pd.Series,
+        *,
+        window: int | None = None,
+    ) -> AlertResult:
+        """E.3 alert when rolling IC stays below ``ic_monitor_threshold`` for many days.
+
+        Logging/alert only — does not mutate council weights.
+        """
+        window = window or self.ic_monitor_window
+        threshold = self.ic_monitor_threshold
+        min_days = self.ic_monitor_consecutive_days
+
+        if len(ic_history) < max(10, min_days):
+            return AlertResult(
+                is_alert=False,
+                severity=Severity.INFO,
+                model_name=model_name,
+                check_type="ic_monitoring",
+                message=f"Insufficient IC history for E.3 monitoring ({len(ic_history)} days).",
+                recommendation="Accumulate more daily IC observations.",
+                metric_value=float(ic_history.mean()) if len(ic_history) else float("nan"),
+                threshold=threshold,
+            )
+
+        rolling = self.compute_rolling_ic(ic_history, window=window)
+        evaluation = rolling.dropna().tail(window)
+        if evaluation.empty:
+            return AlertResult(
+                is_alert=False,
+                severity=Severity.INFO,
+                model_name=model_name,
+                check_type="ic_monitoring",
+                message="No rolling IC values available.",
+                recommendation="Verify IC pipeline.",
+                metric_value=float("nan"),
+                threshold=threshold,
+            )
+
+        latest_rolling_ic = float(evaluation.iloc[-1])
+        below = evaluation < threshold
+        consecutive = _count_trailing_true(below)
+
+        if consecutive >= min_days:
+            return AlertResult(
+                is_alert=True,
+                severity=Severity.WARNING,
+                model_name=model_name,
+                check_type="ic_monitoring",
+                message=(
+                    f"{model_name}: {window}d rolling IC = {latest_rolling_ic:.4f} "
+                    f"below {threshold:.4f} for {consecutive} consecutive days "
+                    f"(E.3 threshold {min_days}d)."
+                ),
+                recommendation=(
+                    "Review model attribution and data quality. "
+                    "Consider retrain evaluation — no automatic weight change is applied."
+                ),
+                metric_value=latest_rolling_ic,
+                threshold=threshold,
+            )
+
+        return AlertResult(
+            is_alert=False,
+            severity=Severity.INFO,
+            model_name=model_name,
+            check_type="ic_monitoring",
+            message=(
+                f"{model_name}: {window}d rolling IC = {latest_rolling_ic:.4f} "
+                f"(E.3 monitor; consecutive below threshold = {consecutive})."
+            ),
+            recommendation="No action required.",
+            metric_value=latest_rolling_ic,
+            threshold=threshold,
+        )
+
+    def summarize_ic_monitoring(
+        self,
+        ic_histories: dict[str, pd.Series],
+        *,
+        window: int | None = None,
+    ) -> dict[str, Any]:
+        """Return rolling IC snapshot and pairwise correlations for dashboards/MLflow."""
+        window = window or self.ic_monitor_window
+        rolling_ic: dict[str, float] = {}
+        for name, series in ic_histories.items():
+            roll = self.compute_rolling_ic(series, window=window)
+            rolling_ic[name] = float(roll.dropna().iloc[-1]) if not roll.dropna().empty else float("nan")
+
+        corr_df = self.compute_model_correlation(ic_histories, window=window)
+        correlations = (
+            corr_df.set_index(["model_a", "model_b"])["rho"].to_dict()
+            if not corr_df.empty
+            else {}
+        )
+        return {
+            "window_days": window,
+            "rolling_ic": rolling_ic,
+            "pairwise_rho": correlations,
+        }
 
     # ------------------------------------------------------------------
     # 2. Feature drift
@@ -719,6 +884,7 @@ class CouncilMonitor:
         top_shap_features: list[str] | None = None,
         run_cost_calibration_check: bool = True,
         cost_calibration_streaks: dict[str, int] | None = None,
+        run_ic_monitoring: bool = True,
         dispatch: bool = True,
     ) -> list[AlertResult]:
         """Run all monitoring checks for a given date.
@@ -759,6 +925,18 @@ class CouncilMonitor:
                 result = self.check_alpha_decay(model_name, ic_series)
                 results.append(result)
                 _log_check(result, check_date)
+
+            if run_ic_monitoring:
+                summary = self.summarize_ic_monitoring(ic_histories)
+                logger.info(
+                    f"[{check_date}] IC monitoring summary: "
+                    f"rolling_ic={summary.get('rolling_ic')} "
+                    f"pairwise_rho={summary.get('pairwise_rho')}"
+                )
+                for model_name, ic_series in ic_histories.items():
+                    ic_result = self.check_ic_sustained_decay(model_name, ic_series)
+                    results.append(ic_result)
+                    _log_check(ic_result, check_date)
 
         # Feature drift
         if features_today is not None and features_baseline is not None:
@@ -874,5 +1052,9 @@ def _log_to_mlflow(results: list[AlertResult], check_date: date) -> None:
                 mlflow.log_metric(f"{prefix}/is_alert", int(r.is_alert))
             n_alerts = sum(1 for r in results if r.is_alert)
             mlflow.log_metric("monitor/total_alerts", n_alerts)
+            ic_monitor_alerts = sum(
+                1 for r in results if r.is_alert and r.check_type == "ic_monitoring"
+            )
+            mlflow.log_metric("monitor/ic_monitoring_alerts", ic_monitor_alerts)
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"MLflow logging skipped: {exc}")

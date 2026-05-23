@@ -1,5 +1,10 @@
 # MLCouncil monitoring thresholds (cost calibration track, ADR-0003).
 
+ic_monitoring:
+  threshold: 0.005
+  window_days: 60
+  consecutive_days: 20
+
 cost_calibration:
   divergence_warning_bps: 5.0
   divergence_critical_bps: 15.0

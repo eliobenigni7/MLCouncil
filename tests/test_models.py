@@ -262,6 +262,30 @@ class TestLGBM:
         assert list(passed.columns) == ["feat_a", "vix"]
         assert (passed["vix"] == 0.0).all()
 
+    def test_cs_feature_zscore_per_date(self, monkeypatch):
+        """MLCOUNCIL_CS_FEATURE_ZSCORE normalizes features within each valid_time."""
+        from models.technical import TechnicalModel
+
+        monkeypatch.setenv("MLCOUNCIL_CS_FEATURE_ZSCORE", "true")
+        model = TechnicalModel.__new__(TechnicalModel)
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["A", "B", "C", "D"],
+                "valid_time": [date(2024, 1, 2)] * 4,
+                "f1": [1.0, 2.0, 3.0, 4.0],
+                "f2": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+        out = model._apply_cs_feature_zscore(df, ["f1", "f2"])
+        for col in ("f1", "f2"):
+            assert abs(out[col].mean()) < 1e-6
+            assert abs(out[col].std(ddof=1) - 1.0) < 1e-6
+
+        monkeypatch.delenv("MLCOUNCIL_CS_FEATURE_ZSCORE", raising=False)
+        unchanged = model._apply_cs_feature_zscore(df, ["f1"])
+        pd.testing.assert_series_equal(unchanged["f1"], df["f1"])
+
     def test_lgbm_fit_predict(self, synthetic_data, fitted_lgbm):
         """fit on 2y synthetic, predict on 6m hold-out; IC must be > -0.5."""
         from scipy.stats import spearmanr

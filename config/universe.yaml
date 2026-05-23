@@ -35,6 +35,10 @@ universe:
     - DIS
     - TMUS
 
+  # Phase 3.2 expansion scaffold (~100–150 tickers): see
+  # config/universe_expanded.yaml.example — add `small_cap:` bucket or copy
+  # buckets there; pipeline _load_universe() ignores `settings` and unknown keys.
+
   mid_cap:
     # Financials
     - AIG

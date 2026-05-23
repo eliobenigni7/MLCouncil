@@ -163,7 +163,7 @@ def step_split(
     ohlcv: pl.DataFrame,
     test_ratio: float = 0.20,
 ) -> tuple:
-    from data.features.target import compute_targets
+    from data.features.target import compute_targets, training_rank_column
 
     all_dates = sorted(features["valid_time"].unique().to_list())
     cutoff_idx = int(len(all_dates) * (1 - test_ratio))
@@ -172,7 +172,9 @@ def step_split(
     feat_train = features.filter(pl.col("valid_time") < cutoff)
     feat_test  = features.filter(pl.col("valid_time") >= cutoff)
 
-    targets_df = compute_targets(ohlcv, horizons=[1], risk_adjusted=False)
+    train_horizon = 1
+    rank_col = training_rank_column(train_horizon)
+    targets_df = compute_targets(ohlcv, horizons=[train_horizon], risk_adjusted=False)
     tgt_pd = (
         targets_df
         .filter(pl.col("valid_time") < cutoff)
@@ -180,7 +182,7 @@ def step_split(
     )
     tgt_pd["valid_time"] = pd.to_datetime(tgt_pd["valid_time"]).dt.date
     targets_train = (
-        tgt_pd.set_index(["ticker", "valid_time"])["rank_fwd_1d"].dropna()
+        tgt_pd.set_index(["ticker", "valid_time"])[rank_col].dropna()
     )
 
     print(f"[4] Split: train fino a {cutoff} ({len(all_dates[:cutoff_idx])} giorni) "
@@ -222,7 +224,7 @@ def step_online_lgbm(
     print(f"[5a-online] Checkpoint salvato in {checkpoint}")
 
     targets_pl = targets_df.filter(pl.col("valid_time") <= as_of)
-    targets = build_targets_series(targets_pl, horizon_col="rank_fwd_1d")
+    targets = build_targets_series(targets_pl, horizon=1)
     if len(targets) == 0:
         print("[5a-online] Nessun target disponibile — skip refit incrementale\n")
         return

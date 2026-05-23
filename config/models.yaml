@@ -16,6 +16,20 @@ cpcv:
   embargo_days: 10
   n_test_folds: 2
 
+# Phase 2 — meta-labeling secondary gate (off by default; train checkpoint separately)
+meta_label:
+  threshold: 0.55
+  min_abs_signal: 0.05
+  classifier:
+    n_estimators: 100
+    learning_rate: 0.05
+    num_leaves: 15
+    min_child_samples: 50
+    subsample: 0.8
+    colsample_bytree: 0.8
+    random_state: 42
+    verbose: -1
+
 hmm:
   n_states: 3
   n_iter: 100

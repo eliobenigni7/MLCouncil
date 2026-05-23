@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from data.features.alpha158 import build_macro_context, compute_alpha158  # noqa: E402
-from data.features.target import compute_targets  # noqa: E402
+from data.features.target import compute_targets, training_rank_column  # noqa: E402
 from models.tft import (  # noqa: E402
     TemporalFusionAlpha,
     build_shadow_signal_matrix,
@@ -144,11 +144,13 @@ def main() -> int:
     features = _filter_dates(features, start, end)
 
     print("\n[4/5] Targets...")
-    targets_pl = compute_targets(ohlcv, horizons=[5], risk_adjusted=False)
-    targets_df = targets_pl.select(["ticker", "valid_time", "rank_fwd_5d"]).to_pandas()
+    train_horizon = 5
+    targets_pl = compute_targets(ohlcv, horizons=[train_horizon], risk_adjusted=False)
+    rank_col = training_rank_column(train_horizon)
+    targets_df = targets_pl.select(["ticker", "valid_time", rank_col]).to_pandas()
     targets_df["valid_time"] = pd.to_datetime(targets_df["valid_time"]).dt.date
     targets = pd.Series(
-        targets_df["rank_fwd_5d"].values,
+        targets_df[rank_col].values,
         index=pd.MultiIndex.from_frame(
             targets_df[["ticker", "valid_time"]], names=["ticker", "valid_time"]
         ),

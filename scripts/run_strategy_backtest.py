@@ -32,7 +32,7 @@ from backtest.validation import build_purged_walk_forward_splits, run_walk_forwa
 from council.aggregator import CouncilAggregator
 from council.transaction_costs import TransactionCostModel
 from data.features.alpha158 import build_macro_context, compute_alpha158
-from data.features.target import compute_targets
+from data.features.target import compute_targets, training_rank_column
 from models.regime import RegimeModel
 from models.technical import TechnicalModel
 from scripts import run_pipeline as rp
@@ -299,17 +299,18 @@ def main() -> None:
             f"train {train_start} → {train_end} | test {test_start} → {test_end}"
         )
 
+        rank_col = training_rank_column(1)
         targets_train = (
             targets
             .filter(
                 (pl.col("valid_time") >= pl.lit(train_start))
                 & (pl.col("valid_time") <= pl.lit(train_end))
             )
-            .select(["ticker", "valid_time", "rank_fwd_1d"])
+            .select(["ticker", "valid_time", rank_col])
             .to_pandas()
         )
         targets_train["valid_time"] = pd.to_datetime(targets_train["valid_time"]).dt.date
-        targets_train = targets_train.set_index(["ticker", "valid_time"])["rank_fwd_1d"].dropna()
+        targets_train = targets_train.set_index(["ticker", "valid_time"])[rank_col].dropna()
 
         lgbm = TechnicalModel(config_path=str(ROOT / "config" / "models.yaml"))
         lgbm.fit(feat_train, targets_train)

@@ -53,3 +53,27 @@ class TestDifferentiablePortfolioConstructor:
         from council.portfolio_diff import get_portfolio_constructor
 
         assert isinstance(get_portfolio_constructor(), PortfolioConstructor)
+
+    def test_hrp_blend_mode_budget(self, monkeypatch):
+        from council.portfolio_diff import HRPBlendPortfolioConstructor
+
+        monkeypatch.setenv("MLCOUNCIL_PORTFOLIO_MODE", "hrp_blend")
+        monkeypatch.setenv("MLCOUNCIL_HRP_BLEND", "0.5")
+        monkeypatch.delenv("MLCOUNCIL_HRP_SOFT_PRIOR", raising=False)
+        tickers = [f"S{i}" for i in range(5)]
+        alpha = pd.Series(np.linspace(1, -1, 5), index=tickers)
+        mult = pd.Series(np.ones(5), index=tickers)
+        current_w = pd.Series(np.ones(5) / 5, index=tickers)
+        ctor = HRPBlendPortfolioConstructor()
+        assert ctor.backend == "hrp_blend"
+        weights = ctor.optimize(
+            alpha, mult, current_w, _cov(5), portfolio_value=50_000
+        )
+        assert abs(float(weights.sum()) - 1.0) < 1e-4
+        assert 0.0 < ctor.last_hrp_blend_lambda <= 1.0
+
+    def test_get_portfolio_constructor_hrp_blend(self, monkeypatch):
+        monkeypatch.setenv("MLCOUNCIL_PORTFOLIO_MODE", "hrp_blend")
+        from council.portfolio_diff import HRPBlendPortfolioConstructor, get_portfolio_constructor
+
+        assert isinstance(get_portfolio_constructor(), HRPBlendPortfolioConstructor)

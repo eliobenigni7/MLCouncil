@@ -2,7 +2,7 @@
 
 Optimisation problem (cvxpy)
 ----------------------------
-    maximize   (alpha ⊙ multipliers)' w - tc_penalty * turnover
+    maximize   (alpha ⊙ multipliers)' w - (λ_risk/2) w'Σw - λ_tc * turnover
     subject to
         sum(w)           == 1            budget constraint
         w                >= 0            long-only (PoC)
@@ -35,6 +35,7 @@ from loguru import logger
 _ROOT = Path(__file__).resolve().parents[1]
 _DIAGNOSTICS_DIR = _ROOT / "data" / "results" / "optimization_diagnostics"
 
+from council.covariance_dynamic import shrink_covariance_matrix
 from council.transaction_costs import (
     TransactionCostModel,
     get_default_commission_bps,
@@ -76,7 +77,7 @@ class PortfolioConstructor:
     slippage_bps : float
         Slippage in basis points (default from MLCOUNCIL_SLIPPAGE_BPS, 5.0 bps).
     tc_lambda : float
-        Transaction cost penalty weight (default 2.0).
+        Transaction cost penalty weight (default 2.0, override via MLCOUNCIL_TC_LAMBDA).
     """
 
     def __init__(self) -> None:
@@ -100,7 +101,7 @@ class PortfolioConstructor:
         # Defaults come from runtime env for parity with backtests.
         self.commission_bps: float = get_default_commission_bps()
         self.slippage_bps: float = get_default_slippage_bps()
-        self.tc_lambda: float = 2.0
+        self.tc_lambda: float = float(os.getenv("MLCOUNCIL_TC_LAMBDA", "2.0"))
         # Minimum absolute z-score to enter a position (filters noise).
         self.min_signal_strength: float = float(os.getenv("MLCOUNCIL_MIN_SIGNAL_STRENGTH", "0.20"))
         # Drawdown circuit breaker: scale exposure when portfolio loses too much.
@@ -387,12 +388,14 @@ class PortfolioConstructor:
 
         w_curr = current_weights.reindex(tickers).fillna(0.0).values
 
-        cov_raw = (
+        cov_df = (
             returns_covariance
             .reindex(index=tickers, columns=tickers)
             .fillna(0.0)
-            .values
         )
+        if os.getenv("MLCOUNCIL_PORTFOLIO_SHRINK_COV", "true").lower() != "false":
+            cov_df = shrink_covariance_matrix(cov_df)
+        cov_raw = cov_df.values
         cov = (cov_raw + cov_raw.T) / 2 + np.eye(n) * 1e-6
 
         max_vol_daily = (
@@ -407,10 +410,25 @@ class PortfolioConstructor:
 
         turnover = cp.norm1(w - w_curr) / 2
         self.cost_model = TransactionCostModel.from_env()
-        effective_slippage = self.cost_model.weighted_slippage_bps(w_curr, w_curr, tickers)
+        if tickers:
+            effective_slippage = float(
+                np.mean([self.cost_model.slippage_bps_for(str(t)) for t in tickers])
+            )
+        else:
+            effective_slippage = self.cost_model.slippage_bps
         effective_total_bps = self.cost_model.commission_bps + effective_slippage
         tc_cost = turnover * effective_total_bps / 10000
-        objective = cp.Maximize(alpha_objective - self.tc_lambda * tc_cost)
+        # λ_risk default: 1/max_vol_daily² so (λ/2)·w'Σw is O(1) when the vol cap binds.
+        risk_lambda = float(
+            os.getenv(
+                "MLCOUNCIL_RISK_LAMBDA",
+                str(1.0 / max(max_vol_daily ** 2, 1e-10)),
+            )
+        )
+        variance_penalty = 0.5 * risk_lambda * cp.quad_form(w, cov)
+        objective = cp.Maximize(
+            alpha_objective - variance_penalty - self.tc_lambda * tc_cost
+        )
 
         constraints: list = [
             cp.sum(w) == budget_fraction,

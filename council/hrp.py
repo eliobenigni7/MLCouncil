@@ -1,10 +1,12 @@
 """Hierarchical Risk Parity (López de Prado) weight construction.
 
 Used as an optional *soft prior* blended with the CVXPY mean-variance solution
-when ``MLCOUNCIL_HRP_SOFT_PRIOR=true``.
+when ``MLCOUNCIL_HRP_SOFT_PRIOR=true``, or via ``MLCOUNCIL_PORTFOLIO_MODE=hrp_blend``.
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 import pandas as pd
@@ -113,3 +115,67 @@ def covariance_condition_number(cov: pd.DataFrame) -> float:
         return float("inf")
     n = arr.shape[0]
     return float(np.linalg.cond(arr + np.eye(n) * 1e-8))
+
+
+def hrp_blend_weighting_mode() -> str:
+    """``fixed`` (default) or ``ir`` (condition-number proxy for blend λ)."""
+    raw = os.getenv("MLCOUNCIL_HRP_BLEND_WEIGHTING", "fixed").strip().lower()
+    return raw if raw in ("fixed", "ir") else "fixed"
+
+
+def resolve_hrp_blend_lambda(
+    cov: pd.DataFrame,
+    *,
+    fixed_blend: float | None = None,
+    weighting: str | None = None,
+) -> float:
+    """Blend weight λ on HRP: ``(1-λ)*CVXPY + λ*HRP``.
+
+    *fixed* — ``MLCOUNCIL_HRP_BLEND`` (default 0.5 for ``hrp_blend`` portfolio mode).
+    *ir* — raises λ when covariance is ill-conditioned (proxy for trusting HRP more).
+    """
+    mode = (weighting or hrp_blend_weighting_mode()).strip().lower()
+    if fixed_blend is None:
+        fixed_blend = float(os.getenv("MLCOUNCIL_HRP_BLEND", "0.5"))
+    lam = float(np.clip(fixed_blend, 0.0, 1.0))
+    if mode != "ir" or cov.shape[0] < 2:
+        return lam
+
+    ref = float(os.getenv("MLCOUNCIL_HRP_IR_COND_REF", "100"))
+    cond = covariance_condition_number(cov)
+    if not np.isfinite(cond) or ref <= 1.0:
+        return lam
+
+    ir_proxy = float(np.log1p(cond) / np.log1p(ref))
+    ir_proxy = float(np.clip(ir_proxy, 0.15, 0.85))
+    # Convex mix: respect configured floor/ceiling while letting IR scale λ
+    return float(np.clip(0.5 * lam + 0.5 * ir_proxy, 0.15, 0.85))
+
+
+def blend_cvxpy_with_hrp(
+    cvxpy_weights: np.ndarray,
+    cov: pd.DataFrame,
+    tickers: list[str],
+    *,
+    blend_lambda: float | None = None,
+) -> np.ndarray:
+    """Linear blend of CVXPY weights with HRP, renormalized to sum 1."""
+    n = len(tickers)
+    if n < 2:
+        return np.asarray(cvxpy_weights, dtype=float).reshape(-1)
+
+    cov_df = cov.reindex(index=tickers, columns=tickers).fillna(0.0)
+    lam = (
+        float(np.clip(blend_lambda, 0.0, 1.0))
+        if blend_lambda is not None
+        else resolve_hrp_blend_lambda(cov_df)
+    )
+    hrp_w = hrp_weights_from_covariance(cov_df).reindex(tickers).fillna(0.0).values
+    cvx = np.asarray(cvxpy_weights, dtype=float).reshape(-1)
+    blended = (1.0 - lam) * cvx + lam * hrp_w
+    total = float(blended.sum())
+    if total > 1e-12:
+        blended /= total
+    else:
+        blended = hrp_w
+    return np.clip(blended, 0.0, None)

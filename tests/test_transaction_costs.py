@@ -13,6 +13,7 @@ from council.transaction_costs import (
     TransactionCostModel,
     build_slippage_bps_by_ticker,
     estimate_slippage_bps,
+    estimate_sqrt_market_impact_bps,
     get_active_calibration_version,
     get_calibration_path,
     resolve_slippage_bps,
@@ -34,6 +35,45 @@ def _make_artifact(**kwargs) -> CalibrationArtifact:
     )
     defaults.update(kwargs)
     return CalibrationArtifact(**defaults)
+
+
+class TestSqrtMarketImpact:
+    def test_sqrt_impact_scales_with_participation(self):
+        base = 5.0
+        adv = 1e8
+        small = estimate_sqrt_market_impact_bps(
+            "AAPL", order_notional=1e6, adv=adv, base_bps=base
+        )
+        large = estimate_sqrt_market_impact_bps(
+            "AAPL", order_notional=5e7, adv=adv, base_bps=base
+        )
+        assert large > small
+        assert small >= 0.5 * base
+        assert large <= 3.0 * base
+
+    def test_resolve_slippage_uses_sqrt_when_enabled(self, monkeypatch):
+        import council.transaction_costs as tc
+
+        monkeypatch.setenv("MLCOUNCIL_SQRT_MARKET_IMPACT", "true")
+        monkeypatch.delenv("MLCOUNCIL_DYNAMIC_SLIPPAGE", raising=False)
+        tc._SQRT_MARKET_IMPACT_ENABLED = None
+        tc._DYNAMIC_SLIPPAGE_ENABLED = None
+        lookup = estimate_slippage_bps("AAPL")
+        impacted = resolve_slippage_bps(
+            "AAPL",
+            artifact=None,
+            order_notional=2e9,
+            daily_volume=1e9,
+        )
+        assert impacted > lookup
+
+
+class TestEstimateSlippageBps:
+    def test_mid_cap_universe_ticker_uses_lookup(self):
+        assert estimate_slippage_bps("AIG") == pytest.approx(10.0)
+
+    def test_unknown_ticker_uses_tier_default(self):
+        assert estimate_slippage_bps("ZZZZ") == pytest.approx(8.0)
 
 
 class TestResolveSlippageBps:

@@ -6,12 +6,26 @@ from .alerts import AlertDispatcher, AlertResult, Severity, load_current_alerts
 from .conformal import ConformalPositionSizer
 from .cqr import CQRPositionSizer, StackingMetaLearner, get_position_sizer
 from .fractional_kelly import FractionalKellySizer
-from .covariance_dynamic import DCCEstimator, compute_covariance_from_returns
+from .covariance_dynamic import (
+    DCCEstimator,
+    FactorCovarianceEstimator,
+    compute_covariance_from_returns,
+    shrink_covariance_matrix,
+)
 from .evidently_reports import generate_drift_report, generate_model_performance_report
 from .moe_gating import MoEGatingNetwork, aggregator_mode as moe_aggregator_mode
 from .monitor import CouncilMonitor
 from .portfolio import PortfolioConstructor
-from .portfolio_diff import DifferentiablePortfolioConstructor, get_portfolio_constructor
+from .portfolio_diff import (
+    DifferentiablePortfolioConstructor,
+    HRPBlendPortfolioConstructor,
+    get_portfolio_constructor,
+)
+from .portfolio_multiperiod import (
+    MultiPeriodTCConfig,
+    multi_period_tc_enabled,
+    smooth_target_weights,
+)
 from .risk_rules import (
     PositionRiskRules,
     DrawdownProtection,
@@ -47,10 +61,16 @@ __all__ = [
     "MoEGatingNetwork",
     "moe_aggregator_mode",
     "DCCEstimator",
+    "FactorCovarianceEstimator",
     "compute_covariance_from_returns",
+    "shrink_covariance_matrix",
     "PortfolioConstructor",
     "DifferentiablePortfolioConstructor",
+    "HRPBlendPortfolioConstructor",
     "get_portfolio_constructor",
+    "MultiPeriodTCConfig",
+    "multi_period_tc_enabled",
+    "smooth_target_weights",
     "CouncilMonitor",
     "AlertResult",
     "AlertDispatcher",

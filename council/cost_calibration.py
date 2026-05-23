@@ -38,20 +38,23 @@ DEFAULT_MIN_FILLS = 30
 # Coarse ticker → tier mapping. Aligned with ILLIQUIDITY_MAP in
 # council/transaction_costs.py. Tickers not listed fall back to "default".
 TIER_BY_TICKER: dict[str, str] = {
-    # mega
+    # mega (universe large_cap)
     "AAPL": "mega", "MSFT": "mega", "GOOGL": "mega", "AMZN": "mega",
     "META": "mega", "NVDA": "mega", "TSLA": "mega", "JPM": "mega",
     "V": "mega", "MA": "mega", "LLY": "mega", "UNH": "mega",
     "JNJ": "mega", "WMT": "mega", "PG": "mega", "KO": "mega", "PEP": "mega",
-    "XOM": "mega", "CVX": "mega", "HD": "mega",
+    "XOM": "mega", "CVX": "mega", "HD": "mega", "DIS": "mega", "TMUS": "mega",
     # large
     "NKE": "large", "CAT": "large", "BA": "large", "HON": "large",
     "UNP": "large", "NEE": "large", "DUK": "large", "GS": "large",
-    "BAC": "large", "LIN": "large", "APD": "large", "DIS": "large",
-    "TMUS": "large", "AMT": "large", "PLD": "large",
+    "BAC": "large", "LIN": "large", "APD": "large",
+    "AMT": "large", "PLD": "large",
     "UBER": "large", "PLTR": "large", "CRWD": "large", "DDOG": "large",
     "SHOP": "large", "MRK": "large", "ABT": "large", "PFE": "large", "COP": "large",
-    # mid
+    # mid (universe mid_cap + legacy names)
+    "AIG": "mid", "CB": "mid", "MET": "mid", "TFC": "mid", "USB": "mid",
+    "CL": "mid", "MDLZ": "mid", "AMGN": "mid", "BMY": "mid", "GILD": "mid",
+    "GE": "mid", "LMT": "mid", "RTX": "mid", "ADP": "mid", "INTU": "mid",
     "ETSY": "mid", "FVRR": "mid", "ROKU": "mid", "DOCU": "mid",
     "ABNB": "mid", "NET": "mid", "SQ": "mid", "SNOW": "mid",
     # crypto

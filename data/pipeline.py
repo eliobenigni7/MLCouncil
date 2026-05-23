@@ -826,7 +826,42 @@ def _run_lgbm_signals(
         )
         return attach_lineage(fallback, **lineage)
 
-    signals = model.predict(alpha158_features).rename("lgbm_signal")
+    regime_hist = None
+    try:
+        from models.regime_features import load_regime_history, regime_features_enabled
+
+        if regime_features_enabled():
+            regime_hist = load_regime_history(_RESULTS_DIR / "regime_history.parquet")
+    except Exception as exc:
+        context.log.warning(
+            f"lgbm_signals [{partition_date}]: regime features unavailable ({exc})"
+        )
+
+    signals = model.predict(alpha158_features, regime_history=regime_hist).rename(
+        "lgbm_signal"
+    )
+
+    meta_stats = None
+    try:
+        from models.meta_label import apply_meta_label_gate, meta_label_enabled
+
+        if meta_label_enabled():
+            signals, meta_stats = apply_meta_label_gate(
+                signals,
+                alpha158_features,
+                checkpoint=_CHECKPOINTS / "meta_label_latest.pkl",
+            )
+            if meta_stats is not None:
+                context.log.info(
+                    f"lgbm_signals [{partition_date}]: meta-label "
+                    f"filtered={meta_stats.filtered_fraction:.1%} "
+                    f"shadow={meta_stats.shadow}"
+                )
+    except Exception as exc:
+        context.log.warning(
+            f"lgbm_signals [{partition_date}]: meta-label gate failed ({exc})"
+        )
+
     lineage = build_feature_lineage(
         asset_name="alpha158_features",
         payload=alpha158_features,
@@ -842,6 +877,8 @@ def _run_lgbm_signals(
     meta = lineage_artifact_payload(lineage, signal_count=len(signals))
     if online_meta:
         meta = {**meta, "online_learning": online_meta}
+    if meta_stats is not None:
+        meta = {**meta, "meta_label": meta_stats.to_dict()}
     context.add_output_metadata(meta)
     return signals
 
@@ -1187,15 +1224,69 @@ def _run_council_signal(
     raw_macro = _load_macro_context_from_disk()
     regime_embedding, regime_centroids = load_regime_context(raw_macro, current_regime)
 
-    combined = aggregator.aggregate(
-        signals,
-        regime=current_regime,
-        date=today,
-        regime_embedding=regime_embedding,
-        regime_centroids=regime_centroids,
-    ).rename("council_signal")
+    from council.moe_gating import log_moe_shadow, moe_enabled
 
+    if moe_enabled() and len(signals) >= 2:
+        import os as _os
+
+        _prev_mode = _os.environ.get("MLCOUNCIL_AGGREGATOR_MODE")
+        try:
+            _os.environ["MLCOUNCIL_AGGREGATOR_MODE"] = "linear"
+            linear_signal = aggregator.aggregate(
+                signals,
+                regime=current_regime,
+                date=today,
+                regime_embedding=regime_embedding,
+                regime_centroids=regime_centroids,
+            )
+            _os.environ["MLCOUNCIL_AGGREGATOR_MODE"] = "moe"
+            moe_signal = aggregator.aggregate(
+                signals,
+                regime=current_regime,
+                date=today,
+                regime_embedding=regime_embedding,
+                regime_centroids=regime_centroids,
+            )
+            log_entry = aggregator._weights_log.get(today, {})
+            log_moe_shadow(
+                partition_date,
+                linear_signal=linear_signal,
+                moe_signal=moe_signal,
+                gate_weights=log_entry.get("moe_gate"),
+                expert_order=list(signals.keys()),
+                effective_weights=log_entry.get("weights"),
+            )
+            combined = moe_signal
+        finally:
+            if _prev_mode is None:
+                _os.environ.pop("MLCOUNCIL_AGGREGATOR_MODE", None)
+            else:
+                _os.environ["MLCOUNCIL_AGGREGATOR_MODE"] = _prev_mode
+    else:
+        combined = aggregator.aggregate(
+            signals,
+            regime=current_regime,
+            date=today,
+            regime_embedding=regime_embedding,
+            regime_centroids=regime_centroids,
+        )
+
+    combined = combined.rename("council_signal")
     combined = apply_stacked_council_override(combined, signals, partition_date)
+
+    from models.options_sentiment import options_sentiment_enabled, run_shadow_batch
+
+    if options_sentiment_enabled():
+        try:
+            opt_report = run_shadow_batch(tickers, partition_date=partition_date)
+            context.log.info(
+                f"council_signal [{partition_date}]: options sentiment shadow "
+                f"status={opt_report.get('status')}"
+            )
+        except Exception as exc:
+            context.log.warning(
+                f"council_signal [{partition_date}]: options sentiment shadow failed ({exc})"
+            )
 
     from council.cqr import (
         DEFAULT_STACKING_CHECKPOINT,

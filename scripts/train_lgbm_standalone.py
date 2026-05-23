@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from data.features.alpha158 import compute_alpha158, build_macro_context
-from data.features.target import compute_targets
+from data.features.target import compute_targets, training_rank_column
+from models.regime_features import load_regime_history, regime_features_enabled
 from models.technical import TechnicalModel
 
 
@@ -118,14 +119,15 @@ def main():
 
     # 4. Build targets
     print("\n[4/5] Building forward-return targets...")
-    targets_pl = compute_targets(ohlcv, horizons=[5], risk_adjusted=False)
+    train_horizon = 5
+    targets_pl = compute_targets(ohlcv, horizons=[train_horizon], risk_adjusted=False)
     print(f"  Targets shape: {targets_pl.shape}")
 
-    # Convert targets to pandas Series with MultiIndex (ticker, valid_time)
-    targets_df = targets_pl.select(["ticker", "valid_time", "rank_fwd_5d"]).to_pandas()
+    rank_col = training_rank_column(train_horizon)
+    targets_df = targets_pl.select(["ticker", "valid_time", rank_col]).to_pandas()
     targets_df["valid_time"] = pd.to_datetime(targets_df["valid_time"]).dt.date
     targets = pd.Series(
-        targets_df["rank_fwd_5d"].values,
+        targets_df[rank_col].values,
         index=pd.MultiIndex.from_frame(
             targets_df[["ticker", "valid_time"]], names=["ticker", "valid_time"]
         ),
@@ -136,8 +138,17 @@ def main():
 
     # 5. Train LightGBM
     print("\n[5/5] Training LightGBM with CPCV...")
+    regime_hist = None
+    if regime_features_enabled():
+        regime_hist = load_regime_history(ROOT / "data" / "results" / "regime_history.parquet")
+        if regime_hist.empty:
+            print("  MLCOUNCIL_REGIME_FEATURES=true but regime_history.parquet missing — training without regime columns")
+            regime_hist = None
+        else:
+            print(f"  Regime history: {len(regime_hist)} dates")
+
     model = TechnicalModel(config_path=str(ROOT / "config" / "models.yaml"))
-    model.fit(features, targets)
+    model.fit(features, targets, regime_history=regime_hist)
 
     # Save checkpoint
     checkpoint_path = ROOT / "models" / "checkpoints" / "lgbm_latest.pkl"

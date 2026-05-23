@@ -105,14 +105,14 @@ class TestCouncilAggregator:
                 f"regime={regime}: weights sum to {total:.9f}, expected 1.0"
             )
 
-    def test_orthogonality_confidence_shrinkage_exposes_weight_sum(self):
-        """Orthogonality penalty intentionally leaves effective weights summing below 1."""
-        from council.aggregator import CouncilAggregator
+    def test_orthogonality_mild_shrinkage_keeps_weight_sum_below_one(self):
+        """Strong orthogonality penalties leave effective weights summing below 1."""
+        from council.aggregator import CouncilAggregator, _ORTHO_RENORM_MIN_SUM
 
         agg = CouncilAggregator(use_orthogonality=True)
         signals = _make_signals(tickers=["AAPL", "MSFT", "GOOGL"], seed=7)
         result_date = date(2024, 3, 10)
-        penalties = {"lgbm": 1.0, "sentiment": 0.5}
+        penalties = {"lgbm": 0.5, "sentiment": 0.5, "hmm": 1.0}
 
         with patch.object(
             agg._ortho_monitor,
@@ -123,8 +123,29 @@ class TestCouncilAggregator:
 
         log = agg._weights_log[result_date]
         assert log.get("orthogonality_shrinkage") is True
-        assert log["weight_sum"] < 1.0 - 1e-6
+        assert log["weight_sum"] < _ORTHO_RENORM_MIN_SUM - 1e-6
         assert log["weight_sum_before_ortho"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_orthogonality_moderate_shrinkage_renormalizes_to_one(self):
+        """When post-ortho weight sum stays >= 0.85, weights renormalize to 1.0."""
+        from council.aggregator import CouncilAggregator, _ORTHO_RENORM_MIN_SUM
+
+        agg = CouncilAggregator(use_orthogonality=True)
+        signals = _make_signals(tickers=["AAPL", "MSFT", "GOOGL"], seed=7)
+        result_date = date(2024, 3, 11)
+        penalties = {"lgbm": 1.0, "sentiment": 0.5, "hmm": 1.0}
+
+        with patch.object(
+            agg._ortho_monitor,
+            "compute_orthogonality_penalty",
+            return_value=penalties,
+        ):
+            agg.aggregate(signals, "bull", date=result_date)
+
+        log = agg._weights_log[result_date]
+        assert log.get("orthogonality_shrinkage") is True
+        assert log["weight_sum"] >= _ORTHO_RENORM_MIN_SUM - 1e-6
+        assert log["weight_sum"] == pytest.approx(1.0, abs=1e-6)
         attr = agg.get_attribution(result_date)
         assert "effective_weight_sum" in attr.columns
         assert attr["effective_weight_sum"].iloc[0] == pytest.approx(log["weight_sum"])
@@ -394,6 +415,7 @@ class TestPortfolioConstructor:
 
     def test_portfolio_budget_constraint(self, constructor):
         """Cash reserve should apply only to the large-portfolio tier."""
+        pytest.importorskip("cvxpy")
         alpha, mult, current_w, cov, _ = self._inputs()
         target_mid = constructor.optimize(alpha, mult, current_w, cov, portfolio_value=50_000)
         target_large = constructor.optimize(alpha, mult, current_w, cov, portfolio_value=100_000)
@@ -402,8 +424,8 @@ class TestPortfolioConstructor:
         assert abs(target_mid.sum() - 1.0) < 1e-4, (
             f"Mid-tier weights sum to {target_mid.sum():.6f}, expected 1.0"
         )
-        assert abs(target_large.sum() - 0.85) < 1e-4, (
-            f"Large-tier weights sum to {target_large.sum():.6f}, expected 0.85"
+        assert abs(target_large.sum() - 0.90) < 1e-4, (
+            f"Large-tier weights sum to {target_large.sum():.6f}, expected 0.90"
         )
 
     def test_turnover_constraint(self, constructor):
@@ -566,7 +588,9 @@ class TestPortfolioConstructor:
             return real_import(name, globals, locals, fromlist, level)
 
         with patch("builtins.__import__", side_effect=guarded_import):
-            target = constructor.optimize(alpha, multipliers, current_w, cov)
+            target = constructor.optimize(
+                alpha, multipliers, current_w, cov, portfolio_value=50_000
+            )
 
         sector_weights = compute_sector_exposures(target)
         effective_sector_cap = compute_effective_sector_cap(
@@ -574,6 +598,6 @@ class TestPortfolioConstructor:
             base_sector_cap=constructor.sector_cap,
             max_position=max(constructor.max_position, 0.13),
         )
-        assert abs(target.sum() - 0.85) < 1e-6
+        assert abs(target.sum() - 1.0) < 1e-6
         assert sector_weights["Technology"] <= effective_sector_cap + 1e-6
         assert sector_weights["Consumer Discretionary"] <= effective_sector_cap + 1e-6

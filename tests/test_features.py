@@ -382,3 +382,63 @@ class TestTargets:
             assert col not in features_df.columns, (
                 f"Target column '{col}' found in features_df — potential training leak"
             )
+
+
+class TestTripleBarrierTargets:
+    def test_mode_defaults_to_forward_return(self, monkeypatch):
+        from data.features.target import get_target_mode, training_rank_column
+
+        monkeypatch.delenv("MLCOUNCIL_TARGET_MODE", raising=False)
+        assert get_target_mode() == "forward_return"
+        assert training_rank_column(5) == "rank_fwd_5d"
+
+    def test_triple_barrier_mode_columns(self, monkeypatch):
+        from data.features.target import compute_targets, training_rank_column
+
+        monkeypatch.setenv("MLCOUNCIL_TARGET_MODE", "triple_barrier")
+
+        df = pl.DataFrame(
+            {
+                "ticker": ["AAA"] * 40,
+                "valid_time": [date(2024, 1, 2) + timedelta(days=i) for i in range(40)],
+                "adj_close": [100.0 + 0.5 * i for i in range(40)],
+                "high": [100.5 + 0.5 * i for i in range(40)],
+                "low": [99.5 + 0.5 * i for i in range(40)],
+            }
+        )
+        targets = compute_targets(df, horizons=[5], target_mode="triple_barrier")
+        assert training_rank_column(5) == "rank_tb_5d"
+        assert "tb_label_5d" in targets.columns
+        assert "rank_tb_5d" in targets.columns
+        labels = targets["tb_label_5d"].drop_nulls()
+        assert labels.min() >= -1.0 - 1e-9
+        assert labels.max() <= 1.0 + 1e-9
+
+    def test_triple_barrier_upper_touch(self):
+        from data.features.target import compute_triple_barrier_targets
+
+        # Steady rise: high clears a tight upper barrier quickly.
+        n = 30
+        prices = [100.0 + i * 2.0 for i in range(n)]
+        df = pl.DataFrame(
+            {
+                "ticker": ["RISE"] * n,
+                "valid_time": [date(2024, 1, 2) + timedelta(days=i) for i in range(n)],
+                "adj_close": prices,
+                "high": [p * 1.02 for p in prices],
+                "low": [p * 0.98 for p in prices],
+            }
+        )
+        targets = compute_triple_barrier_targets(df, horizons=[3], k=0.5, vol_window=5)
+        first_label = targets.filter(pl.col("tb_label_3d").is_not_null()).head(1)
+        assert not first_label.is_empty()
+        assert first_label["tb_label_3d"][0] == 1.0
+
+    def test_rank_tb_bounded(self, ohlcv_df):
+        from data.features.target import compute_triple_barrier_targets
+
+        targets = compute_triple_barrier_targets(ohlcv_df, horizons=[1, 5])
+        for col in ("rank_tb_1d", "rank_tb_5d"):
+            data = targets[col].drop_nulls()
+            assert data.min() >= -1e-9
+            assert data.max() <= 1.0 + 1e-9

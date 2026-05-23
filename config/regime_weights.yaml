@@ -12,17 +12,17 @@ microstructure:
 
 regime_weights:
   bull:
-    lgbm:      0.55
-    sentiment: 0.25
-    hmm:       0.20
+    lgbm:      0.70
+    sentiment: 0.12
+    hmm:       0.18
   bear:
-    lgbm:      0.35
-    sentiment: 0.15
-    hmm:       0.50
+    lgbm:      0.65
+    sentiment: 0.10
+    hmm:       0.25
   transition:
-    lgbm:      0.45
-    sentiment: 0.20
-    hmm:       0.35
+    lgbm:      0.68
+    sentiment: 0.12
+    hmm:       0.20
   # Enabled in production_manifest experts.* after walk-forward promotion:
   # tft: 0.15
   # microstructure: 0.10
@@ -31,7 +31,7 @@ regime_weights:
 # No model falls below min or above max after renormalization.
 weight_clip:
   min: 0.05   # floor: every active model keeps at least 5 %
-  max: 0.60   # ceiling: no model dominates more than 60 %
+  max: 0.75   # ceiling: allows LGBM-heavy regime bases (0.65–0.75)
 
 # Performance history thresholds
 performance:

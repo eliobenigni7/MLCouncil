@@ -28,11 +28,21 @@ DEFAULT_COMMISSION_BPS = 0.5
 DEFAULT_SLIPPAGE_BPS = 5.0
 DEFAULT_CONFIDENCE_FLOOR = 30
 
+# Tier fallbacks when a ticker is absent from ILLIQUIDITY_MAP (aligned with cost_calibration.TIER_BY_TICKER).
+TIER_SLIPPAGE_BPS: dict[str, float] = {
+    "mega": 3.0,
+    "large": 5.0,
+    "mid": 10.0,
+    "crypto": 2.5,
+    "default": 8.0,
+}
+
 # ---------------------------------------------------------------------------
 # Dynamic slippage — volume-aware estimation
 # ---------------------------------------------------------------------------
 
 _DYNAMIC_SLIPPAGE_ENABLED = None  # lazy-check
+_SQRT_MARKET_IMPACT_ENABLED = None  # lazy-check
 _DYNAMIC_SLIPPAGE_CACHE: dict[str, float | None] = {}
 _OHLCV_BASE = _ROOT / "data" / "raw" / "ohlcv"
 _CACHE_MISS = "__NOCACHE__"  # sentinel to distinguish "not yet cached" from "cached as None"
@@ -44,6 +54,20 @@ def _dynamic_slippage_enabled() -> bool:
         raw = os.getenv("MLCOUNCIL_DYNAMIC_SLIPPAGE", "").strip().lower()
         _DYNAMIC_SLIPPAGE_ENABLED = raw in ("true", "1", "yes")
     return _DYNAMIC_SLIPPAGE_ENABLED
+
+
+def _sqrt_market_impact_enabled() -> bool:
+    """Optional √-law impact vs ADV (tier baseline as base_bps)."""
+    global _SQRT_MARKET_IMPACT_ENABLED
+    if _SQRT_MARKET_IMPACT_ENABLED is None:
+        raw = os.getenv("MLCOUNCIL_SQRT_MARKET_IMPACT", "").strip().lower()
+        _SQRT_MARKET_IMPACT_ENABLED = raw in ("true", "1", "yes")
+    return _SQRT_MARKET_IMPACT_ENABLED
+
+
+def sqrt_market_impact_eta() -> float:
+    """Impact scale η in ``base_bps × η × sqrt(order_notional / ADV)``."""
+    return _read_bps_env("MLCOUNCIL_SQRT_IMPACT_ETA", 1.0)
 
 
 def _estimate_daily_volume(ticker: str) -> float | None:
@@ -109,6 +133,34 @@ def _estimate_daily_volume(ticker: str) -> float | None:
 
     _DYNAMIC_SLIPPAGE_CACHE[ticker] = avg
     return avg
+
+
+def estimate_sqrt_market_impact_bps(
+    ticker: str,
+    order_notional: float,
+    adv: float | None = None,
+    *,
+    base_bps: float | None = None,
+) -> float:
+    """Square-root market impact vs average daily volume (ADV).
+
+    Uses tier/static baseline as *base_bps* (same table as :func:`estimate_slippage_bps`)::
+
+        impact_bps = base_bps × η × sqrt(order_notional / ADV)
+
+    where η defaults to 1.0 (``MLCOUNCIL_SQRT_IMPACT_ETA``). Result is clamped
+    between 0.5× and 3× *base_bps*. Enable via ``MLCOUNCIL_SQRT_MARKET_IMPACT=true``.
+    """
+    base = base_bps if base_bps is not None else estimate_slippage_bps(ticker)
+    if adv is None:
+        adv = _estimate_daily_volume(ticker)
+    if adv is None or adv <= 0 or order_notional <= 0:
+        return base
+
+    participation = float(order_notional) / float(adv)
+    eta = sqrt_market_impact_eta()
+    impact = base * eta * np.sqrt(participation)
+    return float(np.clip(impact, 0.5 * base, 3.0 * base))
 
 
 def estimate_dynamic_slippage_bps(
@@ -251,6 +303,15 @@ def resolve_slippage_bps(
             alpha = min(1.0, float(n) / float(floor))
             blended = float((1.0 - alpha) * lookup + alpha * kappa)
 
+    # √-law impact vs ADV (tier baseline; optional, distinct from full dynamic model)
+    if _sqrt_market_impact_enabled() and order_notional > 0:
+        return estimate_sqrt_market_impact_bps(
+            ticker,
+            order_notional=order_notional,
+            adv=daily_volume,
+            base_bps=blended,
+        )
+
     # Dynamic volume-aware scaling (applied on top of the blended baseline)
     if _dynamic_slippage_enabled() and order_notional > 0:
         return estimate_dynamic_slippage_bps(
@@ -314,13 +375,21 @@ def estimate_slippage_bps(ticker: str, dollar_volume: float | None = None) -> fl
         # Large-cap
         "UBER": 4.0, "PLTR": 5.0, "CRWD": 5.0, "DDOG": 5.0,
         "SHOP": 5.0, "MRK": 3.5, "ABT": 4.0, "PFE": 4.0, "COP": 4.0,
-        # Mid-cap — wider spreads
+        # Universe mid_cap bucket (config/universe.yaml) — 8–12 bps where spreads are wider
+        "AIG": 10.0, "CB": 9.0, "MET": 10.0, "TFC": 9.0, "USB": 9.0,
+        "CL": 8.0, "MDLZ": 8.0, "AMGN": 8.0, "BMY": 9.0, "GILD": 9.0,
+        "GE": 8.0, "LMT": 8.0, "RTX": 8.0, "ADP": 8.0, "INTU": 8.0,
+        # Legacy mid-cap names (shadow / extended universe)
         "ETSY": 8.0, "FVRR": 12.0, "ROKU": 8.0, "DOCU": 10.0,
         "ABNB": 6.0, "NET": 7.0, "SQ": 6.0, "SNOW": 7.0,
         # Crypto — 24/7 high liquidity
         "BTCUSD": 2.0, "ETHUSD": 2.5,
     }
-    base = ILLIQUIDITY_MAP.get(ticker, 5.0)  # default 5 bps
+    if ticker in ILLIQUIDITY_MAP:
+        base = ILLIQUIDITY_MAP[ticker]
+    else:
+        tier = ticker_tier(ticker)
+        base = TIER_SLIPPAGE_BPS.get(tier, TIER_SLIPPAGE_BPS["default"])
 
     if dollar_volume is not None and dollar_volume > 0:
         reference_volume = 1e9
