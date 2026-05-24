@@ -134,7 +134,7 @@ def run_one_year_backtest(
 
     # Train/test split within the window
     train_days = train_window_months * 21  # ~21 trading days/month
-    test_window = max(rebalance_every, min(63, max(10, len(all_dates) // 4)))
+    test_window = max(10, min(21, len(all_dates) // 12))
 
     splits = build_purged_walk_forward_splits(
         all_dates,
