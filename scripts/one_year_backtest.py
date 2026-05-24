@@ -119,7 +119,7 @@ def run_one_year_backtest(
             [pl.when(pl.col(c).is_infinite() | pl.col(c).is_nan()).then(None).otherwise(pl.col(c)).alias(c) for c in fcols]
         ).with_columns([pl.col(c).fill_null(0.0).alias(c) for c in fcols])
 
-    targets = compute_targets(ohlcv, horizons=[1], risk_adjusted=True)
+    targets = compute_targets(ohlcv, horizons=[1, 5, 10], risk_adjusted=True)
 
     ret_pd = targets.select(["ticker", "valid_time", "ret_fwd_1d"]).to_pandas()
     ret_pd["valid_time"] = pd.to_datetime(ret_pd["valid_time"]).dt.date
