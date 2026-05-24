@@ -390,6 +390,7 @@ def step_portfolio(
     last_date: date,
     portfolio_value: float = 1_000_000.0,
     *,
+    current_weights: pd.Series | None = None,
     save_orders: bool = True,
     emit_report: bool = True,
 ) -> pd.Series:
@@ -412,7 +413,7 @@ def step_portfolio(
     multipliers = sizer.compute_position_multipliers(signal_live, X_live)
     filtered    = sizer.filter_low_confidence(signal_live, X_live, threshold_percentile=80)
 
-    # Matrice covarianza su ultime 90 sessioni
+    # Matrice covarianza point-in-time: solo dati fino a last_date
     returns_wide = (
         ohlcv
         .sort(["ticker", "valid_time"])
@@ -423,6 +424,7 @@ def step_portfolio(
             .alias("ret_1d")
         )
         .drop_nulls()
+        .filter(pl.col("valid_time") <= pl.lit(last_date))
         .pivot(values="ret_1d", index="valid_time", on="ticker")
         .to_pandas()
         .set_index("valid_time")
@@ -431,10 +433,13 @@ def step_portfolio(
     cov_tickers = [t for t in available_tickers if t in returns_wide.columns]
     cov = returns_wide[cov_tickers].cov()
 
-    # Portafoglio corrente: equal weight (giorno 1)
-    current_w = pd.Series(
-        np.ones(len(cov_tickers)) / len(cov_tickers), index=cov_tickers
-    )
+    # Portafoglio corrente: stato reale se fornito, altrimenti equal-weight (giorno 1)
+    if current_weights is not None:
+        current_w = current_weights.reindex(cov_tickers).fillna(0.0)
+    else:
+        current_w = pd.Series(
+            np.ones(len(cov_tickers)) / len(cov_tickers), index=cov_tickers
+        )
 
     constructor = get_portfolio_constructor()
     if getattr(constructor, "crypto_enabled", False) and any(t.upper().replace("-", "").replace("/", "").endswith("USD") for t in cov_tickers):

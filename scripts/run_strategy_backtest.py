@@ -222,7 +222,7 @@ def main() -> None:
                 for c in feature_cols
             ]
         ).with_columns([pl.col(c).fill_null(0.0).alias(c) for c in feature_cols])
-    targets = compute_targets(ohlcv, horizons=[1], risk_adjusted=False)
+    targets = compute_targets(ohlcv, horizons=[1, 5, 10], risk_adjusted=False)
 
     ret_pd = targets.select(["ticker", "valid_time", "ret_fwd_1d"]).to_pandas()
     ret_pd["valid_time"] = pd.to_datetime(ret_pd["valid_time"]).dt.date
@@ -299,7 +299,7 @@ def main() -> None:
             f"train {train_start} → {train_end} | test {test_start} → {test_end}"
         )
 
-        rank_col = training_rank_column(1)
+        rank_col = training_rank_column(5)
         targets_train = (
             targets
             .filter(
@@ -371,6 +371,7 @@ def main() -> None:
                     feat_test,
                     ohlcv,
                     ts.date(),
+                    current_weights=last_target_w,
                     save_orders=False,
                     emit_report=False,
                 )
@@ -523,8 +524,11 @@ def main() -> None:
         print(f"Snapshot copied to: {snapshot_dir}")
 
     print("[5/7] Done")
-    print("Simulation stats:\n" + json.dumps(sim.stats, indent=2, default=float))
-    print("Walk-forward summary:\n" + json.dumps(walk_forward_result["summary"], indent=2, default=float))
+    print("=== PRIMARY METRIC (executed long-only portfolio — source of truth) ===")
+    print(json.dumps(sim.stats, indent=2, default=float))
+    print("\n=== DIAGNOSTIC ONLY (walk-forward OOS on cross-sectional signals — different exposure) ===")
+    print("Note: walk-forward measures long-short dollar-neutral signal quality, NOT the executed portfolio.")
+    print(json.dumps(walk_forward_result["summary"], indent=2, default=float))
     print(f"Backtest equity points: {len(sim.equity_curve)}")
     print(f"Walk-forward windows: {len(walk_forward_result['window_metrics'])}")
     print(f"Weights rows: {len(weights_df)}")

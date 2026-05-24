@@ -181,7 +181,7 @@ def run_one_year_backtest(
         if ft.is_empty() or fe.is_empty():
             continue
 
-        rank_col = training_rank_column(1)
+        rank_col = training_rank_column(5)
         tg = (
             targets
             .filter((pl.col("valid_time") >= pl.lit(train_start)) & (pl.col("valid_time") <= pl.lit(train_end)))
@@ -247,6 +247,7 @@ def run_one_year_backtest(
                 from scripts import run_pipeline as rp
                 tw = rp.step_portfolio(
                     council, sizer, fcols_list, fe, ohlcv, ts.date(),
+                    current_weights=last_target_w,
                     save_orders=False, emit_report=False,
                 )
                 last_target_w = tw.copy() if tw is not None else last_target_w
