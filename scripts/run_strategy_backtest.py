@@ -39,6 +39,52 @@ from models.regime import RegimeModel
 from models.technical import TechnicalModel
 from scripts import run_pipeline as rp
 
+
+def _compute_proxy_sentiment(
+    ohlcv: pl.DataFrame,
+    as_of_date,
+    tickers: list[str],
+    short_window: int = 5,
+    long_window: int = 20,
+) -> pd.Series:
+    """Proxy sentiment from short-term vs medium-term momentum gap.
+    
+    Computes (momentum_5d - momentum_20d) per ticker, cross-sectionally 
+    z-scored. Simulates what FinBERT would capture — recent sentiment shifts.
+    """
+    try:
+        prices = (
+            ohlcv
+            .filter(pl.col("valid_time") <= pl.lit(as_of_date))
+            .sort(["ticker", "valid_time"])
+            .select(["ticker", "valid_time", "adj_close"])
+        )
+        if prices.is_empty():
+            return pd.Series(0.0, index=tickers)
+        
+        price_pd = (
+            prices.to_pandas()
+            .pivot(index="valid_time", columns="ticker", values="adj_close")
+            .sort_index()
+        )
+        price_pd.index = pd.to_datetime(price_pd.index)
+        
+        if len(price_pd) < long_window:
+            return pd.Series(0.0, index=tickers)
+        
+        mom_short = price_pd.pct_change(short_window).iloc[-1]
+        mom_long = price_pd.pct_change(long_window).iloc[-1]
+        gap = mom_short - mom_long
+        
+        result = gap.reindex(tickers).fillna(0.0)
+        std = result.std()
+        if std > 1e-9:
+            result = (result - result.mean()) / std
+        result = result.fillna(0.0)
+        return result
+    except Exception:
+        return pd.Series(0.0, index=tickers)
+
 RESULTS_DIR = ROOT / "data" / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 REBALANCE_EVERY = 5
@@ -360,8 +406,14 @@ def main() -> None:
                     regime_embedding = None
 
             zero_signal = pd.Series(0.0, index=lgbm_signal.index)
+            # Proxy sentiment — momentum gap 5d vs 20d, z-scored.
+            # Simulates FinBERT for backtests where real news data is unavailable.
+            sentiment_signal = _compute_proxy_sentiment(ohlcv, d, lgbm_signal.index.tolist())
+            # Track sentiment performance for council weight updates
+            if not sentiment_signal.empty:
+                agg.update_performance({"sentiment": pd.DataFrame([sentiment_signal.rename(ts)])}, returns_hist, date=ts.date())
             council_signal = agg.aggregate(
-                {"lgbm": lgbm_signal, "hmm": zero_signal},
+                {"lgbm": lgbm_signal, "sentiment": sentiment_signal, "hmm": zero_signal},
                 regime=regime,
                 regime_embedding=regime_embedding,
                 date=ts.date(),
