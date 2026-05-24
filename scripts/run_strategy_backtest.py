@@ -18,6 +18,8 @@ import json
 import pickle
 import shutil
 import sys
+
+import numpy as np
 from pathlib import Path
 
 import pandas as pd
@@ -346,12 +348,24 @@ def main() -> None:
 
             if macro.is_empty():
                 regime = "transition"
+                regime_embedding = None
             else:
                 macro_today = _build_macro_today(macro, ts)
                 regime = hmm.predict_regime(macro_today) if not macro_today.is_empty() else "transition"
+                # Build regime embedding from HMM probabilities (natural 3D vector)
+                try:
+                    probs = hmm.predict_probabilities(macro_today)
+                    regime_embedding = np.array([probs.get("bull", 0.0), probs.get("bear", 0.0), probs.get("transition", 0.0)], dtype=float)
+                except Exception:
+                    regime_embedding = None
 
             zero_signal = pd.Series(0.0, index=lgbm_signal.index)
-            council_signal = agg.aggregate({"lgbm": lgbm_signal, "hmm": zero_signal}, regime=regime, date=ts.date())
+            council_signal = agg.aggregate(
+                {"lgbm": lgbm_signal, "hmm": zero_signal},
+                regime=regime,
+                regime_embedding=regime_embedding,
+                date=ts.date(),
+            )
             signal_rows.append(council_signal.rename(ts))
 
             last_regime_payload = {"regime": regime}

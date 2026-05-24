@@ -234,12 +234,23 @@ def run_one_year_backtest(
 
             if macro.is_empty():
                 regime = "transition"
+                regime_embedding = None
             else:
                 mtoday = macro.filter(pl.col("valid_time") <= pl.lit(ts))
                 regime = hmm.predict_regime(mtoday) if not mtoday.is_empty() else "transition"
+                try:
+                    probs = hmm.predict_probabilities(mtoday)
+                    regime_embedding = np.array([probs.get("bull", 0.0), probs.get("bear", 0.0), probs.get("transition", 0.0)], dtype=float)
+                except Exception:
+                    regime_embedding = None
 
             zeros = pd.Series(0.0, index=sig.index)
-            council = agg.aggregate({"lgbm": sig, "hmm": zeros}, regime=regime, date=ts.date())
+            council = agg.aggregate(
+                {"lgbm": sig, "hmm": zeros},
+                regime=regime,
+                regime_embedding=regime_embedding,
+                date=ts.date(),
+            )
             signal_rows.append(council.rename(ts))
 
             if last_target_w is None or rebalance_count % rebalance_every == 0:
