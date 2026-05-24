@@ -31,6 +31,9 @@ torch>=2.0.0
 # DCC-GARCH covariance challenger (T3.4 — optional; sample-cov fallback if absent)
 arch>=6.0.0
 
+# Differentiable portfolio (T3.3 — implicit QP gradients via cvxpylayers + torch)
+cvxpylayers>=1.2.0
+
 # Observability (T1.4 — optional at runtime; no-op when MLCOUNCIL_OTEL_ENABLED unset)
 opentelemetry-api>=1.24.0
 opentelemetry-sdk>=1.24.0
