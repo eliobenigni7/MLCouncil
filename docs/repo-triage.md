@@ -11,6 +11,13 @@ Usare questi entrypoint come riferimento principale:
 - `scripts/run_pipeline.py` — pipeline operativa / demo standalone
 - `backtest/runner.py`, `backtest/simulator.py`, `backtest/validation.py` — core logico del backtest
 
+## Orchestrazione / servizio
+
+Runner canonici che non vanno confusi con esperimenti o ablation:
+
+- `scripts/run_walkforward_promotion.py` — orchestratore di retrain + gate per promotion CI
+- `scripts/run_intraday_supervisor.py` — entrypoint di servizio per il supervisor intraday
+
 ## Training
 
 Entry point di training da tenere distinti dal resto:
