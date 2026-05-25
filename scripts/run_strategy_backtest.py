@@ -38,52 +38,8 @@ from data.features.target import compute_targets, training_rank_column
 from models.regime import RegimeModel
 from models.technical import TechnicalModel
 from scripts import run_pipeline as rp
+from scripts.backtest_common import compute_proxy_sentiment as _compute_proxy_sentiment
 
-
-def _compute_proxy_sentiment(
-    ohlcv: pl.DataFrame,
-    as_of_date,
-    tickers: list[str],
-    short_window: int = 5,
-    long_window: int = 20,
-) -> pd.Series:
-    """Proxy sentiment from short-term vs medium-term momentum gap.
-    
-    Computes (momentum_5d - momentum_20d) per ticker, cross-sectionally 
-    z-scored. Simulates what FinBERT would capture — recent sentiment shifts.
-    """
-    try:
-        prices = (
-            ohlcv
-            .filter(pl.col("valid_time") <= pl.lit(as_of_date))
-            .sort(["ticker", "valid_time"])
-            .select(["ticker", "valid_time", "adj_close"])
-        )
-        if prices.is_empty():
-            return pd.Series(0.0, index=tickers)
-        
-        price_pd = (
-            prices.to_pandas()
-            .pivot(index="valid_time", columns="ticker", values="adj_close")
-            .sort_index()
-        )
-        price_pd.index = pd.to_datetime(price_pd.index)
-        
-        if len(price_pd) < long_window:
-            return pd.Series(0.0, index=tickers)
-        
-        mom_short = price_pd.pct_change(short_window).iloc[-1]
-        mom_long = price_pd.pct_change(long_window).iloc[-1]
-        gap = mom_short - mom_long
-        
-        result = gap.reindex(tickers).fillna(0.0)
-        std = result.std()
-        if std > 1e-9:
-            result = (result - result.mean()) / std
-        result = result.fillna(0.0)
-        return result
-    except Exception:
-        return pd.Series(0.0, index=tickers)
 
 RESULTS_DIR = ROOT / "data" / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)

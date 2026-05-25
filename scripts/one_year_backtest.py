@@ -9,7 +9,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import polars as pl
-import yaml
+
+from scripts.backtest_common import (
+    compute_proxy_sentiment as _compute_proxy_sentiment,
+    load_ohlcv,
+    load_universe,
+    macro_path,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -25,110 +31,8 @@ from data.features.alpha158 import build_macro_context, compute_alpha158
 from data.features.target import compute_targets, training_rank_column
 from models.regime import RegimeModel
 from models.technical import TechnicalModel
-
-
-def _compute_proxy_sentiment(
-    ohlcv: pl.DataFrame,
-    as_of_date: pl.Date,
-    tickers: list[str],
-    short_window: int = 5,
-    long_window: int = 20,
-) -> pd.Series:
-    """Proxy sentiment from short-term vs medium-term momentum gap.
-    
-    Computes (momentum_5d - momentum_20d) per ticker, cross-sectionally 
-    z-scored. Simulates what FinBERT would capture — recent sentiment shifts.
-    Falls back to zeros when not enough history.
-    """
-    try:
-        prices = (
-            ohlcv
-            .filter(pl.col("valid_time") <= as_of_date)
-            .sort(["ticker", "valid_time"])
-            .select(["ticker", "valid_time", "adj_close"])
-        )
-        if prices.is_empty():
-            return pd.Series(0.0, index=tickers)
-        
-        price_pd = (
-            prices.to_pandas()
-            .pivot(index="valid_time", columns="ticker", values="adj_close")
-            .sort_index()
-        )
-        price_pd.index = pd.to_datetime(price_pd.index)
-        
-        if len(price_pd) < long_window:
-            return pd.Series(0.0, index=tickers)
-        
-        mom_short = price_pd.pct_change(short_window).iloc[-1]
-        mom_long = price_pd.pct_change(long_window).iloc[-1]
-        gap = mom_short - mom_long
-        
-        result = gap.reindex(tickers).fillna(0.0)
-        # Cross-sectional z-score
-        std = result.std()
-        if std > 1e-9:
-            result = (result - result.mean()) / std
-        result = result.fillna(0.0)
-        return result
-    except Exception:
-        return pd.Series(0.0, index=tickers)
-
 RESULTS_DIR = ROOT / "data" / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def load_universe() -> set[str]:
-    with open(ROOT / "config" / "universe.yaml") as f:
-        cfg = yaml.safe_load(f) or {}
-    tickers: set[str] = set()
-    for bucket in ("large_cap", "mid_cap"):
-        tickers.update(str(t).upper() for t in cfg.get("universe", {}).get(bucket, []) or [])
-    return tickers
-
-
-def load_ohlcv(allowed: set[str]) -> pl.DataFrame:
-    frames = []
-    raw_dir = ROOT / "data" / "raw" / "ohlcv"
-    for tdir in sorted(raw_dir.iterdir()):
-        if not tdir.is_dir():
-            continue
-        t = tdir.name.upper()
-        if t not in allowed:
-            continue
-        tf = []
-        for pq in sorted(tdir.glob("*.parquet")):
-            try:
-                df = pl.read_parquet(pq)
-            except Exception:
-                continue
-            if "symbol" in df.columns:
-                df = df.drop("symbol")
-            if "ticker" not in df.columns:
-                df = df.with_columns(pl.lit(t).alias("ticker"))
-            if "transaction_time" in df.columns:
-                df = df.drop("transaction_time")
-            if "valid_time" in df.columns:
-                vt = df["valid_time"]
-                if vt.dtype == pl.Datetime:
-                    df = df.with_columns(vt.dt.replace_time_zone("UTC").cast(pl.Date))
-                elif vt.dtype != pl.Date:
-                    df = df.with_columns(vt.cast(pl.Date))
-            keep = [c for c in ["ticker", "valid_time", "open", "high", "low", "close", "adj_close", "volume"] if c in df.columns]
-            if keep:
-                tf.append(df.select(keep))
-        if tf:
-            frames.append(
-                pl.concat(tf, how="vertical_relaxed")
-                .unique(subset=["ticker", "valid_time"], keep="last")
-                .sort(["ticker", "valid_time"])
-            )
-    return pl.concat(frames, how="vertical_relaxed").unique(["ticker", "valid_time"]).sort(["ticker", "valid_time"])
-
-
-def macro_path(name: str) -> str | None:
-    p = ROOT / "data" / "raw" / "macro" / f"{name}.parquet"
-    return str(p) if p.exists() else None
 
 
 def run_one_year_backtest(
