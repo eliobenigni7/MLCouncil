@@ -586,6 +586,37 @@ class TestDeterministicStrategyBacktest:
         assert result.stats["sharpe"] != 0.0
         assert result.stats["turnover"] > 0.0
 
+    def test_simulate_weight_backtest_uses_last_row_for_duplicate_dates(self):
+        from backtest.simulator import simulate_weight_backtest
+        from council.transaction_costs import TransactionCostModel
+
+        date = pd.Timestamp("2024-01-02")
+        weights = pd.DataFrame(
+            {
+                "AAA": [1.0, 0.0],
+                "BBB": [0.0, 1.0],
+            },
+            index=[date, date],
+        )
+        forward_returns = pd.DataFrame(
+            {
+                "AAA": [0.05],
+                "BBB": [-0.02],
+            },
+            index=[date],
+        )
+
+        result = simulate_weight_backtest(
+            weights=weights,
+            forward_returns=forward_returns,
+            initial_capital=100_000.0,
+            cost_model=TransactionCostModel(commission_bps=0.0, slippage_bps=0.0),
+        )
+
+        assert result.equity_curve.iloc[0] == pytest.approx(98_000.0)
+        assert result.strategy_fills.iloc[0]["gross_return"] == pytest.approx(-0.02)
+        assert result.strategy_fills.index.is_unique
+
     def test_simulate_weight_backtest_applies_transaction_costs(self):
         from backtest.simulator import simulate_weight_backtest
         from council.transaction_costs import TransactionCostModel

@@ -1,0 +1,42 @@
+# Base model weights per market regime.
+# These are the starting point; adaptive weighting adjusts them based on
+# each model's rolling 60-day Sharpe (IC mean / IC std * sqrt(252)).
+
+# T2.4 microstructure / OFI challenger — shadow mode until walk-forward promotion.
+# Council aggregator ignores this model unless MLCOUNCIL_MICROSTRUCTURE_PROMOTED=true.
+microstructure:
+  enabled: false
+  shadow_mode: true
+  ofi_levels: 5
+  orderbook_feed: synthetic   # alpaca | databento deferred (see ADR)
+
+regime_weights:
+  bull:
+    lgbm:      0.70
+    sentiment: 0.12
+    hmm:       0.18
+  bear:
+    lgbm:      0.65
+    sentiment: 0.10
+    hmm:       0.25
+  transition:
+    lgbm:      0.68
+    sentiment: 0.12
+    hmm:       0.20
+  # Enabled in production_manifest experts.* after walk-forward promotion:
+  # tft: 0.15
+  # microstructure: 0.10
+
+# Adaptive weight bounds applied after Sharpe-based adjustment.
+# No model falls below min or above max after renormalization.
+weight_clip:
+  min: 0.05   # floor: every active model keeps at least 5 %
+  max: 0.75   # ceiling: allows LGBM-heavy regime bases (0.65–0.75)
+
+# Performance history thresholds
+performance:
+  min_history_days:    60   # days of IC history needed before adaptive weights kick in
+  ic_rolling_window:   60   # days for IC rolling average (get_attribution)
+  # 120 days provides a stable IC-Sharpe estimate while still being responsive
+  # to regime changes (≈6 trading months).
+  sharpe_rolling_window: 120

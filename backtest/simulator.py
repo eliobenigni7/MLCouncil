@@ -130,8 +130,13 @@ def simulate_weight_backtest(
     for d in common_index:
         w_t = w.loc[d].fillna(0.0).astype(float)
         r_t = fwd.loc[d].fillna(0.0).astype(float)
-
-        gross_ret = float((w_t * r_t).sum())
+        # loc returns a DataFrame when the index has duplicates; force 1D
+        if isinstance(w_t, pd.DataFrame):
+            w_t = w_t.iloc[-1]
+        if isinstance(r_t, pd.DataFrame):
+            r_t = r_t.iloc[-1]
+        raw_prod = w_t * r_t
+        gross_ret = float(raw_prod.sum())
         turnover = cost_model.estimate_turnover(prev_weights.values, w_t.values)
         cost_usd = cost_model.estimate_cost_from_weights(
             prev_weights.values,

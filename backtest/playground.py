@@ -264,7 +264,7 @@ def _build_proxy_signals(prices: pd.DataFrame, benchmark: pd.Series) -> dict[str
     These are not the production models; they are deterministic functions
     of price action chosen so the council mixing math is exercised end-to-end.
     """
-    returns_1d = prices.pct_change()
+    returns_1d = prices.pct_change(fill_method=None)
 
     # --- lgbm proxy: cross-sectional 20-day momentum z-score (long bias)
     mom_20 = prices.pct_change(MOMENTUM_WINDOW)
@@ -434,7 +434,7 @@ def run_playground_backtest(
     weights_df = pd.DataFrame.from_dict(weights_rows, orient="index").sort_index()
     weights_df = weights_df.reindex(backtest_dates).ffill().fillna(0.0)
 
-    forward_returns = prices.pct_change().shift(-1).loc[backtest_dates]
+    forward_returns = prices.pct_change(fill_method=None).shift(-1).loc[backtest_dates]
     forward_returns = forward_returns.reindex(columns=weights_df.columns).fillna(0.0)
 
     _pp(0.95, "Simulating equity curve…")
