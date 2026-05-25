@@ -18,6 +18,17 @@ Runner canonici che non vanno confusi con esperimenti o ablation:
 - `scripts/run_walkforward_promotion.py` — orchestratore di retrain + gate per promotion CI
 - `scripts/run_intraday_supervisor.py` — entrypoint di servizio per il supervisor intraday
 
+## Setup / promotion ops
+
+Script operativi canonici o di bootstrap che restano fuori da `scripts/experiments/`:
+
+- `scripts/setup_prod.py` — bootstrap della production manifest e dei placeholder di gate
+- `scripts/populate_walkforward_caches.py` — seed dei cache parquet per CI / gate locale
+- `scripts/promote_model.py` — promozione operatore modello gated verso production manifest
+- `scripts/promote_council_module.py` — promozione operatore per moduli council/portfolio
+- `scripts/establish_wave2_staging_promotion.py` — helper di staging locale per TFT / walk-forward
+- `scripts/bootstrap_frontier.py` — bootstrap one-shot del profilo frontier / R&D
+
 ## Training
 
 Entry point di training da tenere distinti dal resto:
