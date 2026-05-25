@@ -49,7 +49,7 @@ Un file esce dall'area sperimentale solo se:
 
 ## Stato attuale del triage
 
-- esperimenti backtest isolati in `scripts/experiments/`
+- esperimenti backtest e ablation isolati in `scripts/experiments/`
 - proposta wave3 isolata in `docs/experiments/`
 - backup YAML isolato in `config/backups/`
 - core backtest lasciato intatto

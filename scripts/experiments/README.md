@@ -15,13 +15,14 @@ File spostati qui:
 - `regime_gate_backtest.py`
 - `run_optimized_backtest.py`
 - `tft_one_year_backtest.py`
+- `run_sharpe_ablation.py`
 - `train_tft.py`
 - `train_regime_dss.py`
 - `train_moe_gating.py`
 - `train_stacking_cqr.py`
 - `train_alpha_portfolio_end2end.py`
 
-I path root `scripts/train_*.py` restano disponibili come wrapper di compatibilità.
+I path root `scripts/run_*.py` e `scripts/train_*.py` per questi tool restano disponibili come wrapper di compatibilità.
 
 ## Regola operativa
 
