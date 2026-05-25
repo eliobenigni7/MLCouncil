@@ -11,6 +11,15 @@ Usare questi entrypoint come riferimento principale:
 - `scripts/run_pipeline.py` — pipeline operativa / demo standalone
 - `backtest/runner.py`, `backtest/simulator.py`, `backtest/validation.py` — core logico del backtest
 
+## Training
+
+Entry point di training da tenere distinti dal resto:
+
+- canonico: `scripts/train_lgbm_standalone.py`, `scripts/train_meta_label.py`
+- shadow / challenger: `scripts/experiments/train_tft.py`, `scripts/experiments/train_regime_dss.py`, `scripts/experiments/train_moe_gating.py`, `scripts/experiments/train_stacking_cqr.py`, `scripts/experiments/train_alpha_portfolio_end2end.py`
+
+I path root `scripts/train_*.py` per gli script shadow restano come wrapper di compatibilità, ma il codice vero vive in `scripts/experiments/`.
+
 ## Sperimentale / prototipo
 
 Tutti gli script spostati in `scripts/experiments/` sono prototipi o varianti da non considerare canoniche.
