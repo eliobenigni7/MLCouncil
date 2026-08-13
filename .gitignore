@@ -48,3 +48,22 @@ volumes/
 
 # Worktrees
 .worktrees/
+
+# Agent / AI tooling (local settings only; repo guidance files stay tracked)
+.claude/
+.cursor/
+.agents/
+
+# Streamlit (app config.toml stays tracked; local caches ignored)
+.streamlit/*
+!.streamlit/config.toml
+
+# Test / coverage
+.mypy_cache/
+.hypothesis/
+.coverage
+htmlcov/
+coverage.xml
+
+# Logs
+*.log
