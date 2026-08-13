@@ -1,6 +1,6 @@
 # MLCouncil
 
-MLCouncil is an end-to-end **multi-signal paper trading system** for US equities and crypto. The current daily path uses a 2-signal ensemble (LightGBM technical + FinBERT sentiment) with HMM regime labeling as context for the council aggregator; a CVXPY optimizer converts the resulting target weights into daily orders for Alpaca Paper Trading.
+MLCouncil is an end-to-end **multi-signal paper trading system** for US equities and crypto. The current daily path uses a 2-signal ensemble (LightGBM technical + FinBERT sentiment) with HMM regime labeling as context for the council aggregator; a CVXPY optimizer converts the resulting target weights into daily orders for Alpaca Paper Trading. The 2026–2030 strategy and its mathematical foundation are documented in [docs/roadmap-2026-2030-autonomous-council.md](docs/roadmap-2026-2030-autonomous-council.md) and [docs/math-drilldown-2026-2030-autonomous-council.md](docs/math-drilldown-2026-2030-autonomous-council.md).
 
 ---
 
@@ -11,7 +11,7 @@ MLCouncil is an end-to-end **multi-signal paper trading system** for US equities
 - [Council Aggregation](#council-aggregation)
 - [Portfolio Construction](#portfolio-construction)
 - [Conformal Position Sizing](#conformal-position-sizing)
-- [Monitoring and Alerts](#monitoring-and-alerts)
+- [Monitoring, Alerts and Canary](#monitoring-alerts-and-canary)
 - [Asset Universe](#asset-universe)
 - [Expected Results and Performance Criteria](#expected-results-and-performance-criteria)
 - [Architecture](#architecture)
@@ -53,7 +53,7 @@ Stage 5 — Council Aggregation
   Weight bounds: minimum 5%, maximum 70% per model
 
 Stage 6 — Conformal Position Sizing
-  MAPIE Jackknife+ prediction intervals (85% coverage)
+  MAPIE Jackknife+ prediction intervals (80% coverage, empirical ≈ 85–90%)
   Multiplier range: [0.2 × signal, 2.0 × signal] based on model uncertainty
   Signals below confidence threshold are filtered before portfolio construction
 
@@ -177,22 +177,22 @@ The optimizer reads the current Alpaca paper portfolio as the rebalancing baseli
 
 **File:** `council/conformal.py`
 
-Before portfolio construction, each signal is scaled by a **conformal multiplier** derived from MAPIE Jackknife+ prediction intervals (85% coverage). The idea: when the model's uncertainty interval is wide, the position is reduced; when the interval is tight, it is expanded.
+Before portfolio construction, each signal is scaled by a **conformal multiplier** derived from MAPIE Jackknife+ prediction intervals (80% coverage). The idea: when the model's uncertainty interval is wide, the position is reduced; when the interval is tight, it is expanded.
 
 | Interval width | Confidence | Multiplier |
 |----------------|------------|------------|
 | Narrow         | High       | up to 2.0× |
 | Wide           | Low        | down to 0.2× |
 
-Coverage of 85% (rather than 90%) was chosen to tighten intervals and increase average multipliers by ~15%, improving expected alpha capture. The 15% miss rate is acceptable because diversification across the configured universe limits individual tail exposure.
+Coverage of 80% (rather than 90%) tightens intervals and increases average multipliers, improving expected alpha capture. Empirical coverage (~85–90%) sits well above the conservative theoretical jackknife+ bound (`1 − 2α·n/(n+1)`); the residual miss rate is acceptable because diversification across the configured universe limits individual tail exposure.
 
 **References:** Angelopoulos & Bates (2023), *Conformal Risk Control*; MAPIE library (Jackknife+ method).
 
 ---
 
-## Monitoring and Alerts
+## Monitoring, Alerts and Canary
 
-**Files:** `council/monitor.py`, `council/alerts.py`
+**Files:** `council/monitor.py`, `council/alerts.py`, `council/alerting.py`, `council/canary.py`
 
 Four families of daily checks run automatically:
 
@@ -204,6 +204,15 @@ Four families of daily checks run automatically:
 | Regime change | HMM new state + transition probability > 0.70 | INFO |
 
 CRITICAL alerts trigger email dispatch via `council/alerts.py`. All alert results are exposed at `GET /api/monitoring/alerts` and logged to MLflow as scalar metrics.
+
+### Immune system (weekly)
+
+- `causal_drift_check` Dagster asset runs **Mondays 02:00 UTC** (baseline persisted across runs) and writes `data/results/causal_drift_latest.json`.
+- `GET /api/monitoring/health` aggregates five signal families — TDA early warning, causal graph drift, ADWIN/DDM streaming drift, evidently dataset drift — into `{level: ok|warn|alert}`; alerts are dispatched through the standard `AlertDispatcher` channels (logs, dashboard state, CRITICAL email).
+
+### Canary activation (F-0.4)
+
+Shadow features activate through `config/canary.yaml` + `council/canary.py` (run-policy env injection; operator env wins). The daily `canary_health` asset records same-day council metrics; a feature reverts automatically (sticky, with CRITICAL alert) when its metric stays below `floor` for `min_days` consecutive runs. Since gate G1 (2026-08-13) the active trio is: **online learning**, **CQR position sizing**, **dynamic slippage**; `moe_gating` stays off until the gating network is trained. Flag inventory with expiry dates: `docs/flag-registry-2026-08-13.md`.
 
 ---
 
@@ -249,9 +258,10 @@ A model candidate is promoted to production only if all of the following gates a
 
 | Gate | Requirement |
 |------|-------------|
-| Out-of-sample Sharpe | `oos_sharpe > 0` |
+| Out-of-sample Sharpe | `oos_sharpe ≥ champion − 0.1` (defensive) |
 | Probability of Backtest Overfitting proxy | `pbo ≤ 0.50` |
-| Walk-forward windows | `walk_forward_window_count ≥ 1` |
+| Walk-forward windows | `walk_forward_window_count ≥ 8` |
+| Consecutive weekly passes | `≥ 3` (streak) before promotion |
 | MLflow lineage | `pipeline_run_id`, `data_version`, `feature_version`, `model_version` all present |
 | Metrics logged | `sharpe`, `max_drawdown`, `turnover`, `oos_sharpe`, `oos_max_drawdown`, `oos_turnover` |
 
@@ -641,6 +651,7 @@ PUT  /api/config/regime-weights
 ```
 GET  /api/monitoring/alerts
 GET  /api/monitoring/alerts/history
+GET  /api/monitoring/health
 ```
 
 ---
@@ -652,7 +663,7 @@ MLCouncil/
 ├── api/                  FastAPI backend, Admin UI, service layer
 ├── backtest/             NautilusTrader backtest engine and walk-forward validation
 ├── config/               Runtime profiles, universe, regime weights, model config
-├── council/              Aggregator, portfolio, conformal sizer, risk engine, monitor, alerts
+├── council/              Aggregator, portfolio, conformal sizer, risk engine, monitor, alerts, alerting, canary
 ├── dashboard/            Streamlit read-only dashboard
 ├── data/                 Ingestion, Alpha158 features, ArcticDB store, Dagster pipeline
 ├── docs/                 Phase docs, runbooks, promotion criteria, plans
@@ -686,6 +697,11 @@ MLCouncil/
 - [docs/architecture-as-is-to-be-2026-05-21.md](docs/architecture-as-is-to-be-2026-05-21.md) — AS IS drift register, TO BE concept, and cleanup roadmap from the combined analysis
 - [docs/agentic-prompts-2026-05-21.md](docs/agentic-prompts-2026-05-21.md) — Ordered prompt pack for agentic implementation of AS IS fixes and TO BE preparation
 - [docs/superpowers/plans/2026-05-21-mlcouncil-foundation-to-be.md](docs/superpowers/plans/2026-05-21-mlcouncil-foundation-to-be.md) — Implementation plan for foundation cleanup and baseline measurement
+
+### Strategy (2026–2030)
+- [docs/roadmap-2026-2030-autonomous-council.md](docs/roadmap-2026-2030-autonomous-council.md) — Autonomous council roadmap: Phase 0 closed (2026-08), canary activation, live-progression gates
+- [docs/math-drilldown-2026-2030-autonomous-council.md](docs/math-drilldown-2026-2030-autonomous-council.md) — Exact formulas in the code, mathematical critiques, rigorous upgrades and their verification statistics
+- [docs/flag-registry-2026-08-13.md](docs/flag-registry-2026-08-13.md) — Inventory of all `MLCOUNCIL_*` flags with status, target phase and expiry dates
 
 ---
 
@@ -728,6 +744,7 @@ python -m pytest tests/test_trading_service.py -v  # trading service
 python -m pytest tests/test_alpaca_adapter.py -v   # adapter (mocked)
 python -m pytest tests/test_arctic_store.py -v     # feature store (fake backend)
 python -m pytest tests/ -k "test_aggregator"       # single test by name
+python -m pytest tests/test_canary.py -v           # canary controller (revert logic)
 
 # Phase 4 quality gates (incremental scope)
 python -m pytest --cov=. --cov-report=term --cov-fail-under=68
