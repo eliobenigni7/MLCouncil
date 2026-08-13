@@ -1,5 +1,9 @@
 # MLCouncil
 
+![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
+![Python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Status: paper trading](https://img.shields.io/badge/status-paper%20trading-yellow)
+
 MLCouncil is an end-to-end **multi-signal paper trading system** for US equities and crypto. The current daily path uses a 2-signal ensemble (LightGBM technical + FinBERT sentiment) with HMM regime labeling as context for the council aggregator; a CVXPY optimizer converts the resulting target weights into daily orders for Alpaca Paper Trading. The 2026–2030 strategy and its mathematical foundation are documented in [docs/roadmap-2026-2030-autonomous-council.md](docs/roadmap-2026-2030-autonomous-council.md) and [docs/math-drilldown-2026-2030-autonomous-council.md](docs/math-drilldown-2026-2030-autonomous-council.md).
 
 ---
@@ -23,6 +27,7 @@ MLCouncil is an end-to-end **multi-signal paper trading system** for US equities
 - [Documentation](#documentation)
 - [Observability](#observability)
 - [Testing](#testing)
+- [Contributing](#contributing)
 
 ---
 
@@ -30,43 +35,15 @@ MLCouncil is an end-to-end **multi-signal paper trading system** for US equities
 
 The system runs a daily Dagster pipeline with eight stages, scheduled at 21:30 ET on weekdays. Its job is to load the latest checkpoints and perform inference, not retrain the models end-to-end:
 
-```
-Stage 1 — Ingest
-  yfinance / FRED / RSS → raw OHLCV, macro series, news headlines
-
-Stage 2 — Feature Engineering
-  Technical feature set inspired by Alpha158 (1-day lookahead shift)
-  FinBERT headline sentiment scores (SQLite-cached)
-  Macro features: VIX, 10Y/2Y spread, S&P 500 rolling windows (21/63/252 days)
-
-Stage 3 — Inference / Checkpoint Refresh
-  LightGBM technical model (CPCV cross-validation, SHAP logged to MLflow)
-  FinBERT sentiment model (ProsusAI/finbert)
-  3-state HMM regime detector (bull / bear / transition)
-
-Stage 4 — Signal Generation
-  Each model produces cross-sectional z-scores per ticker per day
-
-Stage 5 — Council Aggregation
-  Regime-conditional base weights scaled by each model's EWM IC-Sharpe over recent history
-  Orthogonality enforcement: correlated models are automatically down-weighted
-  Weight bounds: minimum 5%, maximum 70% per model
-
-Stage 6 — Conformal Position Sizing
-  MAPIE Jackknife+ prediction intervals (80% coverage, empirical ≈ 85–90%)
-  Multiplier range: [0.2 × signal, 2.0 × signal] based on model uncertainty
-  Signals below confidence threshold are filtered before portfolio construction
-
-Stage 7 — Portfolio Construction
-  CVXPY mean-variance optimization with hard constraints (see below)
-  Reads current Alpaca paper positions as rebalance baseline
-  Output: data/orders/{date}.parquet with full lineage metadata
-
-Stage 8 — Execution
-  Pre-trade checks, kill switch, risk validation
-  Notional-to-share conversion at current market price
-  Submission to Alpaca Paper Trading API
-  Artifacts: data/operations/, data/paper_trades/, data/risk/
+```mermaid
+flowchart TD
+    S1["1 · Ingest<br/>yfinance · FRED · RSS news"] --> S2["2 · Features<br/>Alpha158-inspired · sentiment · macro"]
+    S2 --> S3["3 · Inference<br/>LightGBM · FinBERT · HMM regime"]
+    S3 --> S4["4 · Signals<br/>cross-sectional z-scores"]
+    S4 --> S5["5 · Council<br/>regime weights × EWM IC-Sharpe · orthogonality"]
+    S5 --> S6["6 · Sizing<br/>conformal intervals · uncertainty multiplier"]
+    S6 --> S7["7 · Portfolio<br/>CVXPY mean-variance + hard constraints"]
+    S7 --> S8["8 · Execution<br/>pre-trade checks · kill switch · Alpaca Paper"]
 ```
 
 Daily inference does not compute training targets (`compute_targets` is used in training/backtesting flows, not in the daily Dagster inference path).
@@ -137,7 +114,11 @@ The config still contains HMM weights for a fuller 3-signal council design, but 
 
 ### 2. Adaptive Reweighting (after 30 days of history)
 
-After 30 days of observed IC history, base weights are scaled by each model's **EWM Information Coefficient Sharpe** over recent observations (halflife up to 20 days, bounded by the configured history window). Models with consistently negative IC-Sharpe are down-weighted toward their floor. Weight bounds are enforced after renormalization:
+After 30 days of observed IC history, base weights are scaled by each model's **EWM IC-Sharpe** over recent history (halflife up to 20 days, bounded by the configured history window):
+
+$$\mathrm{IC}_t = \rho_{\mathrm{Spearman}}(s_{t-1},\, r_t) \qquad \mathrm{ICSharpe}_t = \frac{\mathrm{EWM}_h(\mathrm{IC}_t)}{\mathrm{EWM}_h^{\mathrm{std}}(\mathrm{IC}_t)}\,\sqrt{252}$$
+
+where $\mathrm{IC}_t$ is the cross-sectional Spearman correlation between the signal of day $t-1$ and the forward return of day $t$, and $h$ is the EWM halflife. Models with consistently negative IC-Sharpe are down-weighted toward their floor. Weight bounds are enforced after renormalization:
 
 - **Floor:** 5% per active model
 - **Ceiling:** 70% per model
@@ -154,16 +135,18 @@ Every `aggregate()` call logs per-model weights and contributions to MLflow for 
 
 CVXPY solves a mean-variance optimization problem each day:
 
-```
-maximize   (α ⊙ conformal_multipliers)' w − tc_penalty × turnover
-subject to
-    Σ w_i    = 1          (fully invested)
-    w_i     ≥ 0           (long-only)
-    w_i     ≤ cap         (tier/config-dependent per-position cap)
-    Σ |w_i − w_curr_i|   ≤ 30%   (one-way turnover cap)
-    w' Σ w  ≤ (30%/√252)²        (daily volatility cap)
-    sector[w] ≤ effective cap    (base cap 35%, adjusted for feasible universe)
-```
+$$\max_{w} \; \alpha_{\text{eff}}'\, w - \tfrac{1}{2}\,\lambda_{\text{risk}}\, w'\Sigma w - \lambda_{\text{tc}}\,\mathrm{TC}(w)$$
+
+with risk penalty $\lambda_{\text{risk}} = 1/\sigma_{\max}^2$ and transaction costs
+$\mathrm{TC}(w) = \tfrac{1}{2}\,\|w - w_{\text{curr}}\|_1 \cdot \tfrac{\text{comm}+\text{slippage}}{10^4}$, subject to:
+
+$$\sum_i w_i = b \quad \text{(budget, tier-dependent)} \qquad w_i \ge 0 \quad \text{(long-only)}$$
+
+$$w_i \le \text{cap}_i \qquad \|w - w_{\text{curr}}\|_1 \le \text{max\_turnover} \qquad w'\Sigma w \le \sigma_{\max}^2$$
+
+$$\sum_{i \in S} w_i \le \text{cap}_S \quad \text{(sector)} \qquad |w'\beta| \le 0.40 \quad \text{(beta neutrality)}$$
+
+where $\sigma_{\max} = 30\%/\sqrt{252}$ (daily vol cap), per-position caps and budget come from the size-adaptive tiers, and the sector cap (35% base) is relaxed by `compute_effective_sector_cap()` when the active universe is narrow. All values are environment-configurable — see the auto-generated risk table.
 
 **Transaction cost model:** currently a configurable heuristic. Runtime defaults are 3 bps slippage + 1 bps commission = 4 bps total (configurable via `MLCOUNCIL_SLIPPAGE_BPS` and `MLCOUNCIL_COMMISSION_BPS`), estimated on one-way turnover. This is not yet a realized-slippage calibrated impact model.
 
@@ -181,10 +164,14 @@ Before portfolio construction, each signal is scaled by a **conformal multiplier
 
 | Interval width | Confidence | Multiplier |
 |----------------|------------|------------|
-| Narrow         | High       | up to 2.0× |
-| Wide           | Low        | down to 0.2× |
+| Narrow         | High       | up to 1.8× |
+| Wide           | Low        | down to 0.3× |
 
-Coverage of 80% (rather than 90%) tightens intervals and increases average multipliers, improving expected alpha capture. Empirical coverage (~85–90%) sits well above the conservative theoretical jackknife+ bound (`1 − 2α·n/(n+1)`); the residual miss rate is acceptable because diversification across the configured universe limits individual tail exposure.
+$$m_i = \exp\!\Bigl(1 - \frac{w_i}{\mathrm{median}(w)}\Bigr), \qquad m_i \leftarrow \mathrm{clip}(m_i,\, 0.3,\, 1.8)$$
+
+where $w_i$ is the prediction-interval width for asset $i$.
+
+Coverage of 80% (rather than 90%) tightens intervals and increases average multipliers, improving expected alpha capture. Empirical coverage (~85–90%) sits well above the conservative theoretical jackknife+ bound $1 - 2\alpha\,n/(n+1)$; the residual miss rate is acceptable because diversification across the configured universe limits individual tail exposure.
 
 **References:** Angelopoulos & Bates (2023), *Conformal Risk Control*; MAPIE library (Jackknife+ method).
 
@@ -213,6 +200,16 @@ CRITICAL alerts trigger email dispatch via `council/alerts.py`. All alert result
 ### Canary activation (F-0.4)
 
 Shadow features activate through `config/canary.yaml` + `council/canary.py` (run-policy env injection; operator env wins). The daily `canary_health` asset records same-day council metrics; a feature reverts automatically (sticky, with CRITICAL alert) when its metric stays below `floor` for `min_days` consecutive runs. Since gate G1 (2026-08-13) the active trio is: **online learning**, **CQR position sizing**, **dynamic slippage**; `moe_gating` stays off until the gating network is trained. Flag inventory with expiry dates: `docs/flag-registry-2026-08-13.md`.
+
+```mermaid
+flowchart LR
+    CY["config/canary.yaml"] --> AP["CanaryController.apply()<br/>run-policy env injection"]
+    AP --> DJ["daily job"]
+    DJ --> CH["canary_health asset<br/>same-day council metrics"]
+    CH --> RV{"metric < floor<br/>for min_days runs?"}
+    RV -- no --> DJ
+    RV -- yes --> VT["sticky revert + CRITICAL alert<br/>data/results/canary_state.json"]
+```
 
 ---
 
@@ -343,42 +340,33 @@ These are **design-level targets** from the constraint and monitoring setup. Liv
 
 ## Architecture
 
-```text
-                              +----------------------+
-                              |       MLflow         |
-                              | runs, metrics, tags  |
-                              +----------+-----------+
-                                         ^
-                                         |
-+--------------+   +----------------+   +-----------------+   +-------------------+
-| data/ingest  |-->| data/features  |-->| models + council|-->| council/portfolio |
-| OHLCV/news/  |   | Alpha158,      |   | signals, regime |   | target weights    |
-| macro (FRED) |   | sentiment,     |   | weights, council|   | data/orders/*.pq  |
-+--------------+   | sector exposure|   +-----------------+   +---------+---------+
-       |           +-------+--------+           |                       |
-       v                   v                    v                       v
- +-----------+       +-----------+     +------------------+   +------------------+
- | raw data  |       | ArcticDB  |     | conformal sizer  |   | trading_service  |
- | parquet   |       | LMDB,     |     | MAPIE Jackknife+ |   | preflight, risk, |
- +-----------+       | point-in- |     +------------------+   | reconcile, submit|
-                     | time vrsn |                             +---------+--------+
-                     +-----+-----+                                       |
-                           |                                             v
-                     +-----+-----+                             +------------------+
-                     |  Dagster  |                             | Alpaca Paper API |
-                     | pipeline  |                             | orders & fills   |
-                     | 21:30 ET  |                             +---------+--------+
-                     +-----+-----+                                       |
-                           +---------------------+------------------------+
-                                                 |
-                      +--------------------------+--------------------------+
-                      |                                                     |
-                      v                                                     v
-             +------------------+                                 +--------------------+
-             | FastAPI Admin UI |                                 | Streamlit Dashboard|
-             | control plane    |                                 | read-only monitor  |
-             | :8000            |                                 | :8501              |
-             +------------------+                                 +--------------------+
+```mermaid
+flowchart LR
+    subgraph DATA["Data layer"]
+        ING["ingest<br/>OHLCV · news · macro"] --> FEAT["features<br/>Alpha158-inspired · sentiment · sector"]
+        FEAT --> STORE["ArcticDB · point-in-time"]
+    end
+    subgraph DEC["Decision layer"]
+        MOD["models<br/>LightGBM · FinBERT · HMM"] --> COU["council<br/>aggregation · conformal sizing"]
+        COU --> POR["portfolio<br/>CVXPY optimizer"]
+    end
+    subgraph OPS["Operational layer"]
+        TRD["trading_service<br/>preflight · risk · orders"] --> ALP["Alpaca Paper API"]
+        IMM["immune system + canary<br/>drift alerts · auto-revert"] -.->|"alert / revert"| COU
+        POR --> ORD["data/orders · parquet + lineage"]
+    end
+    subgraph SURF["Operator surfaces"]
+        API["FastAPI admin :8000"]
+        DSH["Streamlit :8501"]
+        DAG["Dagster :3000"]
+        MLF["MLflow :5000"]
+    end
+    FEAT --> MOD
+    STORE --> MOD
+    POR --> TRD
+    TRD --> API
+    DAG -.-> ING
+    DAG -.-> TRD
 ```
 
 ---
@@ -764,6 +752,15 @@ The current production target is robust **paper trading on US equities** via Alp
 
 ---
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, code style, repository conventions and commit rules.
+
 ## License
 
-MIT License. See `LICENSE`.
+GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE).
+
+> **AGPL notice:** if you run a modified version of MLCouncil as a network
+> service (e.g. the trading API or a hosted signal engine), section 13 of the
+> AGPL requires you to offer the corresponding source of your modified version
+> to the users of that service.
