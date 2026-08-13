@@ -90,6 +90,35 @@ class VaRReport:
 
 
 @dataclass
+class MonteCarloVaRResult:
+    """Result of the multivariate Monte Carlo VaR simulation.
+
+    ``var_*`` fields are the portfolio VaR; ``es_*`` fields are the expected
+    shortfall (mean loss beyond the VaR quantile). ``cvar_*`` fields are
+    aliases of ``es_*`` kept for backward compatibility. All values are
+    positive losses; ``*_pct`` are fractions of the portfolio value and
+    ``*_dollar`` are absolute dollar amounts.
+
+    Iterating over the result yields ``(var_dollar, cvar_dollar)`` so legacy
+    tuple unpacking keeps working.
+    """
+
+    var_pct: float
+    var_dollar: float
+    cvar_pct: float
+    cvar_dollar: float
+    es_pct: float = 0.0
+    es_dollar: float = 0.0
+    n_simulations: int = 0
+    horizon: int = 1
+
+    def __iter__(self):
+        # Backward-compatible 2-tuple unpacking: (var_dollar, cvar_dollar).
+        yield self.var_dollar
+        yield self.cvar_dollar
+
+
+@dataclass
 class ExposureReport:
     total_market_value: float
     net_exposure: float
@@ -267,59 +296,337 @@ class RiskEngine:
         confidence: float = 0.99,
         horizon: int = 1,
         seed: int | None = None,
-    ) -> tuple[float, float]:
+        tail_dof: int | None = 50,
+        stress_replay: bool = False,
+    ) -> MonteCarloVaRResult:
+        """Multivariate Monte Carlo VaR / ES with multi-step daily paths.
+
+        Simulates ``n_simulations`` paths of ``horizon`` daily portfolio
+        returns (see :meth:`simulate_daily_returns`) and takes the empirical
+        quantiles of the pathwise-compounded P&L at the end of the horizon:
+
+        - **Covariance**: Ledoit-Wolf shrinkage (sklearn), replacing the old
+          ridge + eigenvalue-clipping regularizer.
+        - **Multi-step**: daily paths are compounded pathwise, so vol
+          clustering (GARCH(1,1) / DCC(1,1) daily covariance dynamics when
+          available) breaks the naive ``sqrt(horizon)`` scaling.
+        - **t-copula**: ``tail_dof`` controls the innovation tails. The
+          default ``tail_dof=50`` is practically Gaussian; ``tail_dof=5`` is
+          heavy-tailed; ``tail_dof=None`` (or ``>= 10_000``) is exactly
+          Gaussian. Sampling is ``X = mu + sigma * sqrt((nu-2)/nu) * Z`` with
+          ``Z ~ t_nu(0, R)``, ``R`` the Ledoit-Wolf correlation. The t-copula
+          has lower-tail dependence ``lambda_L = 2 * t_{nu+1}(
+          -sqrt((nu+1)(1-rho)/(1+rho)))`` (0 for the Gaussian copula, ~0.21
+          for ``nu=5, rho=0.5``).
+        - **Stress replay** (``stress_replay=True``): correlation stress
+          ``Sigma* = D (rho* 11' + (1-rho*) I) D`` with ``rho* = 0.9`` plus a
+          top-k eigenvalue shock ``(1 + s_k)`` with ``s_k = 0.5``, applied to
+          every daily covariance matrix.
+
+        Returns a :class:`MonteCarloVaRResult` with VaR and expected
+        shortfall (ES = mean of the losses beyond the VaR quantile) both as
+        fractions of the portfolio value and in dollars.
+        """
         tickers = list(weights.keys())
         available_tickers = [t for t in tickers if t in returns.columns]
 
         if len(available_tickers) < 2:
-            return 0.0, 0.0
+            return MonteCarloVaRResult(0.0, 0.0, 0.0, 0.0)
 
         aligned = returns[available_tickers].copy()
         aligned = aligned.dropna(how="any")
         if len(aligned) < 2:
-            return 0.0, 0.0
+            return MonteCarloVaRResult(0.0, 0.0, 0.0, 0.0)
 
-        mean_vec = aligned.mean().to_numpy(dtype=float)
-        cov = aligned.cov().to_numpy(dtype=float)
-        cov = self._regularize_covariance(cov)
+        effective_seed = self.seed if seed is None else seed
         w = np.array([weights.get(t, 0.0) for t in available_tickers], dtype=float)
 
-        rng = np.random.default_rng(self.seed if seed is None else seed)
-        # Draw joint asset scenarios, then map to portfolio PnL.
-        scenario_returns = rng.multivariate_normal(
-            mean=mean_vec * horizon,
-            cov=cov * horizon,
-            size=n_simulations,
+        paths = self.simulate_daily_returns(
+            aligned,
+            n_simulations=n_simulations,
+            horizon=horizon,
+            seed=effective_seed,
+            tail_dof=tail_dof,
+            stress_replay=stress_replay,
         )
-        simulated_pnl = (scenario_returns @ w) * portfolio_value
+        # Pathwise compounding: product of (1 + daily return) per path - 1.
+        compounded = np.prod(1.0 + paths, axis=1) - 1.0
+        simulated_pnl = (compounded @ w) * portfolio_value
 
-        var_pct = np.percentile(simulated_pnl, (1 - confidence) * 100)
-        cvar_pct = simulated_pnl[simulated_pnl <= var_pct].mean()
+        var_neg = np.percentile(simulated_pnl, (1 - confidence) * 100)
+        tail = simulated_pnl[simulated_pnl <= var_neg]
+        es_neg = float(tail.mean()) if len(tail) else var_neg
 
-        return abs(var_pct), abs(cvar_pct) if not np.isnan(cvar_pct) else abs(var_pct) * 1.5
+        var_dollar = abs(float(var_neg))
+        es_dollar = abs(es_neg)
+        var_pct = var_dollar / portfolio_value if portfolio_value > 0 else 0.0
+        es_pct = es_dollar / portfolio_value if portfolio_value > 0 else 0.0
+        return MonteCarloVaRResult(
+            var_pct=var_pct,
+            var_dollar=var_dollar,
+            cvar_pct=es_pct,
+            cvar_dollar=es_dollar,
+            es_pct=es_pct,
+            es_dollar=es_dollar,
+            n_simulations=n_simulations,
+            horizon=horizon,
+        )
 
     @staticmethod
-    def _regularize_covariance(cov: np.ndarray) -> np.ndarray:
-        """Return a symmetric positive-definite covariance matrix.
+    def simulate_daily_returns(
+        returns: pd.DataFrame,
+        n_simulations: int = 10000,
+        horizon: int = 1,
+        seed: int | None = None,
+        tail_dof: int | None = 50,
+        covariance: np.ndarray | None = None,
+        mean: np.ndarray | None = None,
+        stress_replay: bool = False,
+    ) -> np.ndarray:
+        """Simulate multi-step daily return paths ``(n_simulations, horizon, n_assets)``.
 
-        Uses a small diagonal ridge scaled to average variance and clips any
-        negative eigenvalues that can appear from finite samples.
+        Each path compounds ``horizon`` daily draws so portfolio risk can be
+        read from the empirical distribution of the compounded P&L. The daily
+        covariance is:
+
+        1. the DCC(1,1) conditional covariance (GARCH(1,1) vols + EWMA
+           correlation, as in ``council/covariance_dynamic.py``) when
+           ``arch`` is installed;
+        2. otherwise a GARCH(1,1) vol forecast around the constant
+           Ledoit-Wolf correlation: persistence ``phi = alpha + beta`` is the
+           AR(1) coefficient of squared returns and ``omega = sigma_bar^2
+           (1 - phi)``, seeded from the last 20 squared returns;
+        3. otherwise the constant Ledoit-Wolf covariance.
+
+        Innovations are drawn from a t-copula with ``tail_dof`` degrees of
+        freedom: ``X = mu + sigma * sqrt((nu-2)/nu) * Z`` with
+        ``Z ~ t_nu(0, R)``. ``tail_dof=None`` (or ``>= 10_000``) means
+        ``nu = infinity``, i.e. the Gaussian copula.
         """
-        cov = np.asarray(cov, dtype=float)
-        cov = (cov + cov.T) / 2.0
+        n_assets = returns.shape[1]
+        rng = np.random.default_rng(seed)
+        if covariance is None:
+            covariance = RiskEngine._ledoit_wolf_covariance(returns)
+        if mean is None:
+            mean = returns.mean().to_numpy(dtype=float)
+        covariance = RiskEngine._make_psd(np.asarray(covariance, dtype=float))
+        if covariance.shape[0] != n_assets:
+            raise ValueError(f"covariance must be {n_assets}x{n_assets}, got {covariance.shape}")
 
-        if cov.size == 0:
-            return cov
+        daily_cov = RiskEngine._dcc_daily_covariance_path(returns, horizon)
+        if daily_cov is None:
+            daily_cov = RiskEngine._garch_daily_covariance_path(returns, horizon, covariance)
+        if daily_cov is None:
+            daily_cov = np.repeat(covariance[None, :, :], horizon, axis=0)
 
-        diag = np.clip(np.diag(cov), a_min=0.0, a_max=None)
-        scale = float(diag.mean()) if np.any(diag > 0.0) else 1.0
-        ridge = max(scale * 1e-6, 1e-12)
-        cov = cov + np.eye(cov.shape[0]) * ridge
+        if stress_replay:
+            for t in range(horizon):
+                daily_cov[t] = RiskEngine._stress_replay_covariance(daily_cov[t])
 
-        eigvals, eigvecs = np.linalg.eigh(cov)
-        eigvals = np.clip(eigvals, a_min=ridge, a_max=None)
-        cov_pd = eigvecs @ np.diag(eigvals) @ eigvecs.T
-        return (cov_pd + cov_pd.T) / 2.0
+        gaussian = tail_dof is None or tail_dof >= 10_000
+        paths = np.empty((n_simulations, horizon, n_assets))
+        for t in range(horizon):
+            sigma_t = daily_cov[t]
+            vol_t = np.sqrt(np.maximum(np.diag(sigma_t), 1e-12))
+            corr_t = sigma_t / np.outer(vol_t, vol_t)
+            chol = np.linalg.cholesky(
+                RiskEngine._make_psd(corr_t) + np.eye(n_assets) * 1e-12
+            )
+            z = rng.standard_normal((n_simulations, n_assets)) @ chol.T
+            if not gaussian:
+                # t-copula: Z = Y * sqrt(nu / W) with W ~ chi2(nu), then
+                # rescale to unit variance: X = mu + sigma * sqrt((nu-2)/nu) Z.
+                nu = float(tail_dof)
+                chi2 = rng.chisquare(nu, size=n_simulations)
+                z = z * np.sqrt((nu - 2.0) / chi2)[:, None]
+            paths[:, t, :] = mean[None, :] + z * vol_t[None, :]
+        return paths
+
+    @staticmethod
+    def _ledoit_wolf_covariance(returns: pd.DataFrame) -> np.ndarray:
+        """Ledoit-Wolf shrunk covariance from a wide return panel.
+
+        Replaces the previous ridge + eigenvalue-clipping regularizer: LW
+        shrinkage is asymptotically optimal under Frobenius loss and keeps
+        the sample dependence structure while guaranteeing positive
+        definiteness. Falls back to the (PSD-clipped) sample covariance when
+        sklearn is unavailable.
+        """
+        values = returns.to_numpy(dtype=float)
+        sample_cov = np.cov(values, rowvar=False)
+        if returns.shape[1] <= 1 or len(returns) < 5:
+            return RiskEngine._make_psd(sample_cov)
+        try:
+            from sklearn.covariance import LedoitWolf
+
+            cov = LedoitWolf().fit(values).covariance_
+        except Exception:
+            cov = sample_cov
+        return RiskEngine._make_psd(cov)
+
+    @staticmethod
+    def _make_psd(matrix: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+        """Symmetrize and clip eigenvalues to keep a matrix positive definite."""
+        arr = np.asarray(matrix, dtype=float)
+        if arr.ndim == 0:
+            arr = arr.reshape(1, 1)
+        sym = (arr + arr.T) / 2.0
+        eigvals, eigvecs = np.linalg.eigh(sym)
+        eigvals = np.maximum(eigvals, eps)
+        return eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+    @staticmethod
+    def _dcc_daily_covariance_path(
+        returns: pd.DataFrame, horizon: int
+    ) -> np.ndarray | None:
+        """Daily conditional covariance matrices (``horizon x n x n``) via DCC(1,1).
+
+        Replays the GARCH(1,1) + EWMA-correlation recursion used by
+        ``council/covariance_dynamic.DCCEstimator`` (see
+        ``docs/math-drilldown`` section 1.3, Step 1):
+
+        .. math::
+
+            sigma^2_{i,t} = omega_i + alpha_i e^2_{i,t-1} + beta_i sigma^2_{i,t-1}
+            Q_t = (1-a-b) Qbar + a e_{t-1} e'_{t-1} + b Q_{t-1}
+            R_t = diag(Q_t)^{-1/2} Q_t diag(Q_t)^{-1/2}
+            Sigma_t = D_t R_t D_t
+
+        Returns None when ``arch`` is unavailable or the fit fails; callers
+        then fall back to the constant Ledoit-Wolf covariance with GARCH vol
+        dynamics (multi-step compounding still applies).
+        """
+        try:
+            from arch import arch_model
+            from council.covariance_dynamic import DCCEstimator
+        except Exception:
+            return None
+        n = returns.shape[1]
+        if n < 2 or len(returns) < 30:
+            return None
+        try:
+            dcc = DCCEstimator()
+            a, b = dcc.a, dcc.b
+            z_cols = []
+            sig2_cols = []
+            garch_params = []
+            scale = 100.0
+            for ticker in returns.columns:
+                series = returns[ticker].dropna() * scale
+                am = arch_model(series, vol="Garch", p=1, q=1, rescale=False)
+                res = am.fit(disp="off", show_warning=False)
+                cv = np.maximum(
+                    np.asarray(res.conditional_volatility, dtype=float) / scale,
+                    1e-8,
+                )
+                resid = np.asarray(res.resid, dtype=float) / scale
+                z_cols.append(pd.Series(resid / cv, index=series.index, name=ticker))
+                sig2_cols.append(pd.Series(cv**2, index=series.index, name=ticker))
+                params = np.asarray(res.params, dtype=float)
+                garch_params.append((params[0] / scale**2, params[1], params[2]))
+            zdf = pd.concat(z_cols, axis=1).dropna(how="any")
+            if len(zdf) < 5:
+                return None
+            z = zdf.to_numpy(dtype=float)
+            q_bar = np.cov(z, rowvar=False)
+            q_t = q_bar.copy()
+            for t in range(1, len(z)):
+                e = np.outer(z[t - 1], z[t - 1])
+                q_t = (1.0 - a - b) * q_bar + a * e + b * q_t
+            sig2 = np.asarray([s.iloc[-1] for s in sig2_cols], dtype=float)
+            params = np.asarray(garch_params, dtype=float)
+            path = np.empty((horizon, n, n))
+            for t in range(horizon):
+                d_inv = np.diag(1.0 / np.sqrt(np.maximum(np.diag(q_t), 1e-12)))
+                r_t = d_inv @ q_t @ d_inv
+                d_t = np.diag(np.sqrt(np.maximum(sig2, 1e-12)))
+                path[t] = d_t @ r_t @ d_t
+                # Conditional forecasts: E[e_t e'_t] = R_t, E[e^2_t] = sigma^2_t.
+                q_t = (1.0 - a - b) * q_bar + a * r_t + b * q_t
+                sig2 = params[:, 0] + (params[:, 1] + params[:, 2]) * sig2
+            return path
+        except Exception as exc:
+            logger.debug("DCC daily covariance path unavailable: %s", exc)
+            return None
+
+    @staticmethod
+    def _garch_daily_covariance_path(
+        returns: pd.DataFrame,
+        horizon: int,
+        covariance: np.ndarray,
+    ) -> np.ndarray | None:
+        """GARCH(1,1) daily vol forecasts around a constant correlation.
+
+        Method-of-moments calibration (no ``arch`` dependency): persistence
+        ``phi = alpha + beta`` is the AR(1) coefficient of the squared
+        returns and ``omega = sigma_bar^2 (1 - phi)`` with ``sigma_bar^2``
+        the sample variance. The current vol state is seeded with a
+        persistence-weighted blend of the last 20 squared returns and the
+        unconditional variance (``sig2_0 = phi * recent + (1-phi) *
+        sigma_bar^2``), so iid data stays at the unconditional level while a
+        recent vol cluster drives the forecast. The conditional forecast
+        ``sigma^2_{t+1} = omega + phi * sigma^2_t`` then decays toward the
+        unconditional level over the horizon (breaking ``sqrt(horizon)``
+        scaling). Correlation is constant at the Ledoit-Wolf level:
+        ``Sigma_t = D_t R_lw D_t``.
+        """
+        n = returns.shape[1]
+        if n < 2 or len(returns) < 30:
+            return None
+        values = returns.to_numpy(dtype=float)
+        r2 = values**2
+        phis = []
+        for j in range(n):
+            prev, curr = r2[:-1, j], r2[1:, j]
+            if prev.std() > 0 and curr.std() > 0:
+                phi = float(np.corrcoef(prev, curr)[0, 1])
+            else:
+                phi = 0.0
+            phis.append(float(np.clip(phi, 0.1, 0.99)))
+        phi = np.asarray(phis, dtype=float)
+        sigma_bar2 = np.maximum(values.var(axis=0, ddof=1), 1e-12)
+        omega = sigma_bar2 * (1.0 - phi)
+        recent = np.maximum(np.mean(r2[-20:], axis=0), 1e-12)
+        sig2 = phi * recent + (1.0 - phi) * sigma_bar2
+        std_lw = np.sqrt(np.maximum(np.diag(covariance), 1e-12))
+        corr_lw = covariance / np.outer(std_lw, std_lw)
+        path = np.empty((horizon, n, n))
+        for t in range(horizon):
+            d_t = np.diag(np.sqrt(sig2))
+            path[t] = d_t @ corr_lw @ d_t
+            sig2 = omega + phi * sig2
+        return path
+
+    @staticmethod
+    def _stress_replay_covariance(
+        cov: np.ndarray,
+        rho_star: float = 0.9,
+        shock: float = 0.5,
+        top_k: int = 2,
+    ) -> np.ndarray:
+        """Apply the stress-replay shocks to a covariance matrix (drill-down 1.3, Step 4).
+
+        (a) Correlation stress: ``Sigma* = D (rho* 11' + (1-rho*) I) D`` with
+            ``rho* = 0.9`` — all pairwise correlations forced to 0.9, vols
+            unchanged.
+        (b) Eigenvalue stress: the top-k principal components of the stressed
+            matrix are scaled by ``(1 + s_k)`` with ``s_k = 0.5``:
+            ``Sigma* = V diag(lambda (1 + s)) V'``.
+        """
+        cov = RiskEngine._make_psd(np.asarray(cov, dtype=float))
+        std = np.sqrt(np.maximum(np.diag(cov), 1e-12))
+        n = cov.shape[0]
+        corr_stress = rho_star * np.ones((n, n)) + (1.0 - rho_star) * np.eye(n)
+        stressed = np.outer(std, std) * corr_stress
+        eigvals, eigvecs = np.linalg.eigh(stressed)
+        order = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+        k = max(1, min(top_k, n))
+        shocks = np.ones(n)
+        shocks[:k] = 1.0 + shock
+        stressed = eigvecs @ np.diag(eigvals * shocks) @ eigvecs.T
+        return RiskEngine._make_psd(stressed)
 
     def compute_var(
         self,
@@ -329,7 +636,18 @@ class RiskEngine:
         method: str = "historical",
         confidence: float = 0.99,
         seed: int | None = None,
+        *,
+        tail_dof: int | None = None,
+        stress_replay: bool = False,
     ) -> VaRReport:
+        """Compute 1/5/10-day VaR and CVaR for a portfolio.
+
+        ``method`` is one of ``historical`` (default), ``parametric``,
+        ``generative`` or ``monte_carlo`` (catch-all). ``tail_dof`` and
+        ``stress_replay`` only affect the Monte Carlo method: Student-t
+        innovation tails (``None`` = Gaussian, the legacy default; 50 =
+        practically Gaussian; 5 = heavy tails) and optional stress replay.
+        """
         weights = {p.symbol: p.market_value / portfolio_value for p in positions}
 
         if method == "historical":
@@ -349,11 +667,16 @@ class RiskEngine:
             wide = returns[tickers] if tickers else returns
             stress = GenerativeStressEngine(n_scenarios=10_000).sample_scenarios(wide)
             var_1d = abs(stress.var_95)
-            cvar_1d = var_1d * 1.25
+            # CVaR from the empirical tail of the already-sampled scenarios
+            # (mean of the draws beyond the 95% VaR) instead of the Gaussian
+            # ES/VaR ratio 1.25 — the simulation was decorative before
+            # (drill-down finding #1).
+            tail = stress.scenarios[stress.scenarios <= stress.var_95]
+            cvar_1d = abs(float(tail.mean())) if len(tail) else var_1d * 1.25
             var_5d, cvar_5d = var_1d * np.sqrt(5), cvar_1d * np.sqrt(5)
             var_10d, cvar_10d = var_1d * np.sqrt(10), cvar_1d * np.sqrt(10)
         else:
-            var_1d, cvar_1d = self.compute_var_monte_carlo(
+            result_1d = self.compute_var_monte_carlo(
                 returns,
                 weights,
                 portfolio_value,
@@ -361,8 +684,11 @@ class RiskEngine:
                 confidence,
                 1,
                 seed=seed,
+                tail_dof=tail_dof,
+                stress_replay=stress_replay,
             )
-            var_5d, cvar_5d = self.compute_var_monte_carlo(
+            var_1d, cvar_1d = result_1d.var_dollar, result_1d.cvar_dollar
+            result_5d = self.compute_var_monte_carlo(
                 returns,
                 weights,
                 portfolio_value,
@@ -370,8 +696,11 @@ class RiskEngine:
                 confidence,
                 5,
                 seed=seed,
+                tail_dof=tail_dof,
+                stress_replay=stress_replay,
             )
-            var_10d, cvar_10d = self.compute_var_monte_carlo(
+            var_5d, cvar_5d = result_5d.var_dollar, result_5d.cvar_dollar
+            result_10d = self.compute_var_monte_carlo(
                 returns,
                 weights,
                 portfolio_value,
@@ -379,7 +708,10 @@ class RiskEngine:
                 confidence,
                 10,
                 seed=seed,
+                tail_dof=tail_dof,
+                stress_replay=stress_replay,
             )
+            var_10d, cvar_10d = result_10d.var_dollar, result_10d.cvar_dollar
 
         return VaRReport(
             var_1d=var_1d,
@@ -682,6 +1014,9 @@ class RiskEngine:
         equity_curve: Optional[pd.Series] = None,
         var_method: str = "historical",
         seed: int | None = None,
+        *,
+        tail_dof: int | None = None,
+        stress_replay: bool = False,
     ) -> RiskReport:
         portfolio_value = portfolio_value or sum(p.market_value for p in positions)
 
@@ -691,6 +1026,8 @@ class RiskEngine:
             portfolio_value,
             method=var_method,
             seed=seed,
+            tail_dof=tail_dof,
+            stress_replay=stress_replay,
         )
         exposure_report = self.compute_exposure(positions, portfolio_value)
 

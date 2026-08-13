@@ -627,8 +627,24 @@ class CouncilMonitor:
         features_today: "pd.DataFrame | Any",
         returns_today: "pd.Series | Any",
         model_name: str = "council",
+        detector: "Any | None" = None,
     ) -> AlertResult:
-        """Alert when feature→return causal link structure changes vs baseline."""
+        """Alert when feature→return causal link structure changes vs baseline.
+
+        Parameters
+        ----------
+        features_today:
+            Feature matrix (pandas or polars DataFrame) for the current window.
+        returns_today:
+            Target return series aligned with ``features_today`` (pandas Series
+            or single-column DataFrame).
+        model_name:
+            Model identifier used in the returned AlertResult.
+        detector:
+            Optional :class:`council.causal_drift.PCMCIDriftDetector` with a
+            persisted baseline. When omitted, a fresh detector is created and
+            the first call only initialises the baseline (no alert).
+        """
         from council.causal_drift import PCMCIDriftDetector, causal_drift_enabled
 
         if not causal_drift_enabled():
@@ -644,11 +660,15 @@ class CouncilMonitor:
             )
 
         today_df = _to_pandas(features_today)
-        ret = _to_pandas(returns_today)
-        if isinstance(ret, pd.DataFrame) and ret.shape[1] == 1:
-            ret = ret.iloc[:, 0]
+        if isinstance(returns_today, pd.Series):
+            # _to_pandas non passa le Series: trattiamole esplicitamente.
+            ret = returns_today
+        else:
+            ret = _to_pandas(returns_today)
+            if isinstance(ret, pd.DataFrame) and ret.shape[1] == 1:
+                ret = ret.iloc[:, 0]
 
-        detector = PCMCIDriftDetector()
+        detector = detector or PCMCIDriftDetector()
         is_alert, diag = detector.check(today_df, ret)
 
         if is_alert:

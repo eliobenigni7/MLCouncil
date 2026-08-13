@@ -3,6 +3,7 @@
 Joins HMM regime labels and posterior probabilities on ``valid_time`` and
 optionally adds interactions with top Alpha158 features when
 ``MLCOUNCIL_REGIME_FEATURES=true``.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

@@ -6,6 +6,7 @@ This module scores headlines and filing context via an LLM encoder in
 wired into ``sentiment_signals``.
 
 Hallucination guard: any unparseable LLM output maps to score ``0.0``.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

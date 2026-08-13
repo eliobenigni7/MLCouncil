@@ -18,6 +18,11 @@ async def read_alert_history(limit: int = Query(30, ge=1, le=365)):
     return monitoring_service.get_alert_history(limit=limit)
 
 
+@router.get("/health")
+async def read_health_signals():
+    return monitoring_service.get_health_signals()
+
+
 @router.get("/settings")
 async def read_runtime_settings():
     return monitoring_service.get_runtime_settings()

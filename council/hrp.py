@@ -2,6 +2,7 @@
 
 Used as an optional *soft prior* blended with the CVXPY mean-variance solution
 when ``MLCOUNCIL_HRP_SOFT_PRIOR=true``, or via ``MLCOUNCIL_PORTFOLIO_MODE=hrp_blend``.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

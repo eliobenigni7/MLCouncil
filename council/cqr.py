@@ -2,6 +2,7 @@
 
 ``MLCOUNCIL_POSITION_SIZING=cqr`` selects CQR; default ``conformal`` keeps
 ``council/conformal.py`` (MAPIE Jackknife+) as production path.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

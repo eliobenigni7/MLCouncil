@@ -2,6 +2,7 @@
 
 ``MLCOUNCIL_COVARIANCE_ESTIMATOR`` — ``ledoit`` (default), ``dcc``, or ``factor``
 (factor scaffold Σ = B Σ_f B' + D; falls back to Ledoit-Wolf when factors missing).
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

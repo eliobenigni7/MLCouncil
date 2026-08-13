@@ -1,6 +1,7 @@
 """PPO RL execution agent scaffold (T4.1 shadow).
 
 Routes through TWAP when disabled or when stable-baselines3 is unavailable.
+Canary status: shadow — target: P-2 — expiry: 2027-12-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

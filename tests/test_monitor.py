@@ -12,6 +12,7 @@ Coverage
 from __future__ import annotations
 
 from datetime import date, timedelta
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -498,3 +499,330 @@ class TestInternalHelpers:
     def test_count_trailing_true_single_false(self) -> None:
         s = pd.Series([True, True, False])
         assert _count_trailing_true(s) == 0
+
+
+# ---------------------------------------------------------------------------
+# 6. Causal graph drift (T4.4)
+# ---------------------------------------------------------------------------
+
+class TestCausalGraphDrift:
+    """check_causal_graph_drift: flag, baseline init e alert su cambio struttura."""
+
+    def test_causal_drift_disabled_is_info(self, monitor: CouncilMonitor, monkeypatch) -> None:
+        """Senza MLCOUNCIL_CAUSAL_DRIFT_ENABLED il check è INFO, mai alert."""
+        monkeypatch.delenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", raising=False)
+        features = _make_feature_df(n_rows=80, n_cols=4, seed=3)
+        returns = pd.Series(
+            np.random.default_rng(4).standard_normal(80), index=features.index
+        )
+
+        result = monitor.check_causal_graph_drift(features, returns)
+
+        assert not result.is_alert
+        assert result.check_type == "causal_drift"
+        assert result.severity == Severity.INFO
+
+    def test_causal_drift_alert_on_structure_change(
+        self, monitor: CouncilMonitor, monkeypatch
+    ) -> None:
+        """Con baseline condivisa, un cambio di struttura feature→return → WARNING."""
+        from council.causal_drift import PCMCIDriftDetector
+
+        monkeypatch.setenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", "true")
+        rng = np.random.default_rng(1)
+        n = 80
+        base_f = pd.DataFrame(
+            {"f1": rng.standard_normal(n), "f2": rng.standard_normal(n)}
+        )
+        base_r = pd.Series(base_f["f1"] * 0.2 + rng.standard_normal(n) * 0.01)
+
+        detector = PCMCIDriftDetector(corr_threshold=0.1, link_change_fraction=0.25)
+        first = monitor.check_causal_graph_drift(base_f, base_r, detector=detector)
+        assert not first.is_alert, "La prima chiamata inizializza solo la baseline"
+        assert first.metric_value == 0.0
+
+        shifted_f = pd.DataFrame(
+            {"f2": rng.standard_normal(n), "f3": rng.standard_normal(n)}
+        )
+        shifted_r = pd.Series(shifted_f["f2"] * 0.25)
+        second = monitor.check_causal_graph_drift(shifted_f, shifted_r, detector=detector)
+
+        assert second.is_alert
+        assert second.check_type == "causal_drift"
+        assert second.severity == Severity.WARNING
+        assert second.metric_value >= detector.link_change_fraction
+
+    def test_causal_drift_fresh_detector_never_alerts_on_first_call(
+        self, monitor: CouncilMonitor, monkeypatch
+    ) -> None:
+        """Senza detector condiviso, la prima chiamata crea la baseline (ok)."""
+        monkeypatch.setenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", "true")
+        features = _make_feature_df(n_rows=80, n_cols=3, seed=5)
+        returns = pd.Series(
+            np.random.default_rng(6).standard_normal(80), index=features.index
+        )
+
+        result = monitor.check_causal_graph_drift(features, returns)
+
+        assert not result.is_alert
+        assert result.check_type == "causal_drift"
+
+
+# ---------------------------------------------------------------------------
+# 7. Unified health signals (F-0.2)
+# ---------------------------------------------------------------------------
+
+class TestHealthSignals:
+    """collect_health_signals: aggregazione dei quattro famiglie di drift."""
+
+    def test_all_ok_with_healthy_inputs(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(
+            tda_alert={"is_alert": False, "beta1_proxy": 0.20, "threshold": 0.35},
+            causal_drift={"change_fraction": 0.10},
+            adwin_drift={"drift_detected": False},
+            ddm_drift={"drift_detected": False},
+            evidently_drift={"drift_fraction": 0.30},
+        )
+        assert set(signals) == {
+            "tda_warning",
+            "causal_drift",
+            "adwin_drift",
+            "ddm_drift",
+            "evidently_drift",
+        }
+        assert all(s["level"] == "ok" for s in signals.values())
+        assert signals["causal_drift"]["value"] == pytest.approx(0.10)
+        assert signals["evidently_drift"]["threshold"] == pytest.approx(0.5)
+
+    def test_causal_drift_breach_alerts(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(causal_drift={"change_fraction": 0.33})
+
+        assert signals["causal_drift"]["level"] == "alert"
+        assert signals["causal_drift"]["value"] == pytest.approx(0.33)
+        assert signals["causal_drift"]["threshold"] == pytest.approx(0.25)
+
+    def test_causal_drift_exactly_at_threshold_alerts(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(causal_drift={"change_fraction": 0.25})
+        assert signals["causal_drift"]["level"] == "alert"
+
+    def test_evidently_drift_breach_alerts(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(evidently_drift={"drift_fraction": 0.6})
+
+        assert signals["evidently_drift"]["level"] == "alert"
+        assert signals["evidently_drift"]["threshold"] == pytest.approx(0.5)
+
+    def test_tda_alert_flag(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(
+            tda_alert={"is_alert": True, "beta1_proxy": 0.42}
+        )
+        assert signals["tda_warning"]["level"] == "alert"
+        assert signals["tda_warning"]["value"] is True
+
+    def test_adwin_ddm_flags(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(
+            adwin_drift={"drift_detected": True},
+            ddm_drift={"drift_detected": True},
+        )
+        assert signals["adwin_drift"]["level"] == "alert"
+        assert signals["ddm_drift"]["level"] == "alert"
+
+    def test_bool_flags_accepted(self) -> None:
+        """Input boolean nudi per ADWIN/DDM devono funzionare come i payload dict."""
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(adwin_drift=True, ddm_drift=False)
+        assert signals["adwin_drift"]["level"] == "alert"
+        assert signals["ddm_drift"]["level"] == "ok"
+
+    def test_missing_inputs_ok_with_note(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals()
+
+        for name in ("tda_warning", "causal_drift", "adwin_drift", "ddm_drift", "evidently_drift"):
+            assert signals[name]["level"] == "ok", name
+            assert signals[name]["value"] is None
+            assert signals[name]["note"], f"{name} deve avere una nota"
+
+    def test_empty_dict_inputs_ok_with_note(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(
+            tda_alert={}, causal_drift={}, evidently_drift={}
+        )
+        assert signals["tda_warning"]["level"] == "ok"
+        assert signals["causal_drift"]["level"] == "ok"
+        assert signals["evidently_drift"]["level"] == "ok"
+
+    def test_malformed_inputs_no_exception(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(
+            tda_alert="garbage",
+            causal_drift=[1, 2, 3],
+            evidently_drift={"drift_fraction": "x"},
+            adwin_drift={"drift_detected": "yes"},
+        )
+
+        assert signals["tda_warning"]["level"] == "ok"
+        assert signals["causal_drift"]["level"] == "ok"
+        assert signals["evidently_drift"]["level"] == "ok"
+        assert signals["adwin_drift"]["level"] == "alert"  # "yes" è truthy → flag attivo
+
+    def test_custom_thresholds(self) -> None:
+        from council.alerting import collect_health_signals
+
+        signals = collect_health_signals(
+            causal_drift={"change_fraction": 0.20},
+            evidently_drift={"drift_fraction": 0.45},
+            causal_threshold=0.30,
+            evidently_threshold=0.6,
+        )
+        assert signals["causal_drift"]["level"] == "ok"
+        assert signals["evidently_drift"]["level"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# 8. Health dispatch (F-0.2) — ponte verso AlertDispatcher
+# ---------------------------------------------------------------------------
+
+class TestHealthDispatch:
+    """dispatch_health_alerts: health dict → AlertResult → AlertDispatcher."""
+
+    def test_alert_level_dispatches_critical(self) -> None:
+        from council.alerting import dispatch_health_alerts
+
+        health = {
+            "causal_drift": {"level": "alert", "value": 0.4, "threshold": 0.25, "note": None},
+            "tda_warning": {
+                "level": "alert",
+                "value": True,
+                "threshold": 0.35,
+                "note": "beta1_proxy=0.4100",
+            },
+            "evidently_drift": {"level": "ok", "value": 0.3, "threshold": 0.5, "note": None},
+        }
+        dispatcher = MagicMock()
+
+        results = dispatch_health_alerts(
+            health, dispatcher=dispatcher, check_date="2026-08-17"
+        )
+
+        assert len(results) == 2
+        assert all(r.is_alert for r in results)
+        assert all(r.model_name == "council" for r in results)
+        assert all(r.severity == Severity.CRITICAL for r in results)
+        assert {r.check_type for r in results} == {"causal_drift", "tda_warning"}
+
+        causal = next(r for r in results if r.check_type == "causal_drift")
+        assert causal.metric_value == pytest.approx(0.4)
+        assert causal.threshold == pytest.approx(0.25)
+        assert "health level=alert" in causal.message
+        assert causal.timestamp.startswith("2026-08-17")
+
+        flag = next(r for r in results if r.check_type == "tda_warning")
+        assert flag.metric_value == pytest.approx(1.0)  # bool True → 1.0
+        assert "beta1_proxy=0.4100" in flag.message
+
+        dispatcher.dispatch.assert_called_once_with(results)
+
+    def test_warn_level_dispatches_warning(self) -> None:
+        from council.alerting import dispatch_health_alerts
+
+        health = {
+            "evidently_drift": {"level": "warn", "value": 0.6, "threshold": 0.5, "note": None}
+        }
+        dispatcher = MagicMock()
+
+        results = dispatch_health_alerts(health, dispatcher=dispatcher)
+
+        assert len(results) == 1
+        assert results[0].severity == Severity.WARNING
+        assert results[0].check_type == "evidently_drift"
+        dispatcher.dispatch.assert_called_once()
+
+    def test_ok_only_no_dispatch(self) -> None:
+        from council.alerting import dispatch_health_alerts
+
+        health = {
+            "causal_drift": {"level": "ok", "value": 0.1, "threshold": 0.25, "note": None},
+            "adwin_drift": {"level": "ok", "value": False, "threshold": 1.0, "note": None},
+        }
+        dispatcher = MagicMock()
+
+        results = dispatch_health_alerts(health, dispatcher=dispatcher)
+
+        assert results == []
+        dispatcher.dispatch.assert_not_called()
+
+    def test_none_or_malformed_health_graceful(self) -> None:
+        from council.alerting import dispatch_health_alerts
+
+        dispatcher = MagicMock()
+
+        assert dispatch_health_alerts(None, dispatcher=dispatcher) == []
+        assert dispatch_health_alerts("garbage", dispatcher=dispatcher) == []
+        assert dispatch_health_alerts({"causal_drift": "garbage"}, dispatcher=dispatcher) == []
+        dispatcher.dispatch.assert_not_called()
+
+    def test_dispatch_from_disk_roundtrip(self, tmp_path, monkeypatch) -> None:
+        """collect_health_signals_from_disk → dispatch: alert dal file JSON."""
+        import json as _json
+
+        from council.alerting import collect_health_signals_from_disk, dispatch_health_alerts
+
+        results = tmp_path / "results"
+        results.mkdir()
+        (results / "causal_drift_latest.json").write_text(
+            _json.dumps({"change_fraction": 0.33, "status": "alert", "is_alert": True})
+        )
+        dispatcher = MagicMock()
+
+        health = collect_health_signals_from_disk(results)
+        assert health["causal_drift"]["level"] == "alert"
+        results_out = dispatch_health_alerts(health, dispatcher=dispatcher)
+        assert len(results_out) == 1
+        assert results_out[0].check_type == "causal_drift"
+        assert results_out[0].severity == Severity.CRITICAL
+
+    def test_real_dispatcher_writes_log_and_dashboard(self, monkeypatch, tmp_path) -> None:
+        """Integrazione con AlertDispatcher reale: log + dashboard state, niente email."""
+        import json as _json
+
+        from council import alerts as alerts_mod
+        from council.alerting import dispatch_health_alerts
+
+        monkeypatch.setattr(alerts_mod, "_ALERTS_DIR", tmp_path / "alerts")
+        monkeypatch.setattr(alerts_mod, "_MONITORING_DIR", tmp_path / "monitoring")
+        monkeypatch.setattr(alerts_mod, "_DEADLETTER_DIR", tmp_path / "deadletter")
+        monkeypatch.delenv("ALERT_EMAIL", raising=False)
+
+        health = {
+            "causal_drift": {"level": "alert", "value": 0.4, "threshold": 0.25, "note": None}
+        }
+        results = dispatch_health_alerts(health, check_date="2026-08-17")
+
+        assert len(results) == 1
+        log_path = tmp_path / "alerts" / f"{date.today().isoformat()}.json"
+        assert log_path.exists()
+        entries = _json.loads(log_path.read_text(encoding="utf-8"))
+        assert entries[-1]["check_type"] == "causal_drift"
+        assert entries[-1]["severity"] == "critical"
+        assert entries[-1]["model_name"] == "council"
+
+        dashboard = tmp_path / "monitoring" / "current_alerts.json"
+        assert dashboard.exists()
+        state = _json.loads(dashboard.read_text(encoding="utf-8"))
+        assert state[-1]["check_type"] == "causal_drift"

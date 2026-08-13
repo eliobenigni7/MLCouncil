@@ -107,7 +107,7 @@ python -m pytest tests/test_tft.py -v
 
 ## Online learning (T1.2)
 
-Daily incremental LightGBM refit is **off by default**. Enable for staging/paper:
+Daily incremental LightGBM refit is **off by default**; **active via canary since gate G1 (2026-08-13)** when the canary controller applies `MLCOUNCIL_ONLINE_LEARNING=true` (`config/canary.yaml`). Enable for staging/paper:
 
 ```bash
 export MLCOUNCIL_ONLINE_LEARNING=true
@@ -118,6 +118,21 @@ export MLCOUNCIL_ONLINE_LEARNING=true
 - `council/drift.py` — ADWIN on 60d equal-weight returns; DDM on binary error indicators
 - Dagster `lgbm_signals` refits champion before predict when enabled; walk-forward CI still owns promotion
 - ADR: `docs/adr/2026-05-21-online-learning.md`
+
+## Canary activation (F-0.4 — G1 approved 2026-08-13)
+
+Shadow features activate via `config/canary.yaml` + `council/canary.py` (`CanaryController`:
+run-policy env injection `apply()` — operator env wins; `record()`/`check_revert()` sticky
+revert when the configured metric stays below `floor` for `min_days` consecutive runs; alerts
+via `council/alerting.py`). Daily asset `canary_health` records same-day council metrics;
+no-op with zero side effects when no feature is enabled.
+
+G1-approved active trio: online learning (`MLCOUNCIL_ONLINE_LEARNING=true`), CQR sizing
+(`MLCOUNCIL_POSITION_SIZING=cqr`), dynamic slippage (`MLCOUNCIL_DYNAMIC_SLIPPAGE=true`).
+`moe_gating` is **NOT** active (gate untrained — train hard-EM gating first, then canary).
+Reverts land in `data/results/canary_state.json` and dispatch CRITICAL alerts through the
+standard channels. Flag inventory with expiry dates: `docs/flag-registry-2026-08-13.md`.
+ADR: `docs/adr/2026-08-13-canary-config-profile.md`.
 
 ## Production profile (gated — default)
 

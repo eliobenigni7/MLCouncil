@@ -1,6 +1,7 @@
 """Generative stress scenario sampler (T4.3 VAE/Diffusion scaffold).
 
 Falls back to multivariate Gaussian with regime conditioning when torch is absent.
+Canary status: shadow — target: P-2 — expiry: 2027-12-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

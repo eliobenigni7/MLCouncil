@@ -5,6 +5,7 @@ Uses ``lightgbm.Booster.refit()`` on the champion checkpoint loaded via
 that remains ``council/walkforward_promotion_gate.py``.
 
 Enable with ``MLCOUNCIL_ONLINE_LEARNING=true``.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

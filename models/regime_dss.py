@@ -6,6 +6,7 @@ default; this module runs in **shadow** until walk-forward promotion.
 
 Backend priority: ``mamba-ssm`` (if installed) → NumPy recurrent VAE stub.
 Torch is optional for the stub when available; tests run CPU-only on NumPy.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

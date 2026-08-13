@@ -476,6 +476,7 @@ class TestAssetDependencies:
             "AssetKey(['cost_calibration_gate'])",
             "AssetKey(['model_promotion_gate'])",
             "AssetKey(['tda_warning_signal'])",
+            "AssetKey(['causal_drift_check'])",
         }
 
     def test_retry_policy_configured(self):
@@ -488,6 +489,7 @@ class TestAssetDependencies:
                     "AssetKey(['cost_calibration_gate'])",
                     "AssetKey(['model_promotion_gate'])",
                     "AssetKey(['tda_warning_signal'])",
+                    "AssetKey(['causal_drift_check'])",
                 }
                 continue
             op = a.op
@@ -1306,3 +1308,154 @@ class TestScheduleCron:
         """Il failure sensor è registrato nelle Definitions."""
         sensor_names = [s.name for s in _pipeline.defs.sensors]
         assert "failure_sensor" in sensor_names
+
+
+# ===========================================================================
+# 6. causal_drift_check — asset settimanale del sistema immunitario (F-0.2)
+# ===========================================================================
+
+class TestCausalDriftCheck:
+    """Verifica l'asset settimanale causal_drift_check (T4.4 shadow)."""
+
+    def _write_synthetic_ohlcv(self, tmp_path, n_days: int = 90) -> None:
+        """Scrive parquet OHLCV sintetici per i primi 12 ticker dell'universe."""
+        import json  # noqa: F401  (import locale, coerente con gli altri test)
+
+        tickers = _pipeline._load_universe()[:12]
+        dates = pd.date_range("2024-01-01", periods=n_days, freq="D")
+        rng = np.random.default_rng(7)
+        for ticker in tickers:
+            rows = []
+            for idx, day in enumerate(dates):
+                close = float(100.0 + idx + rng.normal(0, 0.5))
+                rows.append({
+                    "ticker": ticker,
+                    "valid_time": day.date(),
+                    "transaction_time": pd.Timestamp(day).tz_localize("UTC"),
+                    "open": close - 0.1,
+                    "high": close + 0.2,
+                    "low": close - 0.2,
+                    "close": close,
+                    "adj_close": close,
+                    "volume": 1_000_000,
+                })
+            ticker_dir = tmp_path / "ohlcv" / ticker
+            ticker_dir.mkdir(parents=True, exist_ok=True)
+            pl.DataFrame(rows).write_parquet(ticker_dir / "2024.parquet")
+
+    def test_causal_drift_check_writes_latest_json(self, tmp_path, monkeypatch):
+        """L'asset scrive causal_drift_latest.json e persiste la baseline."""
+        import json
+
+        monkeypatch.setenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", "true")
+        self._write_synthetic_ohlcv(tmp_path)
+        monkeypatch.setattr(_pipeline, "_DATA_DIR", tmp_path)
+        results_dir = tmp_path / "results"
+        monkeypatch.setattr(_pipeline, "_RESULTS_DIR", results_dir)
+        ctx = _make_context()
+
+        payload = _call_asset(_pipeline.causal_drift_check, ctx)
+
+        latest = results_dir / "causal_drift_latest.json"
+        assert latest.exists(), "causal_drift_latest.json deve essere scritto"
+        data = json.loads(latest.read_text(encoding="utf-8"))
+        assert data == payload
+        assert data["check_type"] == "causal_drift"
+        assert data["status"] == "baseline_initialized"
+        assert data["is_alert"] is False
+        # change_fraction compare dalla seconda run in poi (confronto con baseline)
+        # La baseline viene persistita per la run successiva
+        assert (results_dir / "causal_baseline.json").exists()
+
+    def test_causal_drift_check_second_run_compares_baseline(self, tmp_path, monkeypatch):
+        """Al secondo run il check confronta con la baseline persistita (change 0)."""
+        import json
+
+        monkeypatch.setenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", "true")
+        self._write_synthetic_ohlcv(tmp_path)
+        monkeypatch.setattr(_pipeline, "_DATA_DIR", tmp_path)
+        results_dir = tmp_path / "results"
+        monkeypatch.setattr(_pipeline, "_RESULTS_DIR", results_dir)
+        ctx = _make_context()
+
+        first = _call_asset(_pipeline.causal_drift_check, ctx)
+        assert first["status"] == "baseline_initialized"
+
+        second = _call_asset(_pipeline.causal_drift_check, ctx)
+        assert second["status"] == "ok"
+        assert second["change_fraction"] == 0.0
+        assert second["is_alert"] is False
+        assert (results_dir / "causal_baseline.json").exists()
+
+    def test_causal_drift_check_disabled(self, monkeypatch):
+        """Senza flag di enable l'asset non scrive nulla e ritorna disabled."""
+        monkeypatch.delenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", raising=False)
+        ctx = _make_context()
+
+        payload = _call_asset(_pipeline.causal_drift_check, ctx)
+
+        assert payload == {"status": "disabled"}
+
+    def test_causal_drift_check_dispatches_health_alerts(self, tmp_path, monkeypatch):
+        """L'asset instrada gli health alert (settimanali) nel dispatcher.
+
+        Il dispatch avviene solo qui, nell'asset — l'endpoint GET
+        /api/monitoring/health resta read-only.
+        """
+        import json as _json
+
+        monkeypatch.setenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", "true")
+        self._write_synthetic_ohlcv(tmp_path)
+        monkeypatch.setattr(_pipeline, "_DATA_DIR", tmp_path)
+        results_dir = tmp_path / "results"
+        monkeypatch.setattr(_pipeline, "_RESULTS_DIR", results_dir)
+        # Un payload TDA in alert: il dispatch settimanale deve inoltrarlo.
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "tda_warning_latest.json").write_text(
+            _json.dumps({"is_alert": True, "beta1_proxy": 0.41, "threshold": 0.35})
+        )
+        ctx = _make_context()
+
+        with patch("council.alerting.AlertDispatcher") as mock_dispatcher_cls:
+            payload = _call_asset(_pipeline.causal_drift_check, ctx)
+
+        assert (results_dir / "causal_drift_latest.json").exists()
+        assert payload["check_type"] == "causal_drift"
+        mock_dispatcher_cls.assert_called_once()
+        dispatched = mock_dispatcher_cls.return_value.dispatch.call_args[0][0]
+        assert any(
+            r.check_type == "tda_warning" and r.severity.value == "critical"
+            for r in dispatched
+        )
+
+    def test_causal_drift_check_no_dispatch_when_healthy(self, tmp_path, monkeypatch):
+        """Senza segnali in alert l'asset non costruisce il dispatcher."""
+        monkeypatch.setenv("MLCOUNCIL_CAUSAL_DRIFT_ENABLED", "true")
+        self._write_synthetic_ohlcv(tmp_path)
+        monkeypatch.setattr(_pipeline, "_DATA_DIR", tmp_path)
+        results_dir = tmp_path / "results"
+        monkeypatch.setattr(_pipeline, "_RESULTS_DIR", results_dir)
+        ctx = _make_context()
+
+        with patch("council.alerting.AlertDispatcher") as mock_dispatcher_cls:
+            _call_asset(_pipeline.causal_drift_check, ctx)
+
+        mock_dispatcher_cls.assert_not_called()
+
+    def test_causal_drift_job_and_schedule_registered(self):
+        """Il job e la schedule settimanale sono registrati nelle Definitions."""
+        job_names = [j.name for j in _pipeline.defs.jobs]
+        assert "causal_drift_job" in job_names
+
+        schedule_names = [s.name for s in _pipeline.defs.schedules]
+        assert "causal_drift_schedule" in schedule_names
+
+    def test_causal_drift_schedule_monday_0200_utc(self):
+        """La schedule gira lunedì 02:00 UTC (come la walk-forward CI)."""
+        assert _pipeline.causal_drift_schedule.cron_schedule == "0 2 * * 1"
+        assert _pipeline.causal_drift_schedule.execution_timezone == "UTC"
+
+    def test_failure_sensor_monitors_weekly_jobs(self):
+        """Il failure sensor copre anche i job settimanali di health check."""
+        monitored = {job.name for job in _pipeline.failure_sensor._monitored_jobs}
+        assert {"daily_pipeline", "tda_warning_job", "causal_drift_job"} <= monitored

@@ -3,6 +3,7 @@
 Computes intraday OFI from L2 book snapshots and cross-sectionally z-scores
 signals. **Not wired into the daily council aggregator** until walk-forward
 promotion (``MLCOUNCIL_MICROSTRUCTURE_PROMOTED``); shadow runs log signals only.
+Canary status: shadow — target: P-2 — expiry: 2027-12-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

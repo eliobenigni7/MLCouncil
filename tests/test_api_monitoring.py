@@ -31,6 +31,55 @@ def test_get_alert_history(client):
     assert isinstance(body, list)
 
 
+def test_get_health_signals_ok_without_artifacts(client, monkeypatch, tmp_path):
+    """Senza artefatti su disco /health risponde 200 con tutti i segnali."""
+    from api.services import monitoring_service
+
+    monkeypatch.setattr(monitoring_service, "Path", lambda *parts: tmp_path / "results")
+
+    resp = client.get("/api/monitoring/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {
+        "tda_warning",
+        "causal_drift",
+        "adwin_drift",
+        "ddm_drift",
+        "evidently_drift",
+    }
+    for signal in body.values():
+        assert set(signal) == {"level", "value", "threshold", "note"}
+        assert signal["level"] == "ok"
+        assert signal["note"]
+
+
+def test_get_health_signals_reads_artifacts(client, monkeypatch, tmp_path):
+    """Con artefatti presenti i livelli riflettono le soglie dei check."""
+    import json as _json
+
+    from api.services import monitoring_service
+
+    results = tmp_path / "results"
+    results.mkdir(parents=True)
+    (results / "causal_drift_latest.json").write_text(
+        _json.dumps({"change_fraction": 0.4, "status": "alert", "is_alert": True})
+    )
+    (results / "tda_warning_latest.json").write_text(
+        _json.dumps({"is_alert": True, "beta1_proxy": 0.41, "threshold": 0.35})
+    )
+    monkeypatch.setattr(monitoring_service, "Path", lambda *parts: results)
+
+    resp = client.get("/api/monitoring/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["causal_drift"]["level"] == "alert"
+    assert body["causal_drift"]["value"] == 0.4
+    assert body["causal_drift"]["threshold"] == 0.25
+    assert body["tda_warning"]["level"] == "alert"
+    assert body["evidently_drift"]["level"] == "ok"
+    assert body["adwin_drift"]["level"] == "ok"
+
+
 def test_get_runtime_settings(client, tmp_path, monkeypatch):
     import runtime_env as runtime_env_module
     from api.services import monitoring_service

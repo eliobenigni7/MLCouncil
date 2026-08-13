@@ -12,6 +12,7 @@ Prediction
 ----------
 predict() returns cross-sectional z-scores per date, suitable for direct
 use as position sizing signals by the council ensemble.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

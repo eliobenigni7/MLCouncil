@@ -1,4 +1,7 @@
-"""Frontier mode helpers — wire all Wave 1–3 env flags into the daily pipeline."""
+"""Frontier mode helpers — wire all Wave 1–3 env flags into the daily pipeline.
+
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
+"""
 
 from __future__ import annotations
 

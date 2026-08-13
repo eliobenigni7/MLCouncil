@@ -19,6 +19,7 @@ is renormalized so the budget constraint is still satisfied exactly.
 Transaction Cost Model
 ----------------------
 TC = sum(|dw_i|) * (commission_bps + slippage_bps) / 10000 * portfolio_value
+Canary status: shadow — target: P-1.2 — expiry: 2027-06-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

@@ -5,6 +5,7 @@ Signals below ``MLCOUNCIL_META_LABEL_THRESHOLD`` are zeroed when enabled.
 
 Enable filtering: ``MLCOUNCIL_META_LABEL=true``
 Shadow (log only): ``MLCOUNCIL_META_LABEL_SHADOW=true``
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

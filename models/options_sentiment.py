@@ -9,6 +9,7 @@ Production daily path is unchanged unless ``MLCOUNCIL_OPTIONS_SENTIMENT=true``
 ``data/results/options_sentiment_shadow.parquet`` for walk-forward comparison.
 
 Requires ``POLYGON_API_KEY`` (same pattern as ``intraday.market_data.PolygonMarketDataAdapter``).
+Canary status: shadow — target: P-3 — expiry: 2028-06-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

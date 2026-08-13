@@ -3,6 +3,7 @@
 - ``cvxpy`` — default ``PortfolioConstructor`` (optional HRP soft prior via env).
 - ``diff`` — differentiable shadow wrapper (delegates to CVXPY).
 - ``hrp_blend`` — CVXPY solve then blend with HRP weights (50/50 or IR-weighted λ).
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

@@ -178,6 +178,19 @@ def get_alert_history(limit: int = 30) -> list[dict]:
     return all_alerts
 
 
+def get_health_signals() -> dict:
+    """Aggrega i segnali di health del sistema immunitario (F-0.2).
+
+    Legge i JSON prodotti dai check (settimanali/daily); ogni input mancante
+    o malformato diventa level "ok" con nota — mai eccezioni. Read-only:
+    nessun dispatch degli alert lato API (il dispatch avviene nell'asset
+    settimanale di Dagster, con cadenza settimanale).
+    """
+    from council.alerting import collect_health_signals_from_disk
+
+    return collect_health_signals_from_disk(Path("data/results"))
+
+
 def get_runtime_settings() -> dict:
     load_runtime_env()
     values = _read_runtime_env_file()

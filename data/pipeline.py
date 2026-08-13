@@ -400,6 +400,29 @@ def raw_ohlcv(context: AssetExecutionContext) -> None:
     from data.ingest.market_data import download_daily
 
     partition_date = context.partition_key
+
+    # Canary (F-0.4): applica le feature attive come policy di run, PRIMA che
+    # gli asset che leggono i flag eseguano. raw_ohlcv è la radice del grafo:
+    # ogni consumatore di flag canary (lgbm_signals, council_signal,
+    # portfolio_weights, daily_orders) è transitivamente a valle, quindi con
+    # esecuzione in-process i flag sono attivi al primo lettore. Il revert
+    # disabilita la feature nello stato persistito (effettivo dalla run
+    # successiva): niente mutazione mid-run (vedi council/canary.py).
+    # Nota: con executor multiprocesso applicare i flag anche a livello di
+    # import del modulo (come apply_manifest_to_environ).
+    try:
+        from council.canary import apply_canary_features
+
+        applied = apply_canary_features()
+        if applied:
+            context.log.info(
+                f"raw_ohlcv [{partition_date}]: canary attive ({', '.join(applied)})"
+            )
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning(
+            f"raw_ohlcv [{partition_date}]: canary apply failed ({exc})"
+        )
+
     with trace_span(
         "mlcouncil.ingest.raw_ohlcv",
         layer="ingest",
@@ -1227,41 +1250,34 @@ def _run_council_signal(
     from council.moe_gating import log_moe_shadow, moe_enabled
 
     if moe_enabled() and len(signals) >= 2:
-        import os as _os
-
-        _prev_mode = _os.environ.get("MLCOUNCIL_AGGREGATOR_MODE")
-        try:
-            _os.environ["MLCOUNCIL_AGGREGATOR_MODE"] = "linear"
-            linear_signal = aggregator.aggregate(
-                signals,
-                regime=current_regime,
-                date=today,
-                regime_embedding=regime_embedding,
-                regime_centroids=regime_centroids,
-            )
-            _os.environ["MLCOUNCIL_AGGREGATOR_MODE"] = "moe"
-            moe_signal = aggregator.aggregate(
-                signals,
-                regime=current_regime,
-                date=today,
-                regime_embedding=regime_embedding,
-                regime_centroids=regime_centroids,
-            )
-            log_entry = aggregator._weights_log.get(today, {})
-            log_moe_shadow(
-                partition_date,
-                linear_signal=linear_signal,
-                moe_signal=moe_signal,
-                gate_weights=log_entry.get("moe_gate"),
-                expert_order=list(signals.keys()),
-                effective_weights=log_entry.get("weights"),
-            )
-            combined = moe_signal
-        finally:
-            if _prev_mode is None:
-                _os.environ.pop("MLCOUNCIL_AGGREGATOR_MODE", None)
-            else:
-                _os.environ["MLCOUNCIL_AGGREGATOR_MODE"] = _prev_mode
+        # Shadow MoE: iniettiamo il modo di aggregazione come parametro,
+        # senza mutare l'ambiente globale (niente set-env con switch-and-restore).
+        linear_signal = aggregator.aggregate(
+            signals,
+            regime=current_regime,
+            date=today,
+            regime_embedding=regime_embedding,
+            regime_centroids=regime_centroids,
+            aggregator_mode_override="linear",
+        )
+        moe_signal = aggregator.aggregate(
+            signals,
+            regime=current_regime,
+            date=today,
+            regime_embedding=regime_embedding,
+            regime_centroids=regime_centroids,
+            aggregator_mode_override="moe",
+        )
+        log_entry = aggregator._weights_log.get(today, {})
+        log_moe_shadow(
+            partition_date,
+            linear_signal=linear_signal,
+            moe_signal=moe_signal,
+            gate_weights=log_entry.get("moe_gate"),
+            expert_order=list(signals.keys()),
+            effective_weights=log_entry.get("weights"),
+        )
+        combined = moe_signal
     else:
         combined = aggregator.aggregate(
             signals,
@@ -1974,18 +1990,11 @@ def cost_calibration_gate(
     return report
 
 
-@dg.asset(
-    retry_policy=_RETRY,
-    description="Weekly TDA topology stress signal (T4.5 shadow).",
-)
-def tda_warning_signal(context: AssetExecutionContext) -> dict:
-    """Compute rolling beta1 proxy on multivariate returns; log alert metadata."""
-    from council.tda_warning import PersistentHomologyAnalyser, tda_warning_enabled
+def _load_returns_wide(tickers: list[str], tail_days: int = 90) -> "pd.DataFrame | None":
+    """Carica i rendimenti giornalieri multi-ticker (pivot wide) per i check settimanali.
 
-    if not tda_warning_enabled():
-        return {"status": "disabled"}
-
-    tickers = _load_universe()[:12]
+    Ritorna None se non ci sono parquet OHLCV o se il pivot è vuoto.
+    """
     ohlcv_dir = _DATA_DIR / "ohlcv"
     frames: list[pl.DataFrame] = []
     for ticker in tickers:
@@ -1997,7 +2006,7 @@ def tda_warning_signal(context: AssetExecutionContext) -> dict:
                 except Exception:
                     pass
     if not frames:
-        return {"status": "skipped_no_returns"}
+        return None
     ohlcv = (
         pl.concat(frames)
         .sort(["ticker", "valid_time", "transaction_time"])
@@ -2015,9 +2024,156 @@ def tda_warning_signal(context: AssetExecutionContext) -> dict:
         .pivot(values="ret_1d", index="valid_time", on="ticker")
         .to_pandas()
         .set_index("valid_time")
-        .tail(90)
+        .tail(tail_days)
     )
     if returns_wide.empty:
+        return None
+    return returns_wide
+
+
+# ---------------------------------------------------------------------------
+# Canary health (F-0.4) — metriche same-day del council + revert automatico
+# ---------------------------------------------------------------------------
+
+# Proxy di default tra feature canary e metriche same-day del council. Il
+# mapping è un'euristica iniziale (nessuna metrica per-feature dedicata senza
+# refactor invasivo): l'owner (gate G1) può raffinarlo ridenominando le feature
+# in config/canary.yaml o estendendo questa mappa.
+_CANARY_METRIC_PROXIES: dict[str, str] = {
+    "online_learning": "council_signal_mean_abs",
+    "moe_gating": "council_signal_mean_abs",
+    "position_sizing_cqr": "portfolio_turnover",
+    "dynamic_slippage": "portfolio_turnover",
+}
+
+
+def _build_canary_metrics(
+    council_signal: pd.Series,
+    portfolio_weights: pd.Series,
+    feature_names: list[str] | None = None,
+) -> dict[str, float]:
+    """Metriche canary same-day (chiave = nome feature, proxy di default).
+
+    Disponibili senza refactor invasivo:
+    - ``council_signal_mean_abs`` — mean|z| del segnale combinato (qualità del segnale);
+    - ``portfolio_turnover``      — 0.5 * Σ|target - current| vs snapshot live;
+    - ``realized_vol_20d``        — std dei rendimenti medi giornalieri (20 sessioni).
+
+    Le metriche non disponibili (es. snapshot live assente, OHLCV mancante)
+    vengono semplicemente omesse: nessuna eccezione propagata.
+    """
+    base: dict[str, float] = {}
+    if not council_signal.empty:
+        base["council_signal_mean_abs"] = float(np.abs(council_signal).mean())
+    if not portfolio_weights.empty:
+        try:
+            current_w, _ = _load_live_portfolio_snapshot(
+                portfolio_weights.index.tolist()
+            )
+            delta = (
+                portfolio_weights
+                - current_w.reindex(portfolio_weights.index).fillna(0.0)
+            )
+            base["portfolio_turnover"] = float(0.5 * delta.abs().sum())
+        except Exception:  # noqa: BLE001
+            pass  # snapshot live non disponibile → turnover non registrato
+    try:
+        returns_wide = _load_returns_wide(
+            sorted(council_signal.index.tolist()), tail_days=20
+        )
+        if returns_wide is not None and len(returns_wide) >= 2:
+            base["realized_vol_20d"] = float(returns_wide.mean(axis=1).std())
+    except Exception:  # noqa: BLE001
+        pass  # OHLCV non disponibile → vol non registrata
+
+    metrics = dict(base)
+    for name in feature_names or []:
+        proxy = _CANARY_METRIC_PROXIES.get(name, "council_signal_mean_abs")
+        if proxy in base:
+            metrics[name] = base[proxy]
+    return metrics
+
+
+@dg.asset(
+    partitions_def=_DAILY_PARTITIONS,
+    retry_policy=_RETRY,
+    description=(
+        "Canary health check giornaliero (F-0.4): registra le metriche "
+        "same-day del council e applica il revert automatico delle feature "
+        "canary attive (config/canary.yaml)."
+    ),
+)
+def canary_health(
+    context: AssetExecutionContext,
+    council_signal: pd.Series,
+    portfolio_weights: pd.Series,
+) -> dict:
+    """Registra le metriche del council e fa il check revert delle feature canary.
+
+    No-op completo se config/canary.yaml è assente o senza feature abilitate
+    (nessuno stato scritto, nessun alert, nessun side effect). Ordine logico:
+    dopo council_signal/portfolio_weights, prima della materializzazione dei
+    risultati operativi.
+    """
+    from council.canary import load_canary_config, run_canary_health
+
+    partition_date = context.partition_key
+
+    config = load_canary_config()
+    active = [f.name for f in config if f.enabled]
+    if not active:
+        context.log.info(
+            f"canary_health [{partition_date}]: nessuna feature canary "
+            "abilitata — no-op"
+        )
+        return {"status": "noop"}
+
+    metrics = _build_canary_metrics(
+        council_signal, portfolio_weights, feature_names=active
+    )
+    if not metrics:
+        context.log.warning(
+            f"canary_health [{partition_date}]: nessuna metrica disponibile"
+        )
+        return {"status": "no_metrics"}
+
+    events = run_canary_health(partition_date, metrics, config=config)
+    for event in events:
+        context.log.warning(
+            f"canary_health [{partition_date}]: REVERT {event.name} — {event.reason}"
+        )
+    context.add_output_metadata(
+        {
+            "partition_date": partition_date,
+            "metrics": {k: round(float(v), 6) for k, v in metrics.items()},
+            "reverted": [event.name for event in events],
+        }
+    )
+    context.log.info(
+        f"canary_health [{partition_date}]: {len(active)} feature attive, "
+        f"{len(events)} revert"
+    )
+    return {
+        "status": "ok",
+        "metrics": metrics,
+        "reverts": [event.name for event in events],
+    }
+
+
+@dg.asset(
+    retry_policy=_RETRY,
+    description="Weekly TDA topology stress signal (T4.5 shadow).",
+)
+def tda_warning_signal(context: AssetExecutionContext) -> dict:
+    """Compute rolling beta1 proxy on multivariate returns; log alert metadata."""
+    from council.tda_warning import PersistentHomologyAnalyser, tda_warning_enabled
+
+    if not tda_warning_enabled():
+        return {"status": "disabled"}
+
+    tickers = _load_universe()[:12]
+    returns_wide = _load_returns_wide(tickers)
+    if returns_wide is None:
         return {"status": "skipped_no_returns"}
     analyser = PersistentHomologyAnalyser()
     result = analyser.analyse(returns_wide)
@@ -2050,6 +2206,106 @@ tda_warning_job = dg.define_asset_job(
 )
 def tda_warning_schedule(context: "dg.ScheduleEvaluationContext"):
     return dg.RunRequest(tags={"mlcouncil/job": "tda_warning"})
+
+
+@dg.asset(
+    retry_policy=_RETRY,
+    description="Weekly causal graph drift check (T4.4 shadow).",
+)
+def causal_drift_check(context: AssetExecutionContext) -> dict:
+    """Rileva cambi strutturali feature→return vs la baseline persistita.
+
+    La baseline del grafo causale viene salvata in ``causal_baseline.json``
+    tra una run settimanale e l'altra; l'esito corrente va in
+    ``data/results/causal_drift_latest.json``.
+    """
+    from council.causal_drift import (
+        PCMCIDriftDetector,
+        causal_drift_enabled,
+        load_causal_baseline,
+        save_causal_baseline,
+    )
+    from council.monitor import CouncilMonitor
+
+    if not causal_drift_enabled():
+        return {"status": "disabled"}
+
+    tickers = _load_universe()[:12]
+    returns_wide = _load_returns_wide(tickers)
+    if returns_wide is None:
+        return {"status": "skipped_no_returns"}
+
+    # Feature = rendimenti per ticker; target = rendimento medio del portafoglio.
+    features = returns_wide
+    forward_return = returns_wide.mean(axis=1)
+
+    detector = PCMCIDriftDetector()
+    baseline = load_causal_baseline(_RESULTS_DIR / "causal_baseline.json")
+    if baseline is not None:
+        detector.set_baseline(baseline)
+
+    result = CouncilMonitor().check_causal_graph_drift(
+        features, forward_return, detector=detector
+    )
+    save_causal_baseline(_RESULTS_DIR / "causal_baseline.json", detector.baseline)
+
+    import json
+
+    payload = result.to_dict()
+    diag = detector.last_diagnostics or {}
+    # "threshold" nel diag è la soglia di correlazione del grafo (0.15);
+    # teniamo quella dell'alert (link_change_fraction) dal risultato.
+    payload.update({k: v for k, v in diag.items() if k != "threshold"})
+
+    out_path = _RESULTS_DIR / "causal_drift_latest.json"
+    _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    context.log.info(f"causal_drift_check: {payload}")
+    if result.is_alert:
+        context.log.warning(
+            f"causal_drift_check: change_fraction="
+            f"{diag.get('change_fraction', 0):.3f} >= {detector.link_change_fraction}"
+        )
+
+    # Dispatch unificato del sistema immunitario: instrada gli health alert
+    # nel layer AlertDispatcher (log + dashboard state + email per CRITICAL).
+    # Solo qui, con cadenza settimanale — l'endpoint GET /api/monitoring/health
+    # resta read-only (nessun dispatch per-request).
+    try:
+        from council.alerting import (
+            collect_health_signals_from_disk,
+            dispatch_health_alerts,
+        )
+
+        health = collect_health_signals_from_disk(_RESULTS_DIR)
+        dispatched = dispatch_health_alerts(
+            health, check_date=date_type.today().isoformat()
+        )
+        if dispatched:
+            context.log.info(
+                f"causal_drift_check: {len(dispatched)} health alert(s) dispatched "
+                f"({[d.check_type for d in dispatched]})"
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Il dispatch non deve mai far fallire il check settimanale.
+        context.log.warning(f"causal_drift_check: health dispatch failed ({exc})")
+    return payload
+
+
+causal_drift_job = dg.define_asset_job(
+    name="causal_drift_job",
+    selection=dg.AssetSelection.assets(causal_drift_check),
+    description="Weekly causal graph drift check.",
+)
+
+
+@dg.schedule(
+    cron_schedule="0 2 * * 1",
+    execution_timezone="UTC",
+    job=causal_drift_job,
+)
+def causal_drift_schedule(context: "dg.ScheduleEvaluationContext"):
+    return dg.RunRequest(tags={"mlcouncil/job": "causal_drift"})
 
 
 @dg.asset(
@@ -2254,9 +2510,9 @@ def daily_schedule(context: "dg.ScheduleEvaluationContext"):
 
 
 @dg.run_failure_sensor(
-    monitored_jobs=[daily_job],
+    monitored_jobs=[daily_job, tda_warning_job, causal_drift_job],
     minimum_interval_seconds=60,
-    description="Logga i fallimenti del daily_pipeline e segnala il run_id.",
+    description="Logga i fallimenti del daily_pipeline e dei job settimanali e segnala il run_id.",
 )
 def failure_sensor(context: RunFailureSensorContext) -> dg.SkipReason | None:
     """Monitora i fallimenti del daily_pipeline.
@@ -2297,11 +2553,13 @@ _ALL_ASSETS = [
     save_regime_results,
     portfolio_weights,
     daily_orders,
+    canary_health,
     train_hmm,
     cost_calibration_artifact,
     cost_calibration_gate,
     model_promotion_gate,
     tda_warning_signal,
+    causal_drift_check,
     # train_hmm + cost_calibration_* + model_promotion_gate sono unpartitioned:
     # schedule dedicate (train_hmm_job, cost_calibration_job, walkforward_promotion_job).
 ]
@@ -2443,6 +2701,7 @@ defs = dg.Definitions(
         cost_calibration_job,
         walkforward_promotion_job,
         tda_warning_job,
+        causal_drift_job,
     ],
     schedules=[
         daily_schedule,
@@ -2450,6 +2709,7 @@ defs = dg.Definitions(
         cost_calibration_schedule,
         walkforward_promotion_schedule,
         tda_warning_schedule,
+        causal_drift_schedule,
     ],
     sensors=[failure_sensor],
 )

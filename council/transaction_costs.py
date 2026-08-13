@@ -1,4 +1,7 @@
-"""Shared transaction cost model for portfolio construction and backtests."""
+"""Shared transaction cost model for portfolio construction and backtests.
+
+Canary status: shadow — target: P-1.2 — expiry: 2027-06-01 (promote via canary o retire)
+"""
 
 from __future__ import annotations
 

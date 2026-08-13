@@ -1,0 +1,67 @@
+# Canary feature activation (F-0.4). enabled: true solo dopo approvazione gate G1.
+#
+# Ogni voce descrive una feature sperimentale con:
+#   - env/value : variabile d'ambiente e valore applicati via os.environ.setdefault
+#                 quando la feature è attiva (l'env esplicito dell'operatore vince).
+#   - metrics   : floor (soglia minima della metrica giornaliera) e min_days
+#                 (run consecutivi sotto soglia prima del revert automatico).
+#
+# Semantica: una feature diventa operativa solo con enabled: true (decisione G1
+# dell'owner). Se la metrica configurata resta sotto floor per min_days run
+# consecutivi, il CanaryController disabilita la feature in
+# data/results/canary_state.json e genera un health alert via council/alerting.py
+# (principi P2 shadow→canary→production e P4 kill switch). Il revert è sticky:
+# per riattivare serve enabled: true + reset della voce in canary_state.json.
+#
+# La chiave metrica di ogni feature è il suo `name`: l'asset canary_health della
+# pipeline registra metriche same-day del council con quelle chiavi, usando i
+# proxy di default definiti nel codice dell'asset (_CANARY_METRIC_PROXIES in
+# data/pipeline.py). floor 0.0 è un default conservativo (revert solo su degrado
+# completo): G1 deve tarare floor/min_days per metrica prima di attivare.
+#
+# G1 (2026-08-13): attivato il trio raccomandato (online_learning,
+# position_sizing_cqr, dynamic_slippage). moe_gating resta disabilitato finché
+# il gate non è addestrato (math drill-down §7.3: scaffold senza training).
+# Floor 0.0 = tripwire di crash: tarare dopo ~2 settimane di baseline usando le
+# history in data/results/canary_state.json.
+
+features:
+  # Apprendimento incrementale LightGBM (T1.2): refit giornaliero IC-gated.
+  # Proxy metrica di default: council_signal_mean_abs.
+  - name: online_learning
+    env: MLCOUNCIL_ONLINE_LEARNING
+    value: "true"
+    enabled: true
+    metrics:
+      floor: 0.0
+      min_days: 5
+
+  # Gating MoE dell'aggregator (T3.x): modalità di aggregazione "moe".
+  # Proxy metrica di default: council_signal_mean_abs.
+  - name: moe_gating
+    env: MLCOUNCIL_AGGREGATOR_MODE
+    value: "moe"
+    enabled: false
+    metrics:
+      floor: 0.0
+      min_days: 5
+
+  # Position sizing CQR (T3.x): sizing "cqr" al posto di "conformal".
+  # Proxy metrica di default: portfolio_turnover.
+  - name: position_sizing_cqr
+    env: MLCOUNCIL_POSITION_SIZING
+    value: "cqr"
+    enabled: true
+    metrics:
+      floor: 0.0
+      min_days: 5
+
+  # Slippage dinamico (ADR transaction costs): costo funzione del notional.
+  # Proxy metrica di default: portfolio_turnover.
+  - name: dynamic_slippage
+    env: MLCOUNCIL_DYNAMIC_SLIPPAGE
+    value: "true"
+    enabled: true
+    metrics:
+      floor: 0.0
+      min_days: 5

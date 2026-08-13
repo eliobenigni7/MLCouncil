@@ -9,6 +9,7 @@ Transaction Costs", Journal of Finance (2013).
 
 Enable experiments via ``MLCOUNCIL_MULTI_PERIOD_TC=true`` (pipeline integration
 not wired; call :func:`smooth_target_weights` from backtests/scripts).
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

@@ -8,6 +8,7 @@ walk-forward promotion (T1.1) and offline comparison vs LightGBM champion.
 
 Inference target (documented): <300 ms CPU for a typical daily batch
 (~20 tickers × 30 features × encoder_length 20) on a single core after fit.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

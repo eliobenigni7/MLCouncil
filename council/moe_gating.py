@@ -3,6 +3,7 @@
 Non-linear expert weights: y_hat = sum_k g_k(x) * f_k(x), sum_k g_k = 1.
 Production default remains linear aggregation in ``CouncilAggregator``;
 enable via ``MLCOUNCIL_AGGREGATOR_MODE=moe``.
+Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
 from __future__ import annotations

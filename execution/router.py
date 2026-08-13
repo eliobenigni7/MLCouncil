@@ -1,4 +1,7 @@
-"""Smart order routing across venues (T4.2 scaffold)."""
+"""Smart order routing across venues (T4.2 scaffold).
+
+Canary status: shadow — target: P-2 — expiry: 2027-12-01 (promote via canary o retire)
+"""
 
 from __future__ import annotations
 

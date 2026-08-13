@@ -268,7 +268,17 @@ class CouncilAggregator:
         *,
         regime_embedding: Sequence[float] | np.ndarray | None = None,
         regime_centroids: dict[str, np.ndarray] | None = None,
+        aggregator_mode_override: str | None = None,
     ) -> pd.Series:
+        """Aggregate expert signals into a single council signal.
+
+        Parameters
+        ----------
+        aggregator_mode_override:
+            Optional explicit aggregation mode ("linear" or "moe"). When
+            None, the mode is read from ``MLCOUNCIL_AGGREGATOR_MODE``.
+            Prefer the explicit override over mutating the environment.
+        """
         base_weights, effective_regime, mode_used = self._resolve_regime_weights(
             regime,
             regime_embedding=regime_embedding,
@@ -322,7 +332,7 @@ class CouncilAggregator:
             # below 1.0; combined signal is z-scored downstream.
         effective_weight_sum = sum(weights.values())
 
-        agg_mode = aggregator_mode()
+        agg_mode = aggregator_mode_override or aggregator_mode()
         moe_gate: list[float] | None = None
         if agg_mode == "moe":
             from council.moe_gating import MoEGatingNetwork, build_regime_context
