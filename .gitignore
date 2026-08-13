@@ -54,6 +54,9 @@ volumes/
 .cursor/
 .agents/
 
+# Playwright / browser automation artifacts
+.playwright-cli/
+
 # Streamlit (app config.toml stays tracked; local caches ignored)
 .streamlit/*
 !.streamlit/config.toml
