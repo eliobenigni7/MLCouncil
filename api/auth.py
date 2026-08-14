@@ -51,6 +51,16 @@ def ensure_request_api_key(request: Request) -> None:
 
 
 def require_trading_api_key(request: Request) -> None:
+    """Sessione valida oppure API key valida.
+
+    La SPA usa la sessione; i consumer esterni senza sessione devono
+    continuare a fornire l'API key (contratto legacy invariato).
+    """
+    from api.session import is_session_valid, request_session_token
+
+    token = request_session_token(request)
+    if token and is_session_valid(token):
+        return
     ensure_request_api_key(request)
 
 

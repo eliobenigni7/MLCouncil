@@ -109,3 +109,22 @@ def _disable_api_key(request):
 
     with patch("api.auth.get_configured_api_key", return_value=""):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Resetta il rate limiter prima di ogni test.
+
+    /api/auth/login è limitato a 5 richieste/minuto; più test di login nello
+    stesso processo pytest colpirebbero il limite reale (slowapi è installato
+    via requirements_api.txt, quindi lo stub di conftest non è attivo in CI).
+    """
+    try:
+        from api.rate_limit import limiter
+
+        reset = getattr(limiter, "reset", None)
+        if reset:
+            reset()
+    except Exception:
+        pass
+    yield

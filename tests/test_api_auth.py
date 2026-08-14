@@ -170,6 +170,43 @@ def test_session_auth_flows_through_middleware():
         assert resp.status_code != 401
 
 
+def test_trading_endpoint_accepts_session():
+    """La dependency require_trading_api_key accetta la sessione (non solo API key)."""
+    from unittest.mock import patch
+
+    payload = {
+        "date": "2026-04-08",
+        "paper": True,
+        "paused": False,
+        "runtime_profile": "paper",
+        "lineage": {"pipeline_run_id": "run-preflight"},
+        "pretrade": {"blocked": False, "reason": None, "breaches": []},
+        "reconciliation": {"symbols_to_open": ["AAPL"], "symbols_to_close": []},
+    }
+
+    with patch.dict(os.environ, {
+        "MLCOUNCIL_ENV_PROFILE": "local",
+        "MLCOUNCIL_REQUIRE_API_KEY": "true",
+        "MLCOUNCIL_ADMIN_USERNAME": "admin",
+        "MLCOUNCIL_ADMIN_PASSWORD": "s3cret",
+    }, clear=False):
+        app = _full_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        # senza sessione e senza API key -> rifiutato
+        assert client.get("/api/trading/preflight/2026-04-08").status_code in (401, 503)
+        # login
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "s3cret"})
+        assert login.status_code == 200
+        # con sessione valida, l'endpoint passa il gate e il service risponde
+        with patch(
+            "api.routers.trading.trading_service.service.build_pretrade_snapshot",
+            return_value=payload,
+        ):
+            resp = client.get("/api/trading/preflight/2026-04-08")
+        assert resp.status_code == 200
+        assert resp.json()["pretrade"]["blocked"] is False
+
+
 def test_legacy_admin_at_admin_prefix():
     with patch.dict(os.environ, {
         "MLCOUNCIL_ENV_PROFILE": "local",
