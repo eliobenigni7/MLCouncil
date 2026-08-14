@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.errors import ApiError, api_error_handler
+from api.auth import is_api_key_required
 from api.routers import auth
 from api.session import (SESSION_COOKIE, check_csrf, create_session,
                          destroy_session, get_session, is_session_valid,
@@ -118,3 +119,9 @@ def test_logout_clears_session():
         client.post("/api/auth/login", json={"username": "admin", "password": "s3cret"})
         assert client.post("/api/auth/logout").status_code == 200
         assert client.get("/api/auth/me").status_code == 401
+
+def test_api_key_required_semantics():
+    with patch.dict(os.environ, {"MLCOUNCIL_REQUIRE_API_KEY": "true"}, clear=False):
+        assert is_api_key_required()
+    with patch.dict(os.environ, {"MLCOUNCIL_ENV_PROFILE": "paper", "MLCOUNCIL_REQUIRE_API_KEY": "false"}, clear=False):
+        assert is_api_key_required()
