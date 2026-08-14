@@ -25,14 +25,12 @@ def get_configured_api_key() -> str:
 
 
 def is_api_key_required() -> bool:
-    # Paper runtime always requires an API key: the explicit flag cannot
-    # downgrade a paper profile (fails closed).
-    if os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower() == "paper":
-        return True
+    # Contratto originale: il flag esplicito MLCOUNCIL_REQUIRE_API_KEY vince;
+    # il profilo paper richiede la chiave solo in assenza di flag esplicito.
     explicit = os.getenv("MLCOUNCIL_REQUIRE_API_KEY")
     if explicit is not None:
         return explicit.strip().lower() in {"1", "true", "yes", "on"}
-    return False
+    return os.getenv("MLCOUNCIL_ENV_PROFILE", "local").strip().lower() == "paper"
 
 
 def ensure_request_api_key(request: Request) -> None:

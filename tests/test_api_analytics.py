@@ -20,3 +20,24 @@ def test_equity_endpoint_404_envelope_when_missing(tmp_path, monkeypatch):
     resp = client.get("/api/analytics/equity")
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "artifact_not_found"
+
+
+def test_calibration_endpoint_404_when_missing(tmp_path, monkeypatch):
+    from api.services import analytics_service
+    monkeypatch.setattr(analytics_service, "CALIBRATION_PATH", tmp_path / "nope.json")
+    client = TestClient(_app())
+    resp = client.get("/api/analytics/calibration")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "artifact_not_found"
+
+
+def test_calibration_endpoint_returns_artifact(tmp_path, monkeypatch):
+    import json
+    from api.services import analytics_service
+    artifact = tmp_path / "cost_calibration.json"
+    artifact.write_text(json.dumps({"version": "v3", "kappa_by_tier": {"t1": 0.1}}), encoding="utf-8")
+    monkeypatch.setattr(analytics_service, "CALIBRATION_PATH", artifact)
+    client = TestClient(_app())
+    resp = client.get("/api/analytics/calibration")
+    assert resp.status_code == 200
+    assert resp.json()["version"] == "v3"

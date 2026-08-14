@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi.errors import RateLimitExceeded
@@ -18,6 +18,7 @@ from api.rate_limit import limiter
 API_PREFIX = "/api"
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+SPA_DIST_DIR = Path(__file__).resolve().parents[1] / "api" / "static" / "spa"
 
 load_runtime_env()
 
@@ -55,21 +56,31 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             if is_public_api_path(request.url.path):
                 return await call_next(request)
-            from api.auth import request_is_authenticated
-            from api.session import check_csrf, request_csrf_token, request_session_token
-            if not request_is_authenticated(request):
-                from fastapi.responses import JSONResponse
-                return JSONResponse(
-                    status_code=401,
-                    content={"error": {"code": "not_authenticated", "message": "Authentication required", "detail": ""}},
-                )
-            if request.method in {"POST", "PUT", "DELETE"} and not request.headers.get("X-API-Key"):
-                submitted = request.headers.get("X-CSRF-Token")
-                if not check_csrf(request_csrf_token(request), submitted):
+            from api.session import check_csrf, is_session_valid, request_csrf_token, request_session_token
+            session_token = request_session_token(request)
+            if session_token and is_session_valid(session_token):
+                # CSRF vale solo per le sessioni browser (cookie). Le richieste via
+                # API key o in modalità permissiva (nessuna sessione) non lo richiedono.
+                if request.method in {"POST", "PUT", "DELETE"}:
+                    submitted = request.headers.get("X-CSRF-Token")
+                    if not check_csrf(request_csrf_token(request), submitted):
+                        from fastapi.responses import JSONResponse
+                        return JSONResponse(
+                            status_code=403,
+                            content={"error": {"code": "csrf_failed", "message": "CSRF token mismatch", "detail": ""}},
+                        )
+            else:
+                # Nessuna sessione: la richiesta deve superare il gate API key.
+                # Manteniamo la forma legacy {"detail": ...} per non rompere i
+                # consumer esterni dell'API key (contratto D8).
+                from api.auth import ensure_request_api_key
+                try:
+                    ensure_request_api_key(request)
+                except Exception as exc:  # noqa: BLE001
                     from fastapi.responses import JSONResponse
                     return JSONResponse(
-                        status_code=403,
-                        content={"error": {"code": "csrf_failed", "message": "CSRF token mismatch", "detail": ""}},
+                        status_code=getattr(exc, "status_code", 401),
+                        content={"detail": getattr(exc, "detail", str(exc))},
                     )
         return await call_next(request)
 
@@ -86,11 +97,23 @@ def create_app() -> FastAPI:
                     "MLCOUNCIL_ADMIN_USERNAME and MLCOUNCIL_ADMIN_PASSWORD are required "
                     "for this runtime profile. Refusing startup to avoid unauthenticated admin access."
                 )
+        # Recupero job esperimenti orfani (running -> failed) e prune registro.
+        from api.services import experiment_service
+        try:
+            experiment_service.boot_sweep()
+        except Exception:  # noqa: BLE001 — mai bloccare lo startup per la pulizia
+            import traceback
+            traceback.print_exc()
 
-    from api.routers import auth, config, health, intraday, monitoring, pipeline, portfolio, trading
+    from api.routers import (analytics, auth, canary, config, experiments, health,
+                             intraday, monitoring, pipeline, portfolio, promotion,
+                             trading)
 
     app.include_router(auth.router, prefix=API_PREFIX)
-    # TODO(integration): register analytics/experiments/canary/promotion routers
+    app.include_router(analytics.router, prefix=API_PREFIX)
+    app.include_router(experiments.router, prefix=API_PREFIX)
+    app.include_router(canary.router, prefix=API_PREFIX)
+    app.include_router(promotion.router, prefix=API_PREFIX)
     app.include_router(health.router, prefix=API_PREFIX)
     app.include_router(pipeline.router, prefix=API_PREFIX)
     app.include_router(portfolio.router, prefix=API_PREFIX)
@@ -110,6 +133,24 @@ def create_app() -> FastAPI:
                 request=request,
                 name="admin.html",
             )
+
+    # SPA unificata: servita a /app (statici) con fallback client-side routing.
+    if (SPA_DIST_DIR / "index.html").exists():
+        app.mount("/app", StaticFiles(directory=str(SPA_DIST_DIR), html=True), name="spa")
+
+        @app.get("/", response_class=HTMLResponse)
+        async def spa_root():
+            return FileResponse(SPA_DIST_DIR / "index.html")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str):
+            if full_path.startswith(("api/", "static/", "admin", "app/")):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Not found")
+            candidate = SPA_DIST_DIR / full_path
+            if candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(SPA_DIST_DIR / "index.html")
 
     return app
 

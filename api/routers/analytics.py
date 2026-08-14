@@ -73,3 +73,8 @@ def weights_log(as_of: date = Query(...)):
 @router.get("/fill-quality")
 def fill_quality():
     return analytics_service.load_fill_quality_summary()
+
+
+@router.get("/calibration")
+def calibration():
+    return analytics_service.load_cost_calibration()

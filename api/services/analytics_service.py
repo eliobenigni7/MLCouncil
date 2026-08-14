@@ -19,6 +19,7 @@ import pandas as pd
 from api.errors import ApiError
 
 DATA_DIR = Path(os.getenv("MLCOUNCIL_DATA_DIR", "data"))
+CALIBRATION_PATH = Path(os.getenv("MLCOUNCIL_CALIBRATION_PATH", "data/operations/cost_calibration.json"))
 
 _UNKNOWN_REGIME = {"regime": "unknown", "bull": 0.0, "bear": 0.0, "transition": 0.0}
 _ATTRIBUTION_COLUMNS = [
@@ -753,3 +754,12 @@ def load_fill_quality_summary() -> dict:
         lambda t: kappa_map.get(t, float("nan"))
     )
     return _records(pdf)
+
+
+def load_cost_calibration() -> dict:
+    """Artifact JSON di calibrazione costi (version, kappa_by_tier, ...)."""
+    path = _artifact(CALIBRATION_PATH, "Cost calibration")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ApiError(500, "calibration_invalid", "Cost calibration artifact is corrupt", str(exc)) from exc
