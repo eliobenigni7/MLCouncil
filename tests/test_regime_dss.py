@@ -112,13 +112,13 @@ class TestDeepRegimeModel:
 class TestAggregatorRegimeEmbedding:
     def test_regime_mode_default_label(self, monkeypatch):
         monkeypatch.delenv("MLCOUNCIL_REGIME_MODE", raising=False)
-        from council.aggregator import regime_mode
+        from council.aggregation.aggregator import regime_mode
 
         assert regime_mode() == "label"
 
     def test_embedding_mode_blends_weights(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_REGIME_MODE", "embedding")
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator(use_orthogonality=False)
         signals = {
@@ -135,7 +135,7 @@ class TestAggregatorRegimeEmbedding:
 
     def test_label_mode_unchanged_without_embedding(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_REGIME_MODE", "label")
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator(use_orthogonality=False)
         signals = {
@@ -150,7 +150,7 @@ class TestAggregatorRegimeEmbedding:
 
     def test_embedding_mode_falls_back_without_vector(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_REGIME_MODE", "embedding")
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator(use_orthogonality=False)
         signals = {"lgbm": pd.Series([1.0], index=["A"])}
@@ -160,7 +160,7 @@ class TestAggregatorRegimeEmbedding:
 
     def test_dss_centroids_change_blend(self, monkeypatch, fitted_dss, macro_df):
         monkeypatch.setenv("MLCOUNCIL_REGIME_MODE", "embedding")
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator(use_orthogonality=False)
         signals = {

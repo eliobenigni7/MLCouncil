@@ -21,7 +21,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import backtest.playground as playground  # noqa: E402
-import council.alerts as alerts  # noqa: E402
+import council.monitoring.alerts as alerts  # noqa: E402
 import council.cost_calibration as cost_calibration  # noqa: E402
 import council.transaction_costs as transaction_costs  # noqa: E402
 import dashboard.data_loader as data_loader  # noqa: E402

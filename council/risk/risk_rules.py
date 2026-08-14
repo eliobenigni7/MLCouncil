@@ -8,7 +8,7 @@ Features:
 - Bear regime de-risking
 
 Usage:
-    from council.risk_rules import PositionRiskRules, DrawdownProtection
+    from council.risk.risk_rules import PositionRiskRules, DrawdownProtection
 
     risk = PositionRiskRules()
     exits = risk.compute_exits(positions, prices)

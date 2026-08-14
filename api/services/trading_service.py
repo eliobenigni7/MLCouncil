@@ -54,7 +54,7 @@ class TradingService:
     @property
     def risk_engine(self):
         if getattr(self, "_risk_engine", None) is None:
-            from council.risk_engine import RiskEngine
+            from council.risk.risk_engine import RiskEngine
 
             self._risk_engine = RiskEngine()
         return self._risk_engine
@@ -66,7 +66,7 @@ class TradingService:
     @property
     def alert_dispatcher(self):
         if getattr(self, "_alert_dispatcher", None) is None:
-            from council.alerts import AlertDispatcher
+            from council.monitoring.alerts import AlertDispatcher
 
             self._alert_dispatcher = AlertDispatcher()
         return self._alert_dispatcher
@@ -887,8 +887,8 @@ class TradingService:
         account: dict,
         symbols_to_close: list[str] | None = None,
     ) -> dict[str, Any]:
-        from council import risk_engine as risk_mod
-        from council.risk_engine import Position
+        from council.risk import risk_engine as risk_mod
+        from council.risk.risk_engine import Position
         from data.features.sector_exposure import compute_effective_sector_cap
 
         portfolio_value = float(account.get("portfolio_value", 0) or 0)
@@ -1170,7 +1170,7 @@ class TradingService:
         threshold: float,
     ) -> None:
         try:
-            from council.alerts import AlertResult, Severity
+            from council.monitoring.alerts import AlertResult, Severity
 
             level = Severity.CRITICAL if severity == "critical" else Severity.WARNING
             self.alert_dispatcher.dispatch(

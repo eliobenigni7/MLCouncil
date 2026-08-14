@@ -22,7 +22,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from council.moe_gating import (
+from council.aggregation.moe_gating import (
     DEFAULT_MOE_CHECKPOINT,
     MoEGatingNetwork,
     build_regime_context,

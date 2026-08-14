@@ -129,7 +129,7 @@ and the default behavior unchanged.
 
 ```bash
 .venv\Scripts\python.exe -m pytest tests/test_risk_engine.py -v
-.venv\Scripts\python.exe -c "import council.risk_engine; import council.covariance_dynamic"
+.venv\Scripts\python.exe -c "import council.risk.risk_engine; import council.risk.covariance_dynamic"
 ```
 
 New tests (all pass, 13/13):

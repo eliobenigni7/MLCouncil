@@ -1216,7 +1216,7 @@ def _run_council_signal(
     partition_date: str,
     today: date_type,
 ) -> pd.Series:
-    from council.aggregator import CouncilAggregator
+    from council.aggregation.aggregator import CouncilAggregator
 
     aggregator = CouncilAggregator(
         config_path=str(_ROOT / "config" / "regime_weights.yaml")
@@ -1247,7 +1247,7 @@ def _run_council_signal(
     raw_macro = _load_macro_context_from_disk()
     regime_embedding, regime_centroids = load_regime_context(raw_macro, current_regime)
 
-    from council.moe_gating import log_moe_shadow, moe_enabled
+    from council.aggregation.moe_gating import log_moe_shadow, moe_enabled
 
     if moe_enabled() and len(signals) >= 2:
         # Shadow MoE: iniettiamo il modo di aggregazione come parametro,
@@ -1304,7 +1304,7 @@ def _run_council_signal(
                 f"council_signal [{partition_date}]: options sentiment shadow failed ({exc})"
             )
 
-    from council.cqr import (
+    from council.sizing.cqr import (
         DEFAULT_STACKING_CHECKPOINT,
         StackingMetaLearner,
         log_stacking_shadow,
@@ -1372,7 +1372,7 @@ def save_council_results(
 
     Lo step è idempotente: se i file esistono già li sovrascrive con i dati più recenti.
     """
-    from council.aggregator import CouncilAggregator
+    from council.aggregation.aggregator import CouncilAggregator
 
     partition_date = context.partition_key
     today = date_type.fromisoformat(partition_date)
@@ -1590,8 +1590,8 @@ def _run_portfolio_weights(
     alpha158_features: pl.DataFrame,
     partition_date: str,
 ) -> pd.Series:
-    from council.cqr import get_position_sizer, position_sizer_checkpoint_name, position_sizing_mode
-    from council.portfolio_diff import get_portfolio_constructor
+    from council.sizing.cqr import get_position_sizer, position_sizer_checkpoint_name, position_sizing_mode
+    from council.portfolio.portfolio_diff import get_portfolio_constructor
 
     if council_signal.empty:
         context.log.warning(
@@ -1634,7 +1634,7 @@ def _run_portfolio_weights(
     # Position sizing (conformal default, CQR when MLCOUNCIL_POSITION_SIZING=cqr, kelly when MLCOUNCIL_POSITION_SIZING=kelly)
     sizing_mode = position_sizing_mode()
     if sizing_mode == "kelly":
-        from council.fractional_kelly import FractionalKellySizer
+        from council.sizing.fractional_kelly import FractionalKellySizer
 
         sizer = FractionalKellySizer()
         context.log.info(
@@ -1705,7 +1705,7 @@ def _run_portfolio_weights(
         )
 
     # ── Pre-trade risk check ──────────────────────────────────────────
-    from council.risk_engine import RiskEngine
+    from council.risk.risk_engine import RiskEngine
     risk = RiskEngine()
     limits_ok, breaches = risk.check_limits_from_weights(weights, cov)
     if not limits_ok:
@@ -1790,7 +1790,7 @@ def _run_daily_orders(
     portfolio_weights: pd.Series,
     partition_date: str,
 ) -> pd.DataFrame:
-    from council.portfolio import PortfolioConstructor
+    from council.portfolio.portfolio import PortfolioConstructor
 
     _ORDERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -2166,7 +2166,7 @@ def canary_health(
 )
 def tda_warning_signal(context: AssetExecutionContext) -> dict:
     """Compute rolling beta1 proxy on multivariate returns; log alert metadata."""
-    from council.tda_warning import PersistentHomologyAnalyser, tda_warning_enabled
+    from council.risk.tda_warning import PersistentHomologyAnalyser, tda_warning_enabled
 
     if not tda_warning_enabled():
         return {"status": "disabled"}
@@ -2219,13 +2219,13 @@ def causal_drift_check(context: AssetExecutionContext) -> dict:
     tra una run settimanale e l'altra; l'esito corrente va in
     ``data/results/causal_drift_latest.json``.
     """
-    from council.causal_drift import (
+    from council.risk.causal_drift import (
         PCMCIDriftDetector,
         causal_drift_enabled,
         load_causal_baseline,
         save_causal_baseline,
     )
-    from council.monitor import CouncilMonitor
+    from council.monitoring.monitor import CouncilMonitor
 
     if not causal_drift_enabled():
         return {"status": "disabled"}
@@ -2272,7 +2272,7 @@ def causal_drift_check(context: AssetExecutionContext) -> dict:
     # Solo qui, con cadenza settimanale — l'endpoint GET /api/monitoring/health
     # resta read-only (nessun dispatch per-request).
     try:
-        from council.alerting import (
+        from council.monitoring.alerting import (
             collect_health_signals_from_disk,
             dispatch_health_alerts,
         )
@@ -2433,7 +2433,7 @@ def _compute_covariance(tickers: list[str]) -> pd.DataFrame:
         .set_index("valid_time")
         .tail(90)
     )
-    from council.covariance_dynamic import compute_covariance_from_returns
+    from council.risk.covariance_dynamic import compute_covariance_from_returns
 
     return compute_covariance_from_returns(returns_wide)
 

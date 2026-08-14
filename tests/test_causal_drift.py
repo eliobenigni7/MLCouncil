@@ -1,11 +1,11 @@
-"""Tests for council.causal_drift (T4.4)."""
+"""Tests for council.risk.causal_drift (T4.4)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from council.causal_drift import PCMCIDriftDetector
+from council.risk.causal_drift import PCMCIDriftDetector
 
 
 def test_causal_drift_baseline_then_stable():

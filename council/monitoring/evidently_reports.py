@@ -22,7 +22,7 @@ HTML reports are written to:
 
 Usage
 -----
-    from council.evidently_reports import generate_drift_report
+    from council.monitoring.evidently_reports import generate_drift_report
 
     summary = generate_drift_report(
         reference=baseline_df,
@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover
         "Install with: pip install evidently"
     )
 
-_MONITORING_DIR = Path(__file__).parents[1] / "data" / "monitoring"
+_MONITORING_DIR = Path(__file__).parents[2] / "data" / "monitoring"
 _REPORTS_DIR = _MONITORING_DIR / "reports"
 
 

@@ -5,7 +5,7 @@ switch: a feature is activated in ``config/canary.yaml`` only after the G1 gate
 (owner decision); the controller applies the env vars as a **run policy** and,
 when the daily council metric stays below ``floor`` for ``min_days`` consecutive
 runs, it disables the feature persistently (``data/results/canary_state.json``)
-and raises a health alert through ``council/alerting.py`` (F-0.2 infrastructure,
+and raises a health alert through ``council/monitoring/alerting.py`` (F-0.2 infrastructure,
 log + dashboard state + email for CRITICAL).
 
 Conceptual difference vs. the old switch-and-restore pattern removed in F-0.2:
@@ -43,7 +43,7 @@ from typing import Any
 import yaml
 from loguru import logger
 
-from council.alerting import dispatch_health_alerts
+from council.monitoring.alerting import dispatch_health_alerts
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_CONFIG_PATH = _ROOT / "config" / "canary.yaml"

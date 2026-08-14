@@ -56,7 +56,7 @@ def get_portfolio_constructor(**portfolio_kwargs: Any):
         return DifferentiablePortfolioConstructor(**portfolio_kwargs)
     if mode == "hrp_blend":
         return HRPBlendPortfolioConstructor(**portfolio_kwargs)
-    from council.portfolio import PortfolioConstructor
+    from council.portfolio.portfolio import PortfolioConstructor
 
     return PortfolioConstructor(**portfolio_kwargs)
 
@@ -65,7 +65,7 @@ class HRPBlendPortfolioConstructor:
     """Blend CVXPY mean-variance weights with López de Prado HRP (``hrp_blend`` mode)."""
 
     def __init__(self, **portfolio_kwargs: Any) -> None:
-        from council.portfolio import PortfolioConstructor
+        from council.portfolio.portfolio import PortfolioConstructor
 
         self._delegate = PortfolioConstructor(**portfolio_kwargs)
         self.last_hrp_blend_lambda: float = 0.0
@@ -82,7 +82,7 @@ class HRPBlendPortfolioConstructor:
         returns_covariance: pd.DataFrame,
         **kwargs: Any,
     ) -> pd.Series:
-        from council.hrp import blend_cvxpy_with_hrp, resolve_hrp_blend_lambda
+        from council.portfolio.hrp import blend_cvxpy_with_hrp, resolve_hrp_blend_lambda
 
         portfolio_value = kwargs.get("portfolio_value", 100_000.0)
         with _hrp_soft_prior_disabled():
@@ -162,7 +162,7 @@ class DifferentiablePortfolioConstructor:
     """Shadow wrapper: delegates to ``PortfolioConstructor`` until E2E training lands."""
 
     def __init__(self, **portfolio_kwargs: Any) -> None:
-        from council.portfolio import PortfolioConstructor
+        from council.portfolio.portfolio import PortfolioConstructor
 
         self._delegate = PortfolioConstructor(**portfolio_kwargs)
         self._cvxpylayers = cvxpylayers_available()

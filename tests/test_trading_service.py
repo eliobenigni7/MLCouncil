@@ -570,7 +570,7 @@ class TestTradingService:
 
     def test_execute_orders_returns_lineage_reconciliation_and_operations_log(self, monkeypatch):
         from api.services import trading_service as ts
-        from council import risk_engine as risk_mod
+        from council.risk import risk_engine as risk_mod
 
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
 
@@ -665,7 +665,7 @@ class TestTradingService:
 
     def test_execute_orders_writes_execution_record_after_success(self, monkeypatch):
         from api.services import trading_service as ts
-        from council import risk_engine as risk_mod
+        from council.risk import risk_engine as risk_mod
 
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
 
@@ -859,7 +859,7 @@ class TestTradingService:
 
     def test_execute_intraday_decision_preserves_fractional_crypto_quantity(self, monkeypatch):
         from api.services import trading_service as ts
-        from council import risk_engine as risk_mod
+        from council.risk import risk_engine as risk_mod
 
         monkeypatch.setenv("MLCOUNCIL_AUTOMATION_PAUSED", "false")
         svc = _make_service()

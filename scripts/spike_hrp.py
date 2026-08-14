@@ -40,7 +40,7 @@ def _load_returns(tickers: list[str], lookback: int = 90) -> pd.DataFrame:
 
 
 def hrp_weights(returns: pd.DataFrame) -> pd.Series:
-    from council.hrp import hrp_weights_from_covariance
+    from council.portfolio.hrp import hrp_weights_from_covariance
 
     return hrp_weights_from_covariance(returns.cov())
 
@@ -48,7 +48,7 @@ def hrp_weights(returns: pd.DataFrame) -> pd.Series:
 def main() -> None:
     tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA"]
     returns = _load_returns(tickers)
-    from council.hrp import covariance_condition_number
+    from council.portfolio.hrp import covariance_condition_number
 
     cond = covariance_condition_number(returns.cov())
 

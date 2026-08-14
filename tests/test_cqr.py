@@ -18,7 +18,7 @@ def calib_xy():
 
 class TestCQRPositionSizer:
     def test_multiplier_range(self, calib_xy):
-        from council.cqr import CQRPositionSizer
+        from council.sizing.cqr import CQRPositionSizer
 
         X, y = calib_xy
         sizer = CQRPositionSizer(coverage=0.85)
@@ -31,7 +31,7 @@ class TestCQRPositionSizer:
         assert mult.max() <= 2.0 + 1e-9
 
     def test_get_intervals_after_fit(self, calib_xy):
-        from council.cqr import CQRPositionSizer
+        from council.sizing.cqr import CQRPositionSizer
 
         X, y = calib_xy
         sizer = CQRPositionSizer(coverage=0.90)
@@ -42,8 +42,8 @@ class TestCQRPositionSizer:
 
     def test_position_sizing_mode_default(self, monkeypatch):
         monkeypatch.delenv("MLCOUNCIL_POSITION_SIZING", raising=False)
-        from council.cqr import get_position_sizer, position_sizing_mode
-        from council.conformal import ConformalPositionSizer
+        from council.sizing.cqr import get_position_sizer, position_sizing_mode
+        from council.sizing.conformal import ConformalPositionSizer
 
         assert position_sizing_mode() == "conformal"
         assert isinstance(get_position_sizer(), ConformalPositionSizer)
@@ -51,7 +51,7 @@ class TestCQRPositionSizer:
 
 class TestCQRQuintileCoverage:
     def test_evaluate_coverage_by_quintile(self, calib_xy):
-        from council.cqr import CQRPositionSizer, evaluate_cqr_coverage_by_vol_quintile
+        from council.sizing.cqr import CQRPositionSizer, evaluate_cqr_coverage_by_vol_quintile
 
         X, y = calib_xy
         sizer = CQRPositionSizer(coverage=0.85)
@@ -65,7 +65,7 @@ class TestCQRQuintileCoverage:
 
 class TestStackingMetaLearner:
     def test_ridge_stack_predict(self):
-        from council.cqr import StackingMetaLearner
+        from council.sizing.cqr import StackingMetaLearner
 
         rng = np.random.default_rng(0)
         idx = [f"S{i}" for i in range(50)]
@@ -84,7 +84,7 @@ class TestStackingMetaLearner:
         assert pred.name == "stacked_signal"
 
     def test_save_load_roundtrip(self, tmp_path):
-        from council.cqr import StackingMetaLearner
+        from council.sizing.cqr import StackingMetaLearner
 
         rng = np.random.default_rng(2)
         idx = [f"S{i}" for i in range(30)]
@@ -103,7 +103,7 @@ class TestStackingMetaLearner:
 
 class TestStackingShadow:
     def test_log_stacking_shadow(self, tmp_path):
-        from council.cqr import log_stacking_shadow
+        from council.sizing.cqr import log_stacking_shadow
 
         council = pd.Series([1.0, -1.0], index=["A", "B"])
         stacked = pd.Series([0.5, -0.5], index=["A", "B"])

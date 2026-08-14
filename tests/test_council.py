@@ -54,14 +54,14 @@ def _make_covariance(n: int = 15, seed: int = 1) -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def aggregator():
-    from council.aggregator import CouncilAggregator
+    from council.aggregation.aggregator import CouncilAggregator
     return CouncilAggregator()
 
 
 @pytest.fixture(scope="module")
 def fitted_sizer():
     """ConformalPositionSizer fitted on synthetic linear data (400 samples)."""
-    from council.conformal import ConformalPositionSizer
+    from council.sizing.conformal import ConformalPositionSizer
 
     rng = np.random.default_rng(42)
     n_calib, n_features = 400, 10
@@ -79,7 +79,7 @@ def fitted_sizer():
 
 @pytest.fixture(scope="module")
 def constructor():
-    from council.portfolio import PortfolioConstructor
+    from council.portfolio.portfolio import PortfolioConstructor
     return PortfolioConstructor()
 
 
@@ -90,7 +90,7 @@ def constructor():
 class TestCouncilAggregator:
     def test_weights_sum_to_one_without_orthogonality(self):
         """Base/adaptive weights sum to 1.0 when orthogonality shrinkage is disabled."""
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator(use_orthogonality=False)
         signals = _make_signals()
@@ -107,7 +107,7 @@ class TestCouncilAggregator:
 
     def test_orthogonality_mild_shrinkage_keeps_weight_sum_below_one(self):
         """Strong orthogonality penalties leave effective weights summing below 1."""
-        from council.aggregator import CouncilAggregator, _ORTHO_RENORM_MIN_SUM
+        from council.aggregation.aggregator import CouncilAggregator, _ORTHO_RENORM_MIN_SUM
 
         agg = CouncilAggregator(use_orthogonality=True)
         signals = _make_signals(tickers=["AAPL", "MSFT", "GOOGL"], seed=7)
@@ -128,7 +128,7 @@ class TestCouncilAggregator:
 
     def test_orthogonality_moderate_shrinkage_renormalizes_to_one(self):
         """When post-ortho weight sum stays >= 0.85, weights renormalize to 1.0."""
-        from council.aggregator import CouncilAggregator, _ORTHO_RENORM_MIN_SUM
+        from council.aggregation.aggregator import CouncilAggregator, _ORTHO_RENORM_MIN_SUM
 
         agg = CouncilAggregator(use_orthogonality=True)
         signals = _make_signals(tickers=["AAPL", "MSFT", "GOOGL"], seed=7)
@@ -193,7 +193,7 @@ class TestCouncilAggregator:
 
     def test_aggregate_handles_first_signal_history_row_with_misaligned_tickers(self):
         """First aggregate call should initialize history frames without crashing."""
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator()
         signals = {
@@ -209,7 +209,7 @@ class TestCouncilAggregator:
         assert set(agg._ortho_monitor._signal_history["sentiment"].columns) == {"MSFT", "GOOGL"}
 
     def test_compute_correlation_matrix_keeps_requested_model_labels(self):
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator(use_orthogonality=True)
         idx = pd.date_range("2024-01-01", periods=12, freq="D")
@@ -227,7 +227,7 @@ class TestCouncilAggregator:
 
     def test_update_performance_populates_ic_history(self):
         """update_performance should fill _ic_by_date with 30+ entries."""
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         rng = np.random.default_rng(0)
         tickers = [f"T{i}" for i in range(10)]
@@ -255,7 +255,7 @@ class TestCouncilAggregator:
 
     def test_adaptive_weights_kick_in_after_history(self):
         """With 60+ days of positive IC, adaptive weighting should deviate from base."""
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         rng = np.random.default_rng(5)
         tickers = [f"T{i}" for i in range(20)]
@@ -290,7 +290,7 @@ class TestCouncilAggregator:
 
     def test_get_attribution_columns(self):
         """get_attribution should return a DataFrame with the required columns."""
-        from council.aggregator import CouncilAggregator
+        from council.aggregation.aggregator import CouncilAggregator
 
         agg = CouncilAggregator()
         signals = _make_signals()
@@ -384,7 +384,7 @@ class TestConformalPositionSizer:
 
     def test_fit_raises_on_bad_input(self):
         """fit() must raise ValueError on mismatched or 1-D X."""
-        from council.conformal import ConformalPositionSizer
+        from council.sizing.conformal import ConformalPositionSizer
 
         sizer = ConformalPositionSizer()
         with pytest.raises(ValueError):
@@ -392,7 +392,7 @@ class TestConformalPositionSizer:
 
     def test_get_intervals_raises_before_fit(self):
         """get_intervals() must raise RuntimeError if called before fit()."""
-        from council.conformal import ConformalPositionSizer
+        from council.sizing.conformal import ConformalPositionSizer
 
         sizer = ConformalPositionSizer()
         with pytest.raises(RuntimeError):
@@ -515,7 +515,7 @@ class TestPortfolioConstructor:
     def test_optimize_with_crypto_preserves_budget_and_caps(self, monkeypatch):
         """Crypto-aware optimization should keep the total budget and cap crypto legs."""
         monkeypatch.setenv("MLCOUNCIL_CRYPTO_ENABLED", "true")
-        from council.portfolio import PortfolioConstructor
+        from council.portfolio.portfolio import PortfolioConstructor
 
         constructor = PortfolioConstructor()
         tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "JPM", "XOM", "BTCUSD", "ETHUSD"]
@@ -541,7 +541,7 @@ class TestPortfolioConstructor:
     def test_optimize_with_crypto_keeps_narrow_crypto_universe_below_cap(self, monkeypatch):
         """A 2-coin crypto universe must not concentrate 85% into a single coin."""
         monkeypatch.setenv("MLCOUNCIL_CRYPTO_ENABLED", "true")
-        from council.portfolio import PortfolioConstructor
+        from council.portfolio.portfolio import PortfolioConstructor
 
         constructor = PortfolioConstructor()
         tickers = ["BTCUSD", "ETHUSD"]

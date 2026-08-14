@@ -3,12 +3,12 @@
 ``collect_health_signals`` merges the outputs of the four drift / warning
 families into a single structured dict:
 
-- ``tda_warning``     — TDA beta1 proxy alert flag (council/tda_warning.py)
-- ``causal_drift``    — causal graph change_fraction vs 0.25 (council/causal_drift.py)
-- ``adwin_drift``     — ADWIN streaming drift flag (council/drift.py)
-- ``ddm_drift``       — DDM streaming drift flag (council/drift.py)
+- ``tda_warning``     — TDA beta1 proxy alert flag (council/risk/tda_warning.py)
+- ``causal_drift``    — causal graph change_fraction vs 0.25 (council/risk/causal_drift.py)
+- ``adwin_drift``     — ADWIN streaming drift flag (council/risk/drift.py)
+- ``ddm_drift``       — DDM streaming drift flag (council/risk/drift.py)
 - ``evidently_drift`` — dataset drift fraction (KS p < 0.05) vs 0.5
-                        (council/evidently_reports.py)
+                        (council/monitoring/evidently_reports.py)
 
 Each signal is rendered as::
 
@@ -18,7 +18,7 @@ Missing / malformed inputs degrade to level ``"ok"`` with a ``note`` instead of
 raising, so the API endpoint stays up before the weekly assets have run at all.
 
 ``dispatch_health_alerts`` closes the composition gap with the existing alert
-layer (council/alerts.py): every ``warn``/``alert`` signal is converted into an
+layer (council/monitoring/alerts.py): every ``warn``/``alert`` signal is converted into an
 ``AlertResult`` (WARNING / CRITICAL) and routed through ``AlertDispatcher``
 (log file, dashboard state, email for CRITICAL). Dispatch is meant to run on a
 weekly cadence from the Dagster asset — the GET health endpoint stays read-only.
@@ -29,7 +29,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from council.alerts import AlertDispatcher, AlertResult, Severity
+from council.monitoring.alerts import AlertDispatcher, AlertResult, Severity
 
 HEALTH_LEVELS = ("ok", "warn", "alert")
 
@@ -38,7 +38,7 @@ DEFAULT_CAUSAL_THRESHOLD = 0.25
 DEFAULT_EVIDENTLY_THRESHOLD = 0.5
 DEFAULT_TDA_THRESHOLD = 0.35
 
-_DEFAULT_RESULTS_DIR = Path(__file__).resolve().parents[1] / "data" / "results"
+_DEFAULT_RESULTS_DIR = Path(__file__).resolve().parents[2] / "data" / "results"
 
 
 def collect_health_signals(
@@ -65,7 +65,7 @@ def collect_health_signals(
         Payloads from the streaming detectors (key ``drift_detected``),
         or a raw bool flag.
     evidently_drift:
-        Summary dict from :func:`council.evidently_reports.generate_drift_report`
+        Summary dict from :func:`council.monitoring.evidently_reports.generate_drift_report`
         (key ``drift_fraction``).
     causal_threshold:
         Change-fraction threshold for the causal graph check. Default 0.25.
@@ -263,7 +263,7 @@ def dispatch_health_alerts(
     dispatcher:
         Injectable ``AlertDispatcher`` (or duck-typed object with a
         ``dispatch`` method) for tests; defaults to a real
-        :class:`~council.alerts.AlertDispatcher`.
+        :class:`~council.monitoring.alerts.AlertDispatcher`.
     check_date:
         Optional ISO date used in the alert timestamp; when None the
         timestamp is auto-set to UTC now.

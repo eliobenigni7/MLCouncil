@@ -154,7 +154,7 @@ _LEGACY_WRITE_ALIASES = {
 
 def get_current_alerts() -> list[dict]:
     try:
-        from council.alerts import load_current_alerts
+        from council.monitoring.alerts import load_current_alerts
         return load_current_alerts()
     except FileNotFoundError:
         return []
@@ -186,7 +186,7 @@ def get_health_signals() -> dict:
     nessun dispatch degli alert lato API (il dispatch avviene nell'asset
     settimanale di Dagster, con cadenza settimanale).
     """
-    from council.alerting import collect_health_signals_from_disk
+    from council.monitoring.alerting import collect_health_signals_from_disk
 
     return collect_health_signals_from_disk(Path("data/results"))
 

@@ -57,7 +57,7 @@ class TestCryptoEnvVars:
 
     def test_crypto_env_vars_loaded(self):
         import os
-        from council.portfolio import PortfolioConstructor
+        from council.portfolio.portfolio import PortfolioConstructor
 
         # Should pick up env vars without crashing
         pc = PortfolioConstructor()
@@ -66,7 +66,7 @@ class TestCryptoEnvVars:
         assert hasattr(pc, "max_crypto_turnover")
 
     def test_risk_engine_crypto_limits(self):
-        from council.risk_engine import RiskEngine, RiskLimits
+        from council.risk.risk_engine import RiskEngine, RiskLimits
 
         limits = RiskLimits()
         assert limits.max_crypto_position == 0.20

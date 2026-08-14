@@ -52,7 +52,7 @@ def load_regime_context(
     regime_label: str,
 ) -> tuple[np.ndarray | None, dict[str, np.ndarray] | None]:
     """Load DSS regime embedding when ``MLCOUNCIL_REGIME_MODE=embedding``."""
-    from council.aggregator import regime_mode
+    from council.aggregation.aggregator import regime_mode
 
     if regime_mode() != "embedding":
         return None, None
@@ -158,7 +158,7 @@ def apply_stacked_council_override(
     if not use_stacked_council_signal() or len(expert_signals) < 2:
         return combined
 
-    from council.cqr import DEFAULT_STACKING_CHECKPOINT, StackingMetaLearner
+    from council.sizing.cqr import DEFAULT_STACKING_CHECKPOINT, StackingMetaLearner
 
     if not DEFAULT_STACKING_CHECKPOINT.exists():
         logger.warning(

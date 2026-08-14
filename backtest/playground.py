@@ -310,8 +310,8 @@ def run_playground_backtest(
     progress_cb: Optional[ProgressCb] = None,
 ) -> PlaygroundResult:
     """Run a council + portfolio backtest with user-supplied parameters."""
-    from council.aggregator import CouncilAggregator
-    from council.portfolio import PortfolioConstructor
+    from council.aggregation.aggregator import CouncilAggregator
+    from council.portfolio.portfolio import PortfolioConstructor
     from council.transaction_costs import TransactionCostModel
     from backtest.simulator import simulate_weight_backtest
 

@@ -1,11 +1,11 @@
-"""Tests for council.generative_stress (T4.3)."""
+"""Tests for council.risk.generative_stress (T4.3)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from council.generative_stress import GenerativeStressEngine
+from council.risk.generative_stress import GenerativeStressEngine
 
 
 def test_generative_stress_samples():

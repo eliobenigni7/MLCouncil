@@ -16,7 +16,7 @@ def _synthetic_returns(n_days: int = 80, n_assets: int = 3, seed: int = 0) -> pd
 
 class TestDCCEstimator:
     def test_cov_psd_and_square(self):
-        from council.covariance_dynamic import DCCEstimator
+        from council.risk.covariance_dynamic import DCCEstimator
 
         rets = _synthetic_returns()
         cov = DCCEstimator().fit(rets).cov()
@@ -26,7 +26,7 @@ class TestDCCEstimator:
 
     def test_covariance_estimator_mode_default(self, monkeypatch):
         monkeypatch.delenv("MLCOUNCIL_COVARIANCE_ESTIMATOR", raising=False)
-        from council.covariance_dynamic import covariance_estimator_mode
+        from council.risk.covariance_dynamic import covariance_estimator_mode
 
         assert covariance_estimator_mode() == "ledoit"
 
@@ -61,7 +61,7 @@ class TestDCCEstimator:
 
 class TestFactorCovariance:
     def test_factor_estimator_psd(self):
-        from council.covariance_dynamic import FactorCovarianceEstimator
+        from council.risk.covariance_dynamic import FactorCovarianceEstimator
 
         rets = _synthetic_returns(n_assets=4)
         cov = FactorCovarianceEstimator(n_factors=2).fit(rets).cov()
@@ -70,7 +70,7 @@ class TestFactorCovariance:
 
     def test_compute_covariance_factor_mode(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_COVARIANCE_ESTIMATOR", "factor")
-        from council.covariance_dynamic import compute_covariance_from_returns
+        from council.risk.covariance_dynamic import compute_covariance_from_returns
 
         rets = _synthetic_returns()
         cov = compute_covariance_from_returns(rets)
@@ -78,6 +78,6 @@ class TestFactorCovariance:
 
     def test_covariance_estimator_mode_factor(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_COVARIANCE_ESTIMATOR", "factor")
-        from council.covariance_dynamic import covariance_estimator_mode
+        from council.risk.covariance_dynamic import covariance_estimator_mode
 
         assert covariance_estimator_mode() == "factor"

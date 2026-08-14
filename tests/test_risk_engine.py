@@ -6,7 +6,7 @@ import pandas as pd
 
 
 def test_risk_engine_flags_position_and_sector_breaches():
-    from council.risk_engine import (
+    from council.risk.risk_engine import (
         ExposureReport,
         RiskBreach,
         RiskEngine,
@@ -61,8 +61,8 @@ def test_risk_engine_flags_position_and_sector_breaches():
 
 
 def test_risk_engine_save_and_load_roundtrip(tmp_path):
-    from council import risk_engine as risk_mod
-    from council.risk_engine import Position, RiskEngine
+    from council.risk import risk_engine as risk_mod
+    from council.risk.risk_engine import Position, RiskEngine
 
     engine = RiskEngine()
     returns = pd.DataFrame({"AAPL": [0.01] * 35})
@@ -94,7 +94,7 @@ def test_risk_engine_save_and_load_roundtrip(tmp_path):
 
 
 def test_monte_carlo_var_is_reproducible_with_seed():
-    from council.risk_engine import Position, RiskEngine
+    from council.risk.risk_engine import Position, RiskEngine
 
     returns = pd.DataFrame(
         {
@@ -127,7 +127,7 @@ def test_monte_carlo_var_is_reproducible_with_seed():
 
 
 def test_monte_carlo_var_allows_seed_override():
-    from council.risk_engine import Position, RiskEngine
+    from council.risk.risk_engine import Position, RiskEngine
 
     returns = pd.DataFrame(
         {
@@ -161,7 +161,7 @@ def test_monte_carlo_var_allows_seed_override():
 
 
 def test_monte_carlo_var_reflects_correlation_structure_with_same_marginals():
-    from council.risk_engine import RiskEngine
+    from council.risk.risk_engine import RiskEngine
 
     tickers = ["AAPL", "MSFT", "NVDA"]
     weights = {"AAPL": 0.5, "MSFT": 0.3, "NVDA": 0.2}
@@ -229,8 +229,8 @@ def test_monte_carlo_var_reflects_correlation_structure_with_same_marginals():
 
 
 def test_risk_engine_loads_sector_map_from_json(monkeypatch, tmp_path):
-    from council import risk_engine as risk_mod
-    from council.risk_engine import Position, RiskEngine
+    from council.risk import risk_engine as risk_mod
+    from council.risk.risk_engine import Position, RiskEngine
 
     sector_map_path = tmp_path / "sector_map.json"
     sector_map_path.write_text('{"AAPL": "Custom Tech"}\n')
@@ -249,7 +249,7 @@ def test_risk_engine_loads_sector_map_from_json(monkeypatch, tmp_path):
 
 
 def test_risk_engine_accepts_constructor_sector_map_and_warns_on_unknown_ticker(caplog):
-    from council.risk_engine import Position, RiskEngine
+    from council.risk.risk_engine import Position, RiskEngine
 
     engine = RiskEngine(sector_map={"AAPL": "Custom Tech"})
     positions = [
@@ -266,7 +266,7 @@ def test_risk_engine_accepts_constructor_sector_map_and_warns_on_unknown_ticker(
 
 
 def test_create_positions_from_broker_uses_sector_map_json(monkeypatch, tmp_path):
-    from council import risk_engine as risk_mod
+    from council.risk import risk_engine as risk_mod
 
     sector_map_path = tmp_path / "sector_map.json"
     sector_map_path.write_text('{"AAPL": "Custom Tech"}\n')
@@ -384,7 +384,7 @@ def test_monte_carlo_es_matches_gaussian_closed_form():
     """MC ES on Gaussian data approximates the closed-form Gaussian ES."""
     from scipy.stats import norm as _scipy_norm
 
-    from council.risk_engine import RiskEngine
+    from council.risk.risk_engine import RiskEngine
 
     rng = np.random.default_rng(11)
     sigma, rho = 0.02, 0.3
@@ -430,7 +430,7 @@ def test_t_copula_tail_dependence_exceeds_gaussian():
     threshold (p = 0.0005): t(nu=5, rho=0.5) must exceed 0.1, Gaussian must
     stay near 0 (lambda_L = 0 asymptotically for the Gaussian copula).
     """
-    from council.risk_engine import RiskEngine
+    from council.risk.risk_engine import RiskEngine
 
     n_obs = 2000
     rng = np.random.default_rng(5)
@@ -471,7 +471,7 @@ def test_monte_carlo_multi_step_10d_var_compounding():
     GARCH(1,1) daily covariance path makes the compounded 10-day VaR deviate
     from the naive sqrt(10) * 1d VaR scaling.
     """
-    from council.risk_engine import RiskEngine
+    from council.risk.risk_engine import RiskEngine
 
     rng = np.random.default_rng(9)
     n_days = 600
@@ -521,7 +521,7 @@ def test_monte_carlo_multi_step_10d_var_compounding():
 
 def test_monte_carlo_stress_replay_increases_var():
     """Stress replay (correlation 0.9 + eigenvalue shock) raises the MC VaR."""
-    from council.risk_engine import RiskEngine
+    from council.risk.risk_engine import RiskEngine
 
     rng = np.random.default_rng(9)
     n_days = 600

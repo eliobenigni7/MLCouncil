@@ -1,4 +1,4 @@
-"""Tests for council.hrp."""
+"""Tests for council.portfolio.hrp."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from council.hrp import (
+from council.portfolio.hrp import (
     blend_cvxpy_with_hrp,
     covariance_condition_number,
     hrp_weights_from_covariance,

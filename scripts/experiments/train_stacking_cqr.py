@@ -23,7 +23,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from council.cqr import (
+from council.sizing.cqr import (
     CQRPositionSizer,
     DEFAULT_CQR_CHECKPOINT,
     DEFAULT_STACKING_CHECKPOINT,

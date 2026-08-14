@@ -6,7 +6,7 @@ import pandas as pd
 
 
 def test_log_moe_shadow_writes_parquet(tmp_path):
-    from council.moe_gating import log_moe_shadow
+    from council.aggregation.moe_gating import log_moe_shadow
 
     linear = pd.Series([0.1, -0.2], index=["AAPL", "MSFT"])
     moe = pd.Series([0.2, -0.1], index=["AAPL", "MSFT"])

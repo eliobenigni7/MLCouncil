@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import types
+import os
 from datetime import date
 import pickle
 from pathlib import Path
@@ -28,6 +29,35 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import dagster as dg
+
+# ---------------------------------------------------------------------------
+# Isolamento env canary: l'asset raw_ohlcv applica le feature canary
+# (config/canary.yaml — trio G1 attivo) via os.environ.setdefault; senza
+# pulizia l'env inquinerebbe i test successivi (es. portfolio_weights vede
+# MLCOUNCIL_POSITION_SIZING=cqr e cerca il checkpoint non presente).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_canary_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isola l'env canary attorno a ogni test del modulo.
+
+    L'asset ``raw_ohlcv`` applica le feature canary (config/canary.yaml —
+    trio G1 attivo) via ``os.environ.setdefault``; senza pulizia l'env
+    inquinerebbe i test successivi (es. portfolio_weights vedrebbe
+    MLCOUNCIL_POSITION_SIZING=cqr e cercherebbe il checkpoint assente).
+    """
+    _canary_keys = (
+        "MLCOUNCIL_POSITION_SIZING",
+        "MLCOUNCIL_ONLINE_LEARNING",
+        "MLCOUNCIL_DYNAMIC_SLIPPAGE",
+        "MLCOUNCIL_AGGREGATOR_MODE",
+    )
+    for _key in _canary_keys:
+        monkeypatch.delenv(_key, raising=False)
+    yield
+    for _key in _canary_keys:
+        monkeypatch.delenv(_key, raising=False)
 
 # ---------------------------------------------------------------------------
 # Caricamento pipeline (standalone, come fa Dagster con workspace.yaml)
@@ -836,7 +866,7 @@ class TestFullPipelineSynthetic:
             _pipeline,
             "_load_live_portfolio_snapshot",
             return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
-        ), patch("council.risk_engine.RiskEngine.check_limits_from_weights", return_value=(True, [])):
+        ), patch("council.risk.risk_engine.RiskEngine.check_limits_from_weights", return_value=(True, [])):
             result = _call_asset(
                 _pipeline.portfolio_weights, ctx, council, self._alpha158_features()
             )
@@ -866,7 +896,7 @@ class TestFullPipelineSynthetic:
             "_load_live_portfolio_snapshot",
             return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0),
         ), patch(
-            "council.risk_engine.RiskEngine.check_limits_from_weights",
+            "council.risk.risk_engine.RiskEngine.check_limits_from_weights",
             return_value=(True, []),
         ):
             result = _call_asset(
@@ -886,9 +916,9 @@ class TestFullPipelineSynthetic:
         with patch.object(_pipeline, "_compute_covariance", return_value=pd.DataFrame(
             np.eye(len(self.TICKERS)) * 0.0001, index=self.TICKERS, columns=self.TICKERS
         )), patch.object(_pipeline, "_load_live_portfolio_snapshot", return_value=(pd.Series(0.0, index=self.TICKERS), 100000.0)), patch(
-            "council.portfolio.PortfolioConstructor.optimize", return_value=expected
+            "council.portfolio.portfolio.PortfolioConstructor.optimize", return_value=expected
         ) as mock_optimize, patch(
-            "council.portfolio.PortfolioConstructor.optimize_with_crypto",
+            "council.portfolio.portfolio.PortfolioConstructor.optimize_with_crypto",
             side_effect=AssertionError("optimize_with_crypto should not be used for equity-only universes"),
         ):
             result = _call_asset(
@@ -1192,7 +1222,7 @@ class TestLivePortfolioSnapshot:
             "_load_live_portfolio_snapshot",
             return_value=(snapshot_weights, 123456.0),
         ), patch(
-            "council.portfolio.PortfolioConstructor",
+            "council.portfolio.portfolio.PortfolioConstructor",
             return_value=FakeConstructor(),
         ):
             _call_asset(_pipeline.portfolio_weights, ctx, council)
@@ -1416,7 +1446,7 @@ class TestCausalDriftCheck:
         )
         ctx = _make_context()
 
-        with patch("council.alerting.AlertDispatcher") as mock_dispatcher_cls:
+        with patch("council.monitoring.alerting.AlertDispatcher") as mock_dispatcher_cls:
             payload = _call_asset(_pipeline.causal_drift_check, ctx)
 
         assert (results_dir / "causal_drift_latest.json").exists()
@@ -1437,7 +1467,7 @@ class TestCausalDriftCheck:
         monkeypatch.setattr(_pipeline, "_RESULTS_DIR", results_dir)
         ctx = _make_context()
 
-        with patch("council.alerting.AlertDispatcher") as mock_dispatcher_cls:
+        with patch("council.monitoring.alerting.AlertDispatcher") as mock_dispatcher_cls:
             _call_asset(_pipeline.causal_drift_check, ctx)
 
         mock_dispatcher_cls.assert_not_called()

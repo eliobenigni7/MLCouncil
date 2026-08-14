@@ -326,7 +326,7 @@ def run_daily_incremental_update(
     drift_detector: str | None = None
     if ohlcv is not None and not ohlcv.is_empty():
         try:
-            from council.drift import ADWINDetector
+            from council.risk.drift import ADWINDetector
 
             returns = equal_weight_daily_returns(ohlcv, n_days=60)
             detector = ADWINDetector(window_days=60)

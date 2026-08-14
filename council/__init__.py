@@ -1,38 +1,38 @@
 """Council package: ensemble aggregation, conformal position sizing, portfolio optimisation,
 and model monitoring / drift detection."""
 
-from .aggregator import CouncilAggregator, OrthogonalityMonitor
-from .alerts import AlertDispatcher, AlertResult, Severity, load_current_alerts
-from .conformal import ConformalPositionSizer
-from .cqr import CQRPositionSizer, StackingMetaLearner, get_position_sizer
-from .fractional_kelly import FractionalKellySizer
-from .covariance_dynamic import (
+from .aggregation.aggregator import CouncilAggregator, OrthogonalityMonitor
+from .monitoring.alerts import AlertDispatcher, AlertResult, Severity, load_current_alerts
+from .sizing.conformal import ConformalPositionSizer
+from .sizing.cqr import CQRPositionSizer, StackingMetaLearner, get_position_sizer
+from .sizing.fractional_kelly import FractionalKellySizer
+from .risk.covariance_dynamic import (
     DCCEstimator,
     FactorCovarianceEstimator,
     compute_covariance_from_returns,
     shrink_covariance_matrix,
 )
-from .evidently_reports import generate_drift_report, generate_model_performance_report
-from .moe_gating import MoEGatingNetwork, aggregator_mode as moe_aggregator_mode
-from .monitor import CouncilMonitor
-from .portfolio import PortfolioConstructor
-from .portfolio_diff import (
+from .monitoring.evidently_reports import generate_drift_report, generate_model_performance_report
+from .aggregation.moe_gating import MoEGatingNetwork, aggregator_mode as moe_aggregator_mode
+from .monitoring.monitor import CouncilMonitor
+from .portfolio.portfolio import PortfolioConstructor
+from .portfolio.portfolio_diff import (
     DifferentiablePortfolioConstructor,
     HRPBlendPortfolioConstructor,
     get_portfolio_constructor,
 )
-from .portfolio_multiperiod import (
+from .portfolio.portfolio_multiperiod import (
     MultiPeriodTCConfig,
     multi_period_tc_enabled,
     smooth_target_weights,
 )
-from .risk_rules import (
+from .risk.risk_rules import (
     PositionRiskRules,
     DrawdownProtection,
     PortfolioRiskMonitor,
     ExitSignal,
 )
-from .risk_engine import (
+from .risk.risk_engine import (
     RiskEngine,
     RiskReport,
     RiskLimits,

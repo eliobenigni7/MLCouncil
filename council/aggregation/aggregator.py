@@ -44,7 +44,7 @@ def regime_mode() -> str:
 
 def aggregator_mode() -> str:
     """Council aggregation: ``linear`` (default) or ``moe`` shadow gating."""
-    from council.moe_gating import aggregator_mode as _moe_mode
+    from council.aggregation.moe_gating import aggregator_mode as _moe_mode
 
     return _moe_mode()
 
@@ -335,7 +335,7 @@ class CouncilAggregator:
         agg_mode = aggregator_mode_override or aggregator_mode()
         moe_gate: list[float] | None = None
         if agg_mode == "moe":
-            from council.moe_gating import MoEGatingNetwork, build_regime_context
+            from council.aggregation.moe_gating import MoEGatingNetwork, build_regime_context
 
             ic_hint = {
                 m: float(self._ic_by_date.get(m, {}).get(date, 0.0))

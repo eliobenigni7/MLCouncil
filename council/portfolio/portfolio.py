@@ -33,10 +33,10 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 _DIAGNOSTICS_DIR = _ROOT / "data" / "results" / "optimization_diagnostics"
 
-from council.covariance_dynamic import shrink_covariance_matrix
+from council.risk.covariance_dynamic import shrink_covariance_matrix
 from council.transaction_costs import (
     TransactionCostModel,
     get_default_commission_bps,
@@ -533,7 +533,7 @@ class PortfolioConstructor:
         hrp_weights_arr: np.ndarray | None = None
         if os.getenv("MLCOUNCIL_HRP_SOFT_PRIOR", "false").lower() == "true" and n >= 2:
             try:
-                from council.hrp import hrp_weights_from_covariance
+                from council.portfolio.hrp import hrp_weights_from_covariance
 
                 hrp_blend = float(os.getenv("MLCOUNCIL_HRP_BLEND", "0.25"))
                 hrp_blend = min(1.0, max(0.0, hrp_blend))

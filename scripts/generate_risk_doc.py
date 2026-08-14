@@ -1,6 +1,6 @@
 """Generate the risk-constraint Markdown table from current config and code.
 
-Reads `config/runtime.env` and instantiates `council.portfolio.PortfolioConstructor`
+Reads `config/runtime.env` and instantiates `council.portfolio.portfolio.PortfolioConstructor`
 to obtain the live default values, then renders a Markdown fragment delimited
 by ``<!-- BEGIN risk-table -->`` / ``<!-- END risk-table -->`` markers.
 
@@ -43,7 +43,7 @@ def render_table() -> str:
     _load_runtime_env(repo / "config" / "runtime.env")
     sys.path.insert(0, str(repo))
 
-    from council.portfolio import PortfolioConstructor
+    from council.portfolio.portfolio import PortfolioConstructor
 
     pc = PortfolioConstructor()
 

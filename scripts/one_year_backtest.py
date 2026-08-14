@@ -24,7 +24,7 @@ from backtest.validation import (
     build_purged_walk_forward_splits,
     run_walk_forward_analysis,
 )
-from council.aggregator import CouncilAggregator
+from council.aggregation.aggregator import CouncilAggregator
 from council.transaction_costs import TransactionCostModel
 from backtest.simulator import simulate_weight_backtest
 from data.features.alpha158 import build_macro_context, compute_alpha158
@@ -152,7 +152,7 @@ def run_one_year_backtest(
             hmm.fit(mt)
 
         # Conformal sizer
-        from council.conformal import ConformalPositionSizer
+        from council.sizing.conformal import ConformalPositionSizer
         sizer = ConformalPositionSizer()
         tg_pivot = targets.filter(pl.col("valid_time") <= pl.lit(train_end)).to_pandas()
         tg_pivot["valid_time"] = pd.to_datetime(tg_pivot["valid_time"]).dt.date

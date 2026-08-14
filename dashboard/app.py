@@ -26,7 +26,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import dashboard.charts as charts
-from council.alerts import load_current_alerts
+from council.monitoring.alerts import load_current_alerts
 from dashboard.data_loader import (
     load_benchmark,
     load_council_weights_log_entry,

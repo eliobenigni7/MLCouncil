@@ -1,7 +1,7 @@
 """Conditional quantile regression sizing + stacking meta-learner (T3.2 shadow).
 
 ``MLCOUNCIL_POSITION_SIZING=cqr`` selects CQR; default ``conformal`` keeps
-``council/conformal.py`` (MAPIE Jackknife+) as production path.
+``council/sizing/conformal.py`` (MAPIE Jackknife+) as production path.
 Canary status: shadow — target: P-1.1 — expiry: 2027-02-01 (promote via canary o retire)
 """
 
@@ -16,12 +16,12 @@ import pandas as pd
 from loguru import logger
 
 DEFAULT_CQR_CHECKPOINT = (
-    Path(__file__).resolve().parents[1] / "models" / "checkpoints" / "cqr_sizer.pkl"
+    Path(__file__).resolve().parents[2] / "models" / "checkpoints" / "cqr_sizer.pkl"
 )
 DEFAULT_STACKING_CHECKPOINT = (
-    Path(__file__).resolve().parents[1] / "models" / "checkpoints" / "stacking_meta.pkl"
+    Path(__file__).resolve().parents[2] / "models" / "checkpoints" / "stacking_meta.pkl"
 )
-SHADOW_STACKING_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "shadow_stacking"
+SHADOW_STACKING_DIR = Path(__file__).resolve().parents[2] / "data" / "results" / "shadow_stacking"
 
 
 def position_sizing_mode() -> str:
@@ -43,12 +43,12 @@ def get_position_sizer(coverage: float = 0.85):
     """Factory: conformal (MAPIE), CQR shadow sizer, or FractionalKellySizer."""
     mode = position_sizing_mode()
     if mode == "kelly":
-        from council.fractional_kelly import FractionalKellySizer
+        from council.sizing.fractional_kelly import FractionalKellySizer
 
         return FractionalKellySizer()
     if mode == "cqr":
         return CQRPositionSizer(coverage=coverage)
-    from council.conformal import ConformalPositionSizer
+    from council.sizing.conformal import ConformalPositionSizer
 
     return ConformalPositionSizer(coverage=coverage)
 

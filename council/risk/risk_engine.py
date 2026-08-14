@@ -9,7 +9,7 @@ Provides institutional-grade risk management:
 - Greeks approximation for equity portfolio
 
 Usage:
-    from council.risk_engine import RiskEngine, RiskReport
+    from council.risk.risk_engine import RiskEngine, RiskReport
 
     risk = RiskEngine()
     report = risk.compute_full_risk(positions, prices, returns)
@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm as _norm
 
-_ROOT = Path(__file__).parents[1]
+_ROOT = Path(__file__).parents[2]
 RISK_DIR = _ROOT / "data" / "risk"
 _DEFAULT_SECTOR_MAP_PATH = _ROOT / "config" / "sector_map.json"
 RISK_DIR.mkdir(parents=True, exist_ok=True)
@@ -390,7 +390,7 @@ class RiskEngine:
         covariance is:
 
         1. the DCC(1,1) conditional covariance (GARCH(1,1) vols + EWMA
-           correlation, as in ``council/covariance_dynamic.py``) when
+           correlation, as in ``council/risk/covariance_dynamic.py``) when
            ``arch`` is installed;
         2. otherwise a GARCH(1,1) vol forecast around the constant
            Ledoit-Wolf correlation: persistence ``phi = alpha + beta`` is the
@@ -498,7 +498,7 @@ class RiskEngine:
         """
         try:
             from arch import arch_model
-            from council.covariance_dynamic import DCCEstimator
+            from council.risk.covariance_dynamic import DCCEstimator
         except Exception:
             return None
         n = returns.shape[1]
@@ -661,7 +661,7 @@ class RiskEngine:
             var_5d, cvar_5d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 5)
             var_10d, cvar_10d = self.compute_var_parametric(portfolio_returns, portfolio_value, confidence, 10)
         elif method == "generative":
-            from council.generative_stress import GenerativeStressEngine
+            from council.risk.generative_stress import GenerativeStressEngine
 
             tickers = [t for t in weights if t in returns.columns]
             wide = returns[tickers] if tickers else returns

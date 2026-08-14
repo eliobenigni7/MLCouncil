@@ -17,7 +17,7 @@ def _cov(n: int = 5, seed: int = 1) -> pd.DataFrame:
 
 class TestDifferentiablePortfolioConstructor:
     def test_delegate_optimize_budget(self, monkeypatch):
-        from council.portfolio_diff import DifferentiablePortfolioConstructor
+        from council.portfolio.portfolio_diff import DifferentiablePortfolioConstructor
 
         monkeypatch.setenv("MLCOUNCIL_MAX_POSITION_SIZE", "0.25")
         tickers = [f"S{i}" for i in range(5)]
@@ -33,7 +33,7 @@ class TestDifferentiablePortfolioConstructor:
 
     def test_backend_default_delegate(self, monkeypatch):
         monkeypatch.delenv("MLCOUNCIL_PORTFOLIO_MODE", raising=False)
-        from council.portfolio_diff import (
+        from council.portfolio.portfolio_diff import (
             DifferentiablePortfolioConstructor,
             portfolio_constructor_mode,
         )
@@ -43,19 +43,19 @@ class TestDifferentiablePortfolioConstructor:
         assert ctor.backend == "cvxpy_delegate"
 
     def test_cvxpylayers_available_is_bool(self):
-        from council.portfolio_diff import cvxpylayers_available
+        from council.portfolio.portfolio_diff import cvxpylayers_available
 
         assert isinstance(cvxpylayers_available(), bool)
 
     def test_get_portfolio_constructor_default(self, monkeypatch):
         monkeypatch.delenv("MLCOUNCIL_PORTFOLIO_MODE", raising=False)
-        from council.portfolio import PortfolioConstructor
-        from council.portfolio_diff import get_portfolio_constructor
+        from council.portfolio.portfolio import PortfolioConstructor
+        from council.portfolio.portfolio_diff import get_portfolio_constructor
 
         assert isinstance(get_portfolio_constructor(), PortfolioConstructor)
 
     def test_hrp_blend_mode_budget(self, monkeypatch):
-        from council.portfolio_diff import HRPBlendPortfolioConstructor
+        from council.portfolio.portfolio_diff import HRPBlendPortfolioConstructor
 
         monkeypatch.setenv("MLCOUNCIL_PORTFOLIO_MODE", "hrp_blend")
         monkeypatch.setenv("MLCOUNCIL_HRP_BLEND", "0.5")
@@ -74,6 +74,6 @@ class TestDifferentiablePortfolioConstructor:
 
     def test_get_portfolio_constructor_hrp_blend(self, monkeypatch):
         monkeypatch.setenv("MLCOUNCIL_PORTFOLIO_MODE", "hrp_blend")
-        from council.portfolio_diff import HRPBlendPortfolioConstructor, get_portfolio_constructor
+        from council.portfolio.portfolio_diff import HRPBlendPortfolioConstructor, get_portfolio_constructor
 
         assert isinstance(get_portfolio_constructor(), HRPBlendPortfolioConstructor)

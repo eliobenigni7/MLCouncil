@@ -1,11 +1,11 @@
-"""Tests for council.tda_warning (T4.5)."""
+"""Tests for council.risk.tda_warning (T4.5)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from council.tda_warning import PersistentHomologyAnalyser
+from council.risk.tda_warning import PersistentHomologyAnalyser
 
 
 def test_tda_analyser_returns_result():

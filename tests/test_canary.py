@@ -6,7 +6,7 @@ Copertura
 2. apply(): setdefault rispetta l'env pre-esistente dell'operatore
 3. record + check_revert: metrica sotto floor per min_days → revert + disabilitazione
 4. Metrica sopra floor / history insufficiente → nessun revert
-5. Revert → dispatch alert (dispatcher mock) via council/alerting.py
+5. Revert → dispatch alert (dispatcher mock) via council/monitoring/alerting.py
 6. No-op con config vuota (zero side effect)
 7. Asset pipeline canary_health: no-op senza feature abilitate
 """
@@ -27,7 +27,7 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from council.alerts import Severity
+from council.monitoring.alerts import Severity
 from council.canary import (
     CanaryController,
     CanaryFeature,

@@ -17,8 +17,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-DEFAULT_MOE_CHECKPOINT = Path(__file__).resolve().parents[1] / "models" / "checkpoints" / "moe_gate.pkl"
-SHADOW_MOE_DIR = Path(__file__).resolve().parents[1] / "data" / "results" / "shadow_moe"
+DEFAULT_MOE_CHECKPOINT = Path(__file__).resolve().parents[2] / "models" / "checkpoints" / "moe_gate.pkl"
+SHADOW_MOE_DIR = Path(__file__).resolve().parents[2] / "data" / "results" / "shadow_moe"
 
 _REGIME_INDEX = {"bull": 0, "bear": 1, "transition": 2}
 

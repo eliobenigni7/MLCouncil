@@ -60,7 +60,7 @@ def test_step_portfolio_does_not_shadow_pandas_import(monkeypatch, tmp_path):
 
     monkeypatch.setattr(module, "ORDERS_DIR", tmp_path)
 
-    import council.portfolio as portfolio_module
+    import council.portfolio.portfolio as portfolio_module
 
     monkeypatch.setattr(portfolio_module, "PortfolioConstructor", DummyPortfolioConstructor)
 

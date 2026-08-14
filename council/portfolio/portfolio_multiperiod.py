@@ -32,7 +32,7 @@ class MultiPeriodTCConfig:
 
     horizon_days: int = 5
     risk_aversion: float = 1.0
-    tc_lambda: float = 2.0  # scale aligned with council.portfolio tc_lambda
+    tc_lambda: float = 2.0  # scale aligned with council.portfolio.portfolio tc_lambda
     smoothing: float = 0.5  # fraction of gap closed per day toward w*
 
 

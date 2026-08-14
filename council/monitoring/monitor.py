@@ -46,14 +46,14 @@ try:
 except ImportError:  # pragma: no cover
     _MLFLOW_AVAILABLE = False
 
-from council.alerts import AlertResult, AlertDispatcher, Severity
+from council.monitoring.alerts import AlertResult, AlertDispatcher, Severity
 from council.cost_calibration import (
     DEFAULT_CALIBRATION_PATH,
     TIER_BY_TICKER,
     load_calibration,
 
 )
-from council.monitoring_config import load_monitoring_config
+from council.monitoring.monitoring_config import load_monitoring_config
 from council.transaction_costs import estimate_slippage_bps, get_calibration_path
 
 
@@ -641,11 +641,11 @@ class CouncilMonitor:
         model_name:
             Model identifier used in the returned AlertResult.
         detector:
-            Optional :class:`council.causal_drift.PCMCIDriftDetector` with a
+            Optional :class:`council.risk.causal_drift.PCMCIDriftDetector` with a
             persisted baseline. When omitted, a fresh detector is created and
             the first call only initialises the baseline (no alert).
         """
-        from council.causal_drift import PCMCIDriftDetector, causal_drift_enabled
+        from council.risk.causal_drift import PCMCIDriftDetector, causal_drift_enabled
 
         if not causal_drift_enabled():
             return AlertResult(

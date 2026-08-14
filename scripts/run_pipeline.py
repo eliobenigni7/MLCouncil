@@ -334,7 +334,7 @@ def step_council(
     regime: str,
     last_date: date,
 ) -> pd.Series:
-    from council.aggregator import CouncilAggregator
+    from council.aggregation.aggregator import CouncilAggregator
 
     agg    = CouncilAggregator()
     signal = agg.aggregate(signals, regime=regime, date=last_date)
@@ -350,7 +350,7 @@ def step_council(
 # ---------------------------------------------------------------------------
 
 def step_conformal(lgbm, feat_train: pl.DataFrame, targets_df: pl.DataFrame):
-    from council.cqr import get_position_sizer, position_sizing_mode
+    from council.sizing.cqr import get_position_sizer, position_sizing_mode
 
     feat_cols = [c for c in feat_train.columns if c not in _EXCLUDE_COLS]
 
@@ -394,7 +394,7 @@ def step_portfolio(
     save_orders: bool = True,
     emit_report: bool = True,
 ) -> pd.Series:
-    from council.portfolio_diff import get_portfolio_constructor
+    from council.portfolio.portfolio_diff import get_portfolio_constructor
 
     # Feature row per l'ultimo giorno (allineata ai ticker del council_signal)
     tickers = sorted(council_signal.index.tolist())

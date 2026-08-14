@@ -22,7 +22,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from council.portfolio_diff import (
+from council.portfolio.portfolio_diff import (
     DifferentiablePortfolioConstructor,
     cvxpylayers_available,
     portfolio_constructor_mode,

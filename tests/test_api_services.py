@@ -21,7 +21,7 @@ class TestMonitoringService:
     def test_get_current_alerts_no_file(self):
         from api.services.monitoring_service import get_current_alerts
         with patch("api.services.monitoring_service.CURRENT_ALERTS_PATH", Path("/nonexistent.json")):
-            with patch("council.alerts.load_current_alerts", side_effect=FileNotFoundError):
+            with patch("council.monitoring.alerts.load_current_alerts", side_effect=FileNotFoundError):
                 result = get_current_alerts()
         assert result == []
 

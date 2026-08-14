@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from backtest.simulator import compare_cost_modes, simulate_weight_backtest
 from backtest.validation import build_purged_walk_forward_splits, run_walk_forward_analysis
-from council.aggregator import CouncilAggregator
+from council.aggregation.aggregator import CouncilAggregator
 from council.transaction_costs import TransactionCostModel
 from data.features.alpha158 import build_macro_context, compute_alpha158
 from data.features.target import compute_targets, training_rank_column

@@ -88,7 +88,7 @@ def get_aggregator_mode() -> str:
     if manifest_enabled():
         mode = council_setting("aggregator_mode", "linear")
         return mode if mode in ("linear", "moe") else "linear"
-    from council.moe_gating import aggregator_mode
+    from council.aggregation.moe_gating import aggregator_mode
 
     return aggregator_mode()
 
@@ -97,7 +97,7 @@ def get_position_sizing_mode() -> str:
     if manifest_enabled():
         mode = council_setting("position_sizing", "conformal")
         return mode if mode in ("conformal", "cqr") else "conformal"
-    from council.cqr import position_sizing_mode
+    from council.sizing.cqr import position_sizing_mode
 
     return position_sizing_mode()
 
@@ -106,7 +106,7 @@ def get_covariance_estimator() -> str:
     if manifest_enabled():
         mode = council_setting("covariance_estimator", "ledoit")
         return mode if mode in ("ledoit", "dcc", "factor") else "ledoit"
-    from council.covariance_dynamic import covariance_estimator_mode
+    from council.risk.covariance_dynamic import covariance_estimator_mode
 
     return covariance_estimator_mode()
 
@@ -115,7 +115,7 @@ def get_portfolio_mode() -> str:
     if manifest_enabled():
         mode = council_setting("portfolio_mode", "cvxpy")
         return mode if mode in ("cvxpy", "diff", "hrp_blend") else "cvxpy"
-    from council.portfolio_diff import portfolio_constructor_mode
+    from council.portfolio.portfolio_diff import portfolio_constructor_mode
 
     return portfolio_constructor_mode()
 
@@ -133,7 +133,7 @@ def get_regime_mode() -> str:
     if manifest_enabled():
         mode = council_setting("regime_mode", "label")
         return mode if mode in ("label", "embedding") else "label"
-    from council.aggregator import regime_mode
+    from council.aggregation.aggregator import regime_mode
 
     return regime_mode()
 

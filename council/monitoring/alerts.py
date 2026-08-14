@@ -29,7 +29,7 @@ from typing import Any
 from loguru import logger
 from runtime_env import get_secret
 
-_ROOT = Path(__file__).parents[1]
+_ROOT = Path(__file__).parents[2]
 _ALERTS_DIR = _ROOT / "data" / "alerts"
 _MONITORING_DIR = _ROOT / "data" / "monitoring"
 _DEADLETTER_DIR = _ALERTS_DIR / "deadletter"
