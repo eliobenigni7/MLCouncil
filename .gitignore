@@ -74,4 +74,5 @@ coverage.xml
 # Logs
 *.log
 
-# Build artifact della SPA unificata (generato dal multi-stage Docker)# api/static/spa/
+# Build artifact della SPA unificata (generato dal multi-stage Docker)
+api/static/spa/

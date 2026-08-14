@@ -17,7 +17,7 @@ python -m pytest tests/ -k "test_aggregator"
 
 # Services
 python run_admin.py                 # FastAPI :8000
-streamlit run dashboard/app.py      # Dashboard :8501
+# Unified UI: served by the admin API at http://localhost:8000 (login: MLCOUNCIL_ADMIN_USERNAME/PASSWORD from .env)
 dagster dev -f data/pipeline.py     # Pipeline UI :3000
 
 # Docker
@@ -64,7 +64,6 @@ data/ingest → data/features → models/ → council/ → execution/
 
 - `requirements.txt` — Core + includes `-r requirements_api.txt`
 - `requirements_api.txt` — FastAPI, Alpaca, ArcticDB
-- `requirements_dashboard.txt` — Streamlit-only (for cloud deploy)
 
 ## Test Gaps
 
@@ -220,10 +219,10 @@ python scripts/run_pipeline.py --partition 2026-05-20
 - Dagster: `tda_warning_signal` (weekly); monitor: `check_causal_graph_drift`
 - RiskEngine: `compute_var(..., method="generative")`
 - ADRs: `docs/adr/2026-05-21-causal-drift-pcmci.md`, `tda-early-warning.md`, `generative-stress.md`, `rl-execution.md`, `smart-order-routing.md`
-- Dashboard: `dashboard/pages/2_Challenger_Promotion.py`
+- UI: Challenger Promotion page in the unified SPA (`frontend/src/pages/PromotionPage.tsx`)
 
 ## Known Issues
 
 - `scripts/run_pipeline.py:252` — Sentiment now downloads real news via Yahoo Finance RSS (use `--with-sentiment` to enable)
-- `dashboard/data_loader.py:567` — Drawdown delta now calculates day-over-day change
+- `api/services/analytics_service.py:646` — Drawdown delta now calculates day-over-day change
 - `docs/architecture-as-is-to-be-2026-05-21.md` tracks current AS IS/TO BE drift from the combined codebase analysis; consult it before starting large quant, risk, or dashboard work.

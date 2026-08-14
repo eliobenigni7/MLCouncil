@@ -34,6 +34,6 @@ RUN mkdir -p \
     data/alerts data/cache data/paper_trades data/operations data/dagster \
     models/checkpoints
 
-EXPOSE 8000 8501 3000
+EXPOSE 8000 3000
 
 CMD ["python", "run_admin.py"]

@@ -17,7 +17,6 @@ def test_docker_compose_ports_are_overridable():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "${ADMIN_API_PORT:-8000}:8000" in compose
-    assert "${DASHBOARD_PORT:-8501}:8501" in compose
     assert "${DAGSTER_PORT:-3000}:3000" in compose
     assert "${MLFLOW_PORT:-5000}:5000" in compose
 
@@ -48,6 +47,7 @@ def test_core_compose_wires_otel_and_manifest():
     assert "otel-collector:4318" in compose
     assert "mlcouncil-net" in compose
     assert "models/checkpoints" in compose
+    assert "dashboard" not in compose
 
 
 def test_observability_compose_uses_shared_network_and_profile():

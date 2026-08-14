@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -92,12 +91,3 @@ def test_health_ignores_operations_json_when_building_validation_summary(monkeyp
     summary = health_module._latest_validation_backtest_summary()
 
     assert summary["status"] == "no_data"
-
-
-def test_admin_status_badge_supports_consistent_inconsistent_and_error():
-    from pathlib import Path
-
-    js = Path("api/static/js/admin.js").read_text(encoding="utf-8")
-    assert "'consistent': 'badge-ok'" in js
-    assert "'inconsistent': 'badge-warning'" in js
-    assert "'error': 'badge-error'" in js

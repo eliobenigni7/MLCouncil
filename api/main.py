@@ -7,7 +7,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 from runtime_env import load_runtime_env
@@ -17,14 +16,13 @@ from api.rate_limit import limiter
 
 API_PREFIX = "/api"
 STATIC_DIR = Path(__file__).parent / "static"
-TEMPLATES_DIR = Path(__file__).parent / "templates"
 SPA_DIST_DIR = Path(__file__).resolve().parents[1] / "api" / "static" / "spa"
 
 load_runtime_env()
 
 
 def get_allowed_origins() -> list[str]:
-    origins = os.getenv("MLCOUNCIL_ALLOWED_ORIGINS", "http://localhost:8501")
+    origins = os.getenv("MLCOUNCIL_ALLOWED_ORIGINS", "")
     return [o.strip() for o in origins.split(",") if o.strip()]
 
 
@@ -123,16 +121,6 @@ def create_app() -> FastAPI:
     app.include_router(intraday.router, prefix=API_PREFIX)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-    if os.getenv("MLCOUNCIL_LEGACY_UI", "true").strip().lower() in {"1", "true", "yes", "on"}:
-        @app.get("/admin", response_class=HTMLResponse)
-        async def legacy_admin(request: Request):
-            return templates.TemplateResponse(
-                request=request,
-                name="admin.html",
-            )
 
     # SPA unificata: servita a /app (statici) con fallback client-side routing.
     if (SPA_DIST_DIR / "index.html").exists():

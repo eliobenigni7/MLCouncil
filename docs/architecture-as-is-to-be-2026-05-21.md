@@ -130,3 +130,13 @@ After P0, the platform can evolve through champion/challenger tracks:
 - Focused tests cover changed math/risk behavior.
 - A baseline report can be regenerated after cleanup.
 - The dashboard brainstorming starts from stable data contracts, not from vague "modernize UI" intent.
+
+## 2026-08-14 — Unified UI
+
+The Streamlit dashboard (`dashboard/`, :8501) and the vanilla-JS admin SPA
+(`api/templates/admin.html`, `api/static/js/admin.js`) were **retired** after the
+parity gate passed (Task 26 of `docs/superpowers/plans/2026-08-14-unified-interface.md`).
+Both are replaced by the React SPA in `frontend/`, served same-origin by the admin
+API on :8000 (session auth via `MLCOUNCIL_ADMIN_USERNAME` / `MLCOUNCIL_ADMIN_PASSWORD`;
+legacy admin was at `/admin` until retirement). The `dashboard` compose service,
+`DASHBOARD_PORT`, `requirements_dashboard.txt`, and `.streamlit/` are gone.

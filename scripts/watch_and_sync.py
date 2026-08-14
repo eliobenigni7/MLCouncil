@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Post-backtest automation: poll for results inside container, sync, restart dashboard.
+"""Post-backtest automation: poll for results inside container, sync to host.
 
 Polls docker exec to check if equity_curve.parquet exists inside the
-Dagster container. When stable, copies all results to host and restarts
-the dashboard. Self-terminating after one successful sync.
+Dagster container. When stable, copies all results to host.
+Self-terminating after one successful sync.
 """
 
 import subprocess
@@ -57,15 +57,7 @@ while time.time() - started < MAX_WAIT:
             # Verify the copy
             if (RESULTS / EQUITY_FILE).exists():
                 sz = (RESULTS / EQUITY_FILE).stat().st_size
-                print(f"[watcher] Results synced ({sz} bytes). Restarting dashboard...")
-
-            # Restart dashboard
-            subprocess.run(
-                ["docker", "compose", "-f", str(PROJECT / "docker-compose.yml"),
-                 "restart", "dashboard"],
-                check=False, cwd=str(PROJECT),
-            )
-            print("[watcher] Dashboard restarted. Done.")
+                print(f"[watcher] Results synced ({sz} bytes). Done.")
             sys.exit(0)
 
         elif age is not None:

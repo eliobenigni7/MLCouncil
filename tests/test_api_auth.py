@@ -207,7 +207,8 @@ def test_trading_endpoint_accepts_session():
         assert resp.json()["pretrade"]["blocked"] is False
 
 
-def test_legacy_admin_at_admin_prefix():
+def test_legacy_admin_route_removed():
+    # Il percorso /admin (admin SPA legacy) è stato ritirato dopo il parity gate.
     with patch.dict(os.environ, {
         "MLCOUNCIL_ENV_PROFILE": "local",
         "MLCOUNCIL_REQUIRE_API_KEY": "false",
@@ -216,5 +217,4 @@ def test_legacy_admin_at_admin_prefix():
     }, clear=False):
         client = TestClient(_full_app())
         resp = client.get("/admin")
-        assert resp.status_code == 200
-        assert "admin.html" in resp.text or "MLCouncil" in resp.text
+        assert resp.status_code == 404
