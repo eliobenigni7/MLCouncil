@@ -6,8 +6,10 @@
 # Secrets
 secrets/
 
-# Data (sensitive data, models, etc.)
-data/
+# Data — solo artefatti runtime ignorati; i sorgenti .py sotto data/ restano tracciabili
+data/**
+!data/**/
+!data/**/*.py
 
 # MLflow
 mlruns/
