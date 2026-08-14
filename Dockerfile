@@ -1,3 +1,10 @@
+FROM node:20-alpine AS frontend-build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -19,6 +26,8 @@ ENV PYTHONPATH=/app \
     MLCOUNCIL_OTEL_ENABLED=false
 
 COPY . .
+
+COPY --from=frontend-build /app/dist /app/api/static/spa
 
 RUN mkdir -p \
     data/raw data/arctic data/orders data/results data/monitoring \

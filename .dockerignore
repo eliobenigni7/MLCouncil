@@ -9,6 +9,7 @@ __pycache__
 *.pkl
 .pytest_cache
 dist
+node_modules
 *.egg-info
 
 # Data directories (mounted as volumes)
