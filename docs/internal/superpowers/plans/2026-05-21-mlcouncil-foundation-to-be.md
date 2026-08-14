@@ -106,7 +106,7 @@
 ### Task 7: Produce clean baseline report
 
 **Files:**
-- Create: `docs/baselines/YYYY-MM-DD-clean-baseline.md`
+- Create: `docs/internal/baselines/YYYY-MM-DD-clean-baseline.md`
 
 - [ ] Run existing walk-forward/backtest validation commands available in the repo.
 - [ ] Capture git sha, config hash, Python version, data date range, and caveats.

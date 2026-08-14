@@ -190,4 +190,4 @@ From `data/results/walk_forward_regime.parquet` (labels derived from equal-weigh
 - Walk-forward implementation: `backtest/validation.py`, `scripts/run_strategy_backtest.py`
 - Benchmark suite: `build_benchmark_suite` (equal_weight, momentum_long_only, inverse_volatility, vol_target_equal_weight)
 - Architecture context: `docs/architecture-as-is-to-be-2026-05-21.md`, `AGENTS.md`
-- Prompt: `docs/agentic-prompts-2026-05-21.md` (Prompt 08)
+- Prompt: `docs/internal/agentic-prompts-2026-05-21.md` (Prompt 08)

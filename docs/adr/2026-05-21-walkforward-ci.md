@@ -3,7 +3,7 @@
 - Date: 2026-05-21
 - Status: Accepted
 - Decision owners: MLCouncil quant platform
-- Related PR/Issue: Wave 1 track T1.1 (`docs/disruptive-roadmap-2026-05-21.md`)
+- Related PR/Issue: Wave 1 track T1.1 (`docs/internal/disruptive-roadmap-2026-05-21.md`)
 
 ## Context
 

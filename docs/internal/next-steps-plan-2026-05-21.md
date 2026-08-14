@@ -7,7 +7,7 @@
 
 ## Executive summary
 
-Questo piano nasce **dopo** l'ispezione AS-IS / TO-BE prodotta in `docs/codebase_analysis.md` ed è riconciliato con lo stato attuale di `origin/master` (HEAD `21b63af`). Il team ha già chiuso 8 degli 11 mismatch del drift register (`docs/architecture-as-is-to-be-2026-05-21.md`) e ha selezionato come **prima traccia avanzata** il *Self-Calibrating Cost Model* (ADR `docs/adr/2026-05-21-self-calibrating-cost-model.md`).
+Questo piano nasce **dopo** l'ispezione AS-IS / TO-BE prodotta in `docs/internal/codebase_analysis.md` ed è riconciliato con lo stato attuale di `origin/master` (HEAD `21b63af`). Il team ha già chiuso 8 degli 11 mismatch del drift register (`docs/architecture-as-is-to-be-2026-05-21.md`) e ha selezionato come **prima traccia avanzata** il *Self-Calibrating Cost Model* (ADR `docs/adr/2026-05-21-self-calibrating-cost-model.md`).
 
 Le 7 fasi qui sotto sono progettate per essere eseguite **in sequenza da un agente**: ogni fase ha file target espliciti, comandi di verifica, messaggio di commit e definizione di "fatto". Le fasi 0-2 chiudono il debito residuo; 3-5 implementano il challenger di costo; 6-7 abilitano il prossimo track.
 
@@ -334,7 +334,7 @@ Se fallisce → `MLCOUNCIL_COST_CALIBRATION_PATH=""` automatico (revert a static
 
 ### Task 5.3 — Baseline post-cost-track
 
-**File:** `docs/baselines/YYYY-MM-DD-cost-calibrated-baseline.md` (segue il template di `docs/baselines/2026-05-21-clean-baseline.md`).
+**File:** `docs/internal/baselines/YYYY-MM-DD-cost-calibrated-baseline.md` (segue il template di `docs/internal/baselines/2026-05-21-clean-baseline.md`).
 
 Catturare: Sharpe lordo/netto, turnover, IS medio, breach count, runtime. Confronto side-by-side col clean baseline.
 

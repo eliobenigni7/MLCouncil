@@ -634,9 +634,9 @@ $$
 
 Passi che verranno eseguiti dopo l'approvazione del piano:
 
-1. **Copia il report markdown nel repository** in `docs/codebase_analysis.md` (cartella `docs/` da creare se assente)
+1. **Copia il report markdown nel repository** in `docs/internal/codebase_analysis.md` (cartella `docs/` da creare se assente)
 2. **Genera PDF** dal markdown. Strategia in ordine di preferenza, con fallback automatico:
-   - `pandoc docs/codebase_analysis.md -o docs/codebase_analysis.pdf --pdf-engine=xelatex --toc -V geometry:margin=2cm`
+   - `pandoc docs/internal/codebase_analysis.md -o docs/internal/codebase_analysis.pdf --pdf-engine=xelatex --toc -V geometry:margin=2cm`
    - Fallback se LaTeX non disponibile: `pandoc ... --pdf-engine=wkhtmltopdf`
    - Fallback ulteriore: `pandoc ... -t html` poi `weasyprint` / `chromium --headless --print-to-pdf`
    - Ultimo fallback: installazione `pip install markdown-pdf` e uso di `markdown-pdf` CLI

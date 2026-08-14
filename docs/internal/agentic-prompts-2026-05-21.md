@@ -257,7 +257,7 @@ Run or implement:
 - Runtime duration for major stages.
 
 Expected artifact:
-- docs/baselines/YYYY-MM-DD-clean-baseline.md
+- docs/internal/baselines/YYYY-MM-DD-clean-baseline.md
 - Include commands, environment metadata, git sha, config hash, data date range, metrics, and caveats.
 
 Verify:

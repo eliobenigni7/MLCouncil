@@ -50,7 +50,7 @@ Regola pratica:
 
 ## Documenti sperimentali
 
-I documenti di proposta o wave/roadmap non canonici vanno in `docs/experiments/`.
+I documenti di proposta o wave/roadmap non canonici vanno in `docs/internal/experiments/`.
 
 ## Backup e artefatti temporanei
 
@@ -68,6 +68,6 @@ Un file esce dall'area sperimentale solo se:
 ## Stato attuale del triage
 
 - esperimenti backtest e ablation isolati in `scripts/experiments/`
-- proposta wave3 isolata in `docs/experiments/`
+- proposta wave3 isolata in `docs/internal/experiments/`
 - backup YAML isolato in `config/backups/`
 - core backtest lasciato intatto

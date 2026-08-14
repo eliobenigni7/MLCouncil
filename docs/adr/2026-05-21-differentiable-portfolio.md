@@ -2,7 +2,7 @@
 
 - Date: 2026-05-21
 - Status: Accepted (shadow scaffold)
-- Related: `docs/disruptive-roadmap-2026-05-21.md` Wave 3 T3.3
+- Related: `docs/internal/disruptive-roadmap-2026-05-21.md` Wave 3 T3.3
 
 ## Context
 

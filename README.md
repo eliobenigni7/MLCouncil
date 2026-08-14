@@ -681,15 +681,18 @@ MLCouncil/
 - [docs/model-promotion-criteria.md](docs/model-promotion-criteria.md) — Promotion gates and qualitative checklist
 - [docs/adr/README.md](docs/adr/README.md) — ADR workflow and template for major design/process decisions
 
-### Current Analysis and TO BE
-- [docs/architecture-as-is-to-be-2026-05-21.md](docs/architecture-as-is-to-be-2026-05-21.md) — AS IS drift register, TO BE concept, and cleanup roadmap from the combined analysis
-- [docs/agentic-prompts-2026-05-21.md](docs/agentic-prompts-2026-05-21.md) — Ordered prompt pack for agentic implementation of AS IS fixes and TO BE preparation
-- [docs/superpowers/plans/2026-05-21-mlcouncil-foundation-to-be.md](docs/superpowers/plans/2026-05-21-mlcouncil-foundation-to-be.md) — Implementation plan for foundation cleanup and baseline measurement
-
 ### Strategy (2026–2030)
 - [docs/roadmap-2026-2030-autonomous-council.md](docs/roadmap-2026-2030-autonomous-council.md) — Autonomous council roadmap: Phase 0 closed (2026-08), canary activation, live-progression gates
 - [docs/math-drilldown-2026-2030-autonomous-council.md](docs/math-drilldown-2026-2030-autonomous-council.md) — Exact formulas in the code, mathematical critiques, rigorous upgrades and their verification statistics
 - [docs/flag-registry-2026-08-13.md](docs/flag-registry-2026-08-13.md) — Inventory of all `MLCOUNCIL_*` flags with status, target phase and expiry dates
+
+### Governance and Analysis
+- [docs/architecture-as-is-to-be-2026-05-21.md](docs/architecture-as-is-to-be-2026-05-21.md) — AS IS drift register, TO BE concept, and cleanup roadmap from the combined analysis
+- [docs/repo-triage.md](docs/repo-triage.md) — Canonical vs experimental script classification and triage rules
+- [docs/data-flow-daily-vs-training.md](docs/data-flow-daily-vs-training.md) — Daily inference vs training/backtest target engineering boundary
+
+### Internal (working notes, not user-facing)
+- [docs/internal/](docs/internal/) — Session analyses, agentic prompt packs, plans, staging baselines and experiment notes (codebase analysis, superpowers plans, parameter recommendations, superseded roadmaps)
 
 ---
 

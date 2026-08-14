@@ -3,7 +3,7 @@
 - Date: 2026-05-21
 - Status: Accepted
 - Track: T1.4 (Wave 1 — Foundations)
-- Related: `docs/disruptive-roadmap-2026-05-21.md`, `observability/tracing.py`
+- Related: `docs/internal/disruptive-roadmap-2026-05-21.md`, `observability/tracing.py`
 
 ## Context
 

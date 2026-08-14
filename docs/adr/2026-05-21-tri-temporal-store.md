@@ -3,7 +3,7 @@
 - Date: 2026-05-21
 - Status: Accepted
 - Track: T1.3 (Wave 1 — Foundations)
-- Related: `docs/disruptive-roadmap-2026-05-21.md`, `data/store/arctic_store.py`
+- Related: `docs/internal/disruptive-roadmap-2026-05-21.md`, `data/store/arctic_store.py`
 
 ## Context
 

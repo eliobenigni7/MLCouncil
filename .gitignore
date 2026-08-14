@@ -53,6 +53,7 @@ volumes/
 .claude/
 .cursor/
 .agents/
+.mcp.json
 
 # Playwright / browser automation artifacts
 .playwright-cli/

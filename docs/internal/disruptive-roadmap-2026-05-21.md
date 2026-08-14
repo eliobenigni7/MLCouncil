@@ -1,7 +1,7 @@
 # MLCouncil — Roadmap Disruptive (Wave 1-4)
 
 > **Scope.** Questo piano implementa i cambi *disruptive* della sezione 5 di
-> `docs/codebase_analysis.md` (TO-BE), una volta che il primo P2 track
+> `docs/internal/codebase_analysis.md` (TO-BE), una volta che il primo P2 track
 > (self-calibrating cost model) è chiuso. Le 4 wave qui sotto sono progettate
 > per essere eseguibili da agenti indipendenti, ciascuno su un branch e ADR
 > dedicati, con champion/challenger gating obbligatorio prima di ogni
@@ -9,7 +9,7 @@
 
 ## Stato di partenza (2026-05-21)
 
-**Già consegnato** (Fasi 0-7 di `docs/next-steps-plan-2026-05-21.md`):
+**Già consegnato** (Fasi 0-7 di `docs/internal/next-steps-plan-2026-05-21.md`):
 
 | Area | Stato | Riferimento |
 |---|---|---|
@@ -657,7 +657,7 @@ Per ogni track Tx.y, l'agente deve produrre:
 4. ✅ **Dashboard panel** dedicato (se UI-relevant)
 5. ✅ **Rollback documentato** via env flag — il sistema può tornare
    al campione precedente senza redeploy
-6. ✅ **Baseline aggiornato** in `docs/baselines/YYYY-MM-DD-<track>.md`
+6. ✅ **Baseline aggiornato** in `docs/internal/baselines/YYYY-MM-DD-<track>.md`
 7. ✅ **PR mergeable** su master con commit message convenzionale
 
 ## Risk register
@@ -675,7 +675,7 @@ Per ogni track Tx.y, l'agente deve produrre:
 Ogni agente che prende un track riceve come prompt minimo:
 
 ```
-Lavora sul track <Tx.y> del piano docs/disruptive-roadmap-2026-05-21.md.
+Lavora sul track <Tx.y> del piano docs/internal/disruptive-roadmap-2026-05-21.md.
 - Branch: feat/<track-slug>
 - ADR template: docs/adr/ADR-template.md
 - Walk-forward gate: scripts/run_walkforward_promotion.py

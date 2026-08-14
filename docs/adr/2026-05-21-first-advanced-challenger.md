@@ -7,7 +7,7 @@
 
 ## Context
 
-After P0 foundation cleanup and a reproducible baseline (`docs/baselines/`), MLCouncil should adopt its first **advanced** track without introducing a disruptive alpha or council model. Five candidates were evaluated against repository evidence (2026-05-21):
+After P0 foundation cleanup and a reproducible baseline (`docs/internal/baselines/`), MLCouncil should adopt its first **advanced** track without introducing a disruptive alpha or council model. Five candidates were evaluated against repository evidence (2026-05-21):
 
 | Track | Code evidence | Disruption |
 |-------|---------------|------------|
@@ -57,7 +57,7 @@ Detailed parameter design remains in a sibling ADR: `docs/adr/YYYY-MM-DD-self-ca
 
 ## Rollout Plan
 
-1. **Gate**: P0 doc/config reconciliation complete; publish `docs/baselines/YYYY-MM-DD-clean-baseline.md`.
+1. **Gate**: P0 doc/config reconciliation complete; publish `docs/internal/baselines/YYYY-MM-DD-clean-baseline.md`.
 2. **Design**: Author `docs/adr/YYYY-MM-DD-self-calibrating-cost-model.md` (min fills, update rule, rollback).
 3. **Implement**: Ingest OMS fills → calibration store → wire into `TransactionCostModel.from_env()` / calibrated override.
 4. **Validate**: Walk-forward gross/net comparison; paper trading reconciliation report.

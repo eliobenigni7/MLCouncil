@@ -3,7 +3,7 @@
 - Date: 2026-05-21
 - Status: Accepted (scaffolding)
 - Decision owners: MLCouncil quant platform
-- Related: Wave 2 track T2.2 (`docs/disruptive-roadmap-2026-05-21.md`)
+- Related: Wave 2 track T2.2 (`docs/internal/disruptive-roadmap-2026-05-21.md`)
 
 ## Context
 
