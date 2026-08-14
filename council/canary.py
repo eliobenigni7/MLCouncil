@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,7 @@ class CanaryState:
     def __init__(self, config: list[CanaryFeature] | None = None) -> None:
         self.features: dict[str, dict[str, Any]] = {}
         self.history: dict[str, list[dict[str, Any]]] = {}
+        self.pending_apply: dict[str, dict] = {}
         for feature in config or []:
             self.features[feature.name] = {
                 "enabled": feature.enabled,
@@ -186,6 +188,13 @@ class CanaryState:
                         state.history[name] = [
                             e for e in entries if isinstance(e, dict)
                         ]
+            stored_pending = data.get("pending_apply")
+            if isinstance(stored_pending, dict):
+                state.pending_apply = {
+                    key: value
+                    for key, value in stored_pending.items()
+                    if isinstance(value, dict)
+                }
         except (OSError, json.JSONDecodeError):
             pass  # stato corrotto → riparte dalla config, mai eccezioni
         return state
@@ -193,6 +202,19 @@ class CanaryState:
     def is_enabled(self, name: str) -> bool:
         entry = self.features.get(name)
         return bool(entry["enabled"]) if entry else False
+
+    def set_pending(self, name: str, enabled: bool) -> None:
+        """Overlay in attesa per la prossima run (additivo, ignorato da check_revert)."""
+        self.pending_apply[name] = {"enabled": enabled, "at": datetime.now(timezone.utc).isoformat()}
+
+    def clear_pending(self, name: str) -> None:
+        self.pending_apply.pop(name, None)
+
+    def pending_enabled(self, name: str, config_enabled: bool) -> bool:
+        pending = self.pending_apply.get(name)
+        if pending is None:
+            return config_enabled
+        return bool(pending["enabled"])
 
     def disable(
         self,
@@ -229,7 +251,7 @@ class CanaryState:
         try:
             path = Path(path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"features": self.features, "history": self.history}
+            payload = {"features": self.features, "history": self.history, "pending_apply": self.pending_apply}
             path.write_text(
                 json.dumps(payload, indent=2, default=str), encoding="utf-8"
             )
@@ -290,8 +312,21 @@ class CanaryController:
     # -- attivazione (policy di run) --------------------------------------
 
     def _active_features(self) -> list[CanaryFeature]:
-        """Feature abilitate in config E non revertite nello stato persistito."""
-        return [f for f in self.config if f.enabled and self.state.is_enabled(f.name)]
+        """Feature attive: config (o overlay pending) E non revertite nello stato.
+
+        Il pending sovrascrive l'enabled di config per la prossima run, ma il
+        revert (kill switch) vince sempre: una feature revertita resta spenta
+        finché l'entry non viene resettata.
+        """
+        active = []
+        for feature in self.config:
+            if not self.state.pending_enabled(feature.name, feature.enabled):
+                continue
+            entry = self.state.features.get(feature.name)
+            if entry is not None and not entry.get("enabled", True):
+                continue  # revertito → il pending non riattiva
+            active.append(feature)
+        return active
 
     def apply(self) -> list[str]:
         """Applica l'env delle feature canary attive; ritorna i nomi applicati.
