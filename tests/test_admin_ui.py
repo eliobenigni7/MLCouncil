@@ -48,7 +48,8 @@ def test_admin_root_renders_html():
     ):
         app = create_app()
         with TestClient(app, raise_server_exceptions=False) as client:
-            resp = client.get("/")
+            # Legacy admin SPA moved behind MLCOUNCIL_LEGACY_UI to /admin.
+            resp = client.get("/admin")
 
     assert resp.status_code == 200
     assert "MLCouncil Admin" in resp.text

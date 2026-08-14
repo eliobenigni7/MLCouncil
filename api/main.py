@@ -8,12 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from loguru import logger
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 from runtime_env import load_runtime_env
 
-from api.auth import ensure_request_api_key, is_api_key_required, is_public_api_path
+from api.auth import is_api_key_required, is_public_api_path
 from api.rate_limit import limiter
 
 API_PREFIX = "/api"
@@ -39,6 +38,10 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+    from api.errors import ApiError, api_error_handler
+
+    app.add_exception_handler(ApiError, api_error_handler)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_allowed_origins(),
@@ -48,31 +51,26 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def validate_api_key(request: Request, call_next):
+    async def validate_access(request: Request, call_next):
         if request.url.path.startswith("/api/"):
             if is_public_api_path(request.url.path):
                 return await call_next(request)
-            try:
-                ensure_request_api_key(request)
-                logger.info(
-                    "Admin API auth success path={} client={}",
-                    request.url.path,
-                    request.client.host if request.client else "unknown",
-                )
-            except Exception as exc:  # noqa: BLE001
+            from api.auth import request_is_authenticated
+            from api.session import check_csrf, request_csrf_token, request_session_token
+            if not request_is_authenticated(request):
                 from fastapi.responses import JSONResponse
-
-                logger.warning(
-                    "Admin API auth failure path={} client={} status={} detail={}",
-                    request.url.path,
-                    request.client.host if request.client else "unknown",
-                    getattr(exc, "status_code", 500),
-                    getattr(exc, "detail", str(exc)),
-                )
                 return JSONResponse(
-                    status_code=getattr(exc, "status_code", 500),
-                    content={"detail": getattr(exc, "detail", str(exc))},
+                    status_code=401,
+                    content={"error": {"code": "not_authenticated", "message": "Authentication required", "detail": ""}},
                 )
+            if request.method in {"POST", "PUT", "DELETE"} and not request.headers.get("X-API-Key"):
+                submitted = request.headers.get("X-CSRF-Token")
+                if not check_csrf(request_csrf_token(request), submitted):
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": {"code": "csrf_failed", "message": "CSRF token mismatch", "detail": ""}},
+                    )
         return await call_next(request)
 
     @app.on_event("startup")
@@ -82,9 +80,17 @@ def create_app() -> FastAPI:
                 "MLCOUNCIL_API_KEY is required for this runtime profile. "
                 "Refusing startup to avoid unauthenticated admin access."
             )
+        if is_api_key_required():
+            if not os.getenv("MLCOUNCIL_ADMIN_USERNAME") or not os.getenv("MLCOUNCIL_ADMIN_PASSWORD"):
+                raise RuntimeError(
+                    "MLCOUNCIL_ADMIN_USERNAME and MLCOUNCIL_ADMIN_PASSWORD are required "
+                    "for this runtime profile. Refusing startup to avoid unauthenticated admin access."
+                )
 
-    from api.routers import health, pipeline, portfolio, config, monitoring, trading, intraday
+    from api.routers import auth, config, health, intraday, monitoring, pipeline, portfolio, trading
 
+    app.include_router(auth.router, prefix=API_PREFIX)
+    # TODO(integration): register analytics/experiments/canary/promotion routers
     app.include_router(health.router, prefix=API_PREFIX)
     app.include_router(pipeline.router, prefix=API_PREFIX)
     app.include_router(portfolio.router, prefix=API_PREFIX)
@@ -97,12 +103,13 @@ def create_app() -> FastAPI:
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-    @app.get("/", response_class=HTMLResponse)
-    async def admin_ui(request: Request):
-        return templates.TemplateResponse(
-            request=request,
-            name="admin.html",
-        )
+    if os.getenv("MLCOUNCIL_LEGACY_UI", "true").strip().lower() in {"1", "true", "yes", "on"}:
+        @app.get("/admin", response_class=HTMLResponse)
+        async def legacy_admin(request: Request):
+            return templates.TemplateResponse(
+                request=request,
+                name="admin.html",
+            )
 
     return app
 
