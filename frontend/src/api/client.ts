@@ -1,15 +1,46 @@
-// Placeholder stub — replaced by the real API client in Task 15.
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    public message: string,
-    public detail: string,
-  ) {
+  constructor(public status: number, public code: string, public message: string, public detail: string) {
     super(message);
   }
 }
 
-export async function api<T>(_path: string, _options: RequestInit = {}): Promise<T> {
-  throw new ApiError(501, "not_implemented", "API client lands in Task 15", "");
+function csrfToken(): string | null {
+  const match = document.cookie.match(/(?:^|;\s*)mlcouncil_csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
+
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = { ...(options.headers as Record<string, string>) };
+  const method = (options.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken();
+    if (token) headers["X-CSRF-Token"] = token;
+  }
+  if (options.body) headers["Content-Type"] = "application/json";
+  const resp = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  if (resp.status === 401) {
+    window.location.href = "/login";
+    throw new ApiError(401, "not_authenticated", "Not logged in", "");
+  }
+  let body: unknown = null;
+  try {
+    body = await resp.json();
+  } catch {
+    /* non-JSON body */
+  }
+  if (!resp.ok) {
+    const err = (body as { error?: { code?: string; message?: string; detail?: string } })?.error;
+    throw new ApiError(resp.status, err?.code ?? "http_error", err?.message ?? resp.statusText, err?.detail ?? "");
+  }
+  return body as T;
+}
+
+export const authApi = {
+  login: (username: string, password: string) =>
+    api<{ authenticated: boolean; username: string }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => api<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
+  me: () => api<{ authenticated: boolean; username: string }>("/api/auth/me"),
+};
