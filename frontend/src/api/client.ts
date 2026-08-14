@@ -19,7 +19,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   if (options.body) headers["Content-Type"] = "application/json";
   const resp = await fetch(path, { ...options, headers, credentials: "same-origin" });
   if (resp.status === 401) {
-    window.location.href = "/login";
+    // Evita il loop: sulla pagina di login il probe /api/auth/me fallisce
+    // volutamente con 401 — niente redirect, è già il punto di ingresso.
+    if (!window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+    }
     throw new ApiError(401, "not_authenticated", "Not logged in", "");
   }
   let body: unknown = null;
