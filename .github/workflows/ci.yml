@@ -65,7 +65,20 @@ jobs:
             api/auth.py \
             api/services/trading_service.py \
             runtime_env.py \
-            council/portfolio.py
+            council/portfolio.py \
+            api/errors.py \
+            api/session.py \
+            api/routers/auth.py \
+            api/routers/analytics.py \
+            api/routers/experiments.py \
+            api/routers/canary.py \
+            api/routers/promotion.py \
+            api/services/analytics_service.py \
+            api/services/experiment_service.py \
+            api/services/experiment_worker.py \
+            api/services/canary_service.py \
+            api/services/promotion_service.py \
+            council/canary.py
 
   typecheck:
     runs-on: ubuntu-latest
@@ -91,7 +104,20 @@ jobs:
             api/auth.py \
             api/services/trading_service.py \
             runtime_env.py \
-            council/portfolio.py
+            council/portfolio.py \
+            api/errors.py \
+            api/session.py \
+            api/routers/auth.py \
+            api/routers/analytics.py \
+            api/routers/experiments.py \
+            api/routers/canary.py \
+            api/routers/promotion.py \
+            api/services/analytics_service.py \
+            api/services/experiment_service.py \
+            api/services/experiment_worker.py \
+            api/services/canary_service.py \
+            api/services/promotion_service.py \
+            council/canary.py
 
   security:
     runs-on: ubuntu-latest
@@ -118,12 +144,42 @@ jobs:
       - name: Bandit high-severity scan (critical modules)
         run: python -m bandit -q -r api council execution runtime_env.py -lll
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: frontend
+
+      - name: Lint
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Test
+        run: npm test
+        working-directory: frontend
+
+      - name: Build
+        run: npm run build
+        working-directory: frontend
+
   docker-build:
     needs:
       - tests-and-coverage
       - lint
       - typecheck
       - security
+      - frontend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
